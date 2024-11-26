@@ -1,0 +1,21 @@
+[package]
+name = "testing"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+proc-macro2 = "1.0.89"
+# rustc_plugin = "0.10.0-nightly-2024-05-20"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+
+[profile.release]
+panic = 'abort'
+
+[features]
+foo = []
+bar = []
+joe = []
+no_std = []
+# if nothing is specified at command line, we use "foo"
+# we can disable this with --no-default-features
+default = ["foo", "joe"]
