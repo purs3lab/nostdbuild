@@ -3,26 +3,21 @@
 use itertools::Itertools;
 use proc_macro2;
 use proc_macro2::TokenStream;
-use proc_macro2::TokenTree;
 use regex::Regex;
 use serde_json::json;
-use syn::parse_quote;
-use z3::SatResult;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
-use std::io::Bytes;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::vec;
-use syn::ext::IdentExt;
-use syn::token::Not;
-use syn::token::Plus;
+use syn::parse_quote;
 use syn::Attribute;
 use syn::Item;
+use z3::SatResult;
 
 #[derive(Clone, Debug)]
 enum PLogic {
@@ -71,10 +66,6 @@ impl TryFrom<&str> for PLogic {
     }
 }
 
-fn print_type<T>(_: &T) {
-    println!("{:?}", std::any::type_name::<T>());
-}
-
 fn find_all_features_used(
     ctx: &z3::Context,
     stream: proc_macro2::TokenTree,
@@ -86,13 +77,9 @@ fn find_all_features_used(
         let mut last_ident_was_feature = true;
         let mut last_logic: Option<PLogic> = None;
         for val in group.stream().into_iter() {
-            // dbg!(TokenStream::from(val.clone()).to_string());
             let (mut new_list, mut equations, mut cs) = match val {
                 proc_macro2::TokenTree::Group(group) => {
                     let (new_group_list, new_b, new_cs) = find_all_features_used(ctx, group.into());
-                    // dbg!(&new_b);
-                    // dbg!(&new_cs);
-                    // dbg!(&last_logic);
                     let new_b = if last_logic.is_some() {
                         vec![last_logic.clone().unwrap().combine(ctx, new_b.clone())]
                     } else {
@@ -101,11 +88,8 @@ fn find_all_features_used(
                     (new_group_list, new_b, new_cs)
                 }
                 proc_macro2::TokenTree::Ident(ident) => {
-                    // dbg!(ident.to_string().as_str());
                     let temp = PLogic::try_from(ident.to_string().as_str());
-                    // dbg!(&temp);
                     if let Ok(new_val) = temp {
-                        // dbg!(&new_val);
                         last_logic = Some(new_val);
                     }
 
@@ -147,13 +131,17 @@ fn find_all_features_used(
                         .contains(&ident.to_string().as_str());
                     (vec![], vec![], vec![])
                 }
-                proc_macro2::TokenTree::Punct(punct) => (vec![], vec![], vec![]),
+                proc_macro2::TokenTree::Punct(_) => (vec![], vec![], vec![]),
                 proc_macro2::TokenTree::Literal(literal) => {
                     if last_ident_was_feature {
                         let literal = literal.to_string();
                         let literal = literal[1..literal.len() - 1].to_string();
                         let new_variable = z3::ast::Bool::new_const(ctx, literal.clone());
-                        (vec![literal], vec![new_variable.clone()], vec![new_variable.clone()])
+                        (
+                            vec![literal],
+                            vec![new_variable.clone()],
+                            vec![new_variable.clone()],
+                        )
                     } else {
                         (vec![], vec![], vec![])
                     }
@@ -161,11 +149,8 @@ fn find_all_features_used(
             };
             bools.append(&mut equations);
             new_features.append(&mut new_list);
-            constants.append(& mut cs);
+            constants.append(&mut cs);
         }
-        // dbg!(&new_features);
-        // dbg!(&bools);
-        // dbg!(&constants);
         (new_features, bools, constants)
     } else {
         (vec![], vec![], vec![])
@@ -185,52 +170,55 @@ fn is_no_std(a: Attribute) -> bool {
 fn find_no_std_predicate(precondition: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
     precondition
         .into_iter()
-        .take_while(|x | {
-           if let proc_macro2::TokenTree::Punct(punct) = x { 
-            punct.as_char() != ','
-           } else {
-            true
-           }
-        }).collect()
+        .take_while(|x| {
+            if let proc_macro2::TokenTree::Punct(punct) = x {
+                punct.as_char() != ','
+            } else {
+                true
+            }
+        })
+        .collect()
 }
 
-fn stream_contains_no_std_predicate(no_std_predicate: proc_macro2::TokenStream, stream: proc_macro2::TokenStream) -> bool {
+fn stream_contains_no_std_predicate(
+    no_std_predicate: proc_macro2::TokenStream,
+    stream: proc_macro2::TokenStream,
+) -> bool {
     dbg!("contains? ");
     dbg!(&no_std_predicate.to_string());
     dbg!(&stream.to_string());
     let stream_vec: Vec<proc_macro2::TokenTree> = stream
         .into_iter()
-        .map(|x | {
+        .map(|x| {
             // dbg!(x.clone().to_string());
             x
         })
         .collect();
     let stream_vec_slice: &[proc_macro2::TokenTree] = &stream_vec;
 
-    let no_std_predicate_vec: Vec<proc_macro2::TokenTree> = no_std_predicate
-        .clone()
-        .into_iter()
-        .collect();
+    let no_std_predicate_vec: Vec<proc_macro2::TokenTree> =
+        no_std_predicate.clone().into_iter().collect();
 
     let res = stream_vec_slice
         .windows(no_std_predicate_vec.len())
-        .any(| window | {
+        .any(|window| {
             let window = proc_macro2::TokenStream::from_iter(window.to_vec().into_iter());
             // dbg!(&window.to_string());
             window.to_string() == no_std_predicate.to_string()
         });
-    
+
     let mut temp = false;
     if !res {
         for v in stream_vec.into_iter() {
             if let proc_macro2::TokenTree::Group(group) = v {
-                temp = temp || stream_contains_no_std_predicate(no_std_predicate.clone(), group.stream());
+                temp = temp
+                    || stream_contains_no_std_predicate(no_std_predicate.clone(), group.stream());
             }
         }
         dbg!(&temp);
         return temp;
     }
-    
+
     dbg!(&res);
     res
 }
@@ -239,7 +227,7 @@ fn ast_to_features(
     ctx: &z3::Context,
     syntax: syn::File,
     features: HashSet<String>,
-    no_std_predicate: proc_macro2::TokenStream
+    no_std_predicate: proc_macro2::TokenStream,
 ) -> (HashSet<String>, Vec<z3::ast::Bool>, Vec<z3::ast::Bool>) {
     let (attributes, auto_include) = find_all_attributes(syntax);
     let attributes = attributes.unwrap_or_default();
@@ -279,7 +267,7 @@ fn ast_to_features(
             new_features = temp_features.union(&new_features).cloned().collect();
         }
         all_bools.append(&mut bools);
-        all_variables.append(& mut constants);
+        all_variables.append(&mut constants);
     }
     (new_features, all_bools, all_variables)
 }
@@ -302,25 +290,6 @@ fn find_all_rust_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
         }
     }
     Ok(all_projects)
-}
-
-fn visit_dirs(dir: &Path, cb: &mut dyn FnMut(&fs::DirEntry)) -> io::Result<()> {
-    if dir.is_dir() {
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir()
-                && !path.ends_with("examples")
-                && !path.ends_with("benches")
-                && !path.ends_with("tests")
-            {
-                visit_dirs(&path, cb)?;
-            } else {
-                cb(&entry);
-            }
-        }
-    }
-    Ok(())
 }
 
 fn is_src_dir(path: &PathBuf) -> bool {
@@ -347,7 +316,7 @@ fn find_all_projects(dir: &Path) -> io::Result<Vec<PathBuf>> {
             if is_src_dir(&path) {
                 return Ok(vec![path]);
             } else {
-                all_projects.append(&mut find_all_projects(&path).unwrap_or(vec![]));
+                all_projects.append(&mut find_all_projects(&path).unwrap_or_default());
             }
         }
     }
@@ -358,7 +327,12 @@ fn find_all_projects(dir: &Path) -> io::Result<Vec<PathBuf>> {
 fn find_cfg_attr_no_std_features(
     ctx: &z3::Context,
     files: Vec<PathBuf>,
-) -> (Option<Vec<String>>, Option<z3::ast::Bool>, Vec<proc_macro2::TokenStream>, Vec<z3::ast::Bool>) {
+) -> (
+    Option<Vec<String>>,
+    Option<z3::ast::Bool>,
+    Vec<proc_macro2::TokenStream>,
+    Vec<z3::ast::Bool>,
+) {
     let mut all_features: Vec<String> = vec![];
     let mut all_bools: Vec<z3::ast::Bool> = vec![];
     let mut all_streams: Vec<proc_macro2::TokenStream> = vec![];
@@ -379,7 +353,7 @@ fn find_cfg_attr_no_std_features(
                         find_all_features_used(ctx, proc_macro2::TokenTree::Group(group));
                     all_features.append(&mut features);
                     all_bools.append(&mut bools);
-                    all_constants.append(& mut cs);
+                    all_constants.append(&mut cs);
                 }
             }
         }
@@ -420,9 +394,7 @@ fn find_all_attributes(file: syn::File) -> (Option<Vec<Attribute>>, Vec<Attribut
                     for a in item_macro.attrs.clone().into_iter() {
                         let debug_stuff: proc_macro2::TokenStream = a.clone().parse_args().unwrap();
                         dbg!(&debug_stuff.to_string());
-
                         dbg!(&a.meta);
-
                         if !a.path().is_ident("cfg") {
                             attributes.push(a);
                             continue;
@@ -435,7 +407,10 @@ fn find_all_attributes(file: syn::File) -> (Option<Vec<Attribute>>, Vec<Attribut
                         let new_thing: proc_macro2::TokenStream = parse_quote!(not(#args));
                         dbg!(&new_thing.to_string());
                         let new_meta = syn::Meta::List(syn::MetaList {
-                            path: syn::Path::from(syn::Ident::new("cfg", proc_macro2::Span::call_site())),
+                            path: syn::Path::from(syn::Ident::new(
+                                "cfg",
+                                proc_macro2::Span::call_site(),
+                            )),
                             delimiter: syn::MacroDelimiter::Paren(syn::token::Paren::default()),
                             tokens: new_thing.clone(),
                         });
@@ -450,10 +425,11 @@ fn find_all_attributes(file: syn::File) -> (Option<Vec<Attribute>>, Vec<Attribut
                             meta: new_meta,
                         };
                         attributes.push(new_attribute.clone());
-                        
+
                         auto_include.push(new_attribute.clone());
 
-                        let debug_stuff: proc_macro2::TokenStream = new_attribute.clone().parse_args().unwrap();
+                        let debug_stuff: proc_macro2::TokenStream =
+                            new_attribute.clone().parse_args().unwrap();
                         dbg!(&debug_stuff.to_string());
                     }
                     attributes
@@ -469,7 +445,7 @@ fn find_all_attributes(file: syn::File) -> (Option<Vec<Attribute>>, Vec<Attribut
             Item::Type(item_type) => item_type.attrs.clone(),
             Item::Union(item_union) => item_union.attrs.clone(),
             Item::Use(item_use) => item_use.attrs.clone(),
-            Item::Verbatim(token_stream) => vec![],
+            Item::Verbatim(_) => vec![],
             _ => vec![],
         })
         .collect();
@@ -518,7 +494,11 @@ fn execute_cargo_build_command(args: Vec<String>, project: String) -> (serde_jso
     )
 }
 
-fn solve_and_build_project(project: PathBuf, solver: z3::Solver, constants: HashSet<z3::ast::Bool>) -> Result<(serde_json::Value, Option<String>), ()> {
+fn solve_and_build_project(
+    project: PathBuf,
+    solver: z3::Solver,
+    constants: HashSet<z3::ast::Bool>,
+) -> Result<(serde_json::Value, Option<String>), ()> {
     let result = solver.check();
     if result != SatResult::Sat {
         return Err(());
@@ -569,7 +549,7 @@ fn build_once(project: PathBuf, features: HashSet<String>) -> (serde_json::Value
     (json!(command), correct_features)
 }
 
-fn build_project(project: PathBuf, features: HashSet<String>) -> (serde_json::Value, String) {
+fn build_project(project: PathBuf, features: HashSet<String>) -> (serde_json::Value, Option<String>) {
     let project_string: String = String::from(project.to_str().unwrap_or(""));
     dbg!(&project_string);
 
@@ -578,14 +558,14 @@ fn build_project(project: PathBuf, features: HashSet<String>) -> (serde_json::Va
     args.push("thumbv7m-none-eabi".to_string());
 
     let mut commands: Vec<serde_json::Value> = vec![];
-    let mut correct_features: String = "no correct features".to_string();
+    let mut correct_features: Option<String> = None;
 
     if features.is_empty() {
         let (command, is_successful) =
             execute_cargo_build_command(args.clone(), project_string.clone());
         commands.push(command);
         if is_successful {
-            correct_features = "default".to_string();
+            correct_features = Some("default".to_string());
         }
     } else {
         args.push("--no-default-features".to_string());
@@ -593,7 +573,7 @@ fn build_project(project: PathBuf, features: HashSet<String>) -> (serde_json::Va
             execute_cargo_build_command(args.clone(), project_string.clone());
         commands.push(command);
         if is_successful {
-            correct_features = "none".to_string();
+            correct_features = None;
         }
 
         args.push("--features".to_string());
@@ -603,7 +583,7 @@ fn build_project(project: PathBuf, features: HashSet<String>) -> (serde_json::Va
                 execute_cargo_build_command(args.clone(), project_string.clone());
             commands.push(command);
             if is_successful {
-                correct_features = option;
+                correct_features = Some(option);
             }
             args.pop();
         }
@@ -619,13 +599,13 @@ fn main() {
 
     let folder = std::env::args().nth(1).expect("no directory given");
     let path = Path::new(&folder);
-    let projects: Vec<PathBuf> = find_all_projects(path).unwrap_or(vec![]);
+    let projects: Vec<PathBuf> = find_all_projects(path).unwrap_or_default();
     dbg!(&projects);
 
     let mut filename = String::from(path.file_name().unwrap().to_str().unwrap());
     filename.push_str(".json");
     let mut directory = "results/".to_string();
-    directory.push_str(filename.as_str()); 
+    directory.push_str(filename.as_str());
 
     let mut file = fs::File::create(directory).expect("bad");
     let mut projects_json: Vec<serde_json::Value> = vec![];
@@ -633,7 +613,7 @@ fn main() {
 
     for project in projects {
         dbg!(&project);
-        let rust_files = find_all_rust_files(&project).unwrap_or(vec![]);
+        let rust_files = find_all_rust_files(&project).unwrap_or_default();
         let (initial_features, initial_bools, predicate, cs) =
             find_cfg_attr_no_std_features(&ctx, rust_files.clone());
         for c in cs {
@@ -661,7 +641,8 @@ fn main() {
             let ast = file_to_ast(&file);
             dbg!("finding all attributes for file: ");
             dbg!(&file);
-            let (more_features, bools, constants) = ast_to_features(&ctx, ast, initial_features, predicate.clone());
+            let (more_features, bools, constants) =
+                ast_to_features(&ctx, ast, initial_features, predicate.clone());
             initial_features = more_features;
             dbg!(&bools);
             for b in bools.into_iter() {
@@ -670,13 +651,6 @@ fn main() {
             for c in constants {
                 all_constants.insert(c);
             }
-            // dbg!(file);
-            // dbg!(&initial_features);
-            // let intersection: HashSet<String> = initial_features.intersection(&features).cloned().collect();
-            // if !intersection.is_empty() {
-            //     initial_features = initial_features.union(&features).cloned().collect();
-            //     dbg!(initial_features);
-            // }
         }
         dbg!(&solver);
         dbg!(&project);
@@ -685,7 +659,6 @@ fn main() {
         let r = solve_and_build_project(project.clone(), solver.clone(), all_constants.clone());
         if r.is_err() {
             dbg!(&solver);
-            dbg!("could not solve");
             return;
         }
         let (commands, correct_features) = r.unwrap();
@@ -700,243 +673,6 @@ fn main() {
 
     let value = json!(projects_json);
     let value = serde_json::to_string_pretty(&value).unwrap();
-    // dbg!(&value);
     let result = file.write_all(value.as_bytes());
-    dbg!(result);
-
-    // let res = visit_dirs(path, &mut |d: &DirEntry| {
-    //     let p = d.path();
-    //     if p.is_file() && p.extension().unwrap_or(OsStr::new("t")) == "rs" {
-    //         rust_files.push(p.to_str().unwrap().to_string());
-    //     }
-    // });
-    // dbg!(&rust_files);
-
-    // for path in rust_files {
-    //     let src = fs::read_to_string(&path).expect("unable to read file");
-    //     let syntax = syn::parse_file(&src).expect("unable to parse file");
-    // };
     return;
 }
-
-// Debug impl is available if Syn is built with "extra-traits" feature.
-// println!("{:#?}", syntax);
-
-/*
-Steps:
-1. Identify all cfg commands
-2. Convert features to variables
-3. Parse predicates and input them as equations in Z3
-4. Solve Z3
-*/
-
-//     for i in syntax.items.iter() {
-//         // TODO: iterate through all items and exclude those that are not cfg
-//         let type_of = match i {
-//             Item::Const(item_const) => "const",
-//             Item::Enum(item_enum) => "enum",
-//             Item::ExternCrate(item_extern_crate) => "extern crate",
-//             Item::Fn(item_fn) => "item func",
-//             Item::ForeignMod(item_foreign_mod) => "foreign mod",
-//             Item::Impl(item_impl) => "item_impl",
-//             Item::Macro(item_macro) => "item_macro",
-//             Item::Mod(item_mod) => {
-//                 println!("this is an item mod");
-//                 println!("{:#?}", item_mod.attrs);
-//                 "item_mod"
-//             },
-//             // Item::Static(item_static) => todo!(),
-//             // Item::Struct(item_struct) => todo!(),
-//             // Item::Trait(item_trait) => todo!(),
-//             // Item::TraitAlias(item_trait_alias) => todo!(),
-//             // Item::Type(item_type) => todo!(),
-//             // Item::Union(item_union) => todo!(),
-//             Item::Use(item_use) => "item use",
-//             // Item::Verbatim(token_stream) => todo!(),
-//             _ => {
-//                 "done"
-//             },
-//         };
-//         println!("{:?}", type_of);
-//     }
-
-//     let mut all_attributes: Vec<Attribute> = syntax.attrs.clone().into_iter().collect();
-//     let attrs: Vec<Vec<Attribute>> = syntax.items.clone().into_iter().map(|a | {
-//         match a {
-//             Item::Const(item_const) => item_const.attrs.clone(),
-//             Item::Enum(item_enum) => item_enum.attrs.clone(),
-//             Item::ExternCrate(item_extern_crate) => item_extern_crate.attrs.clone(),
-//             Item::Fn(item_fn) => item_fn.attrs.clone(),
-//             Item::ForeignMod(item_foreign_mod) => item_foreign_mod.attrs.clone(),
-//             Item::Impl(item_impl) => item_impl.attrs.clone(),
-//             Item::Macro(item_macro) => item_macro.attrs.clone(),
-//             Item::Mod(item_mod) => item_mod.attrs.clone(),
-//             Item::Static(item_static) => item_static.attrs.clone(),
-//             Item::Struct(item_struct) => item_struct.attrs.clone(),
-//             Item::Trait(item_trait) => item_trait.attrs.clone(),
-//             Item::TraitAlias(item_trait_alias) => item_trait_alias.attrs.clone(),
-//             Item::Type(item_type) => item_type.attrs.clone(),
-//             Item::Union(item_union) => item_union.attrs.clone(),
-//             Item::Use(item_use) => item_use.attrs.clone(),
-//             Item::Verbatim(token_stream) => vec![],
-//             _ => vec![],
-//         }
-//     }).collect();
-//     for mut val in attrs {
-//         all_attributes.append(&mut val);
-//     }
-
-//     let mut a = vec![];
-//     for val in all_attributes.clone() {
-//         if !(val.path().is_ident("cfg_attr") && is_no_std(val.clone())) {
-//             continue;
-//         }
-//         dbg!(&val);
-//         let precondition: proc_macro2::TokenStream = val.parse_args().unwrap();
-//         dbg!(&precondition);
-//         let precondition: proc_macro2::TokenStream = precondition.into_iter().map(| t | {
-//             dbg!(t.clone());
-//             a.append(& mut find_all_features_used(t.clone(), vec![]));
-//             t
-//         }).collect();
-//     }
-//     println!("a: {:?}", a);
-//     let mut a: HashSet<String> = HashSet::from_iter(a.iter().cloned());
-//     dbg!(&a);
-
-//     for val in all_attributes {
-//         if !(val.path().is_ident("cfg") || val.path().is_ident("cfg_attr")) {
-//             continue;
-//         }
-//         let precondition: proc_macro2::TokenStream = val.parse_args().unwrap();
-//         let mut features: Vec<String> = vec![];
-//         let precondition: proc_macro2::TokenStream = precondition.into_iter().map(| t | {
-//             features.append(&mut find_all_features_used(t.clone(), vec![]));
-//             t
-//         }).collect();
-
-//         let set: HashSet<String> = HashSet::from_iter(features.iter().cloned());
-//         let intersection: HashSet<_> = a.intersection(&set).collect();
-//         if !intersection.is_empty() {
-//             a = a.union(&set).cloned().collect();
-//         }
-//     }
-//     dbg!(&a);
-
-//     println!("\nfile-level attributes");
-//     for a in syntax.attrs.clone().into_iter() {
-//         if !(a.path().is_ident("cfg") || (a.path().is_ident("cfg_attr") && is_no_std(a.clone()))) {
-//             continue;
-//         }
-//         let precondition: proc_macro2::TokenStream = a.parse_args().unwrap();
-//         let mut features: Vec<String> = vec![];
-//         // dbg!(a.clone());
-//         let precondition: proc_macro2::TokenStream = precondition.into_iter().map(| a | {
-//             features.append(&mut find_all_features_used(a.clone(), vec![]));
-//             a
-//         }).collect();
-//         println!("\ntoken tree: {:?}, features: {:?}", precondition.to_string(), features);
-//         println!("the condition: {:?}", precondition.to_string());
-//         println!("is_no_std: {:?}", is_no_std(a.clone()))
-//     }
-
-//     println!("\nitem-level attributes");
-//     for i in syntax.items.iter() {
-//         // TODO: iterate through all items and exclude those that are not cfg
-//         let attributes = match i {
-//             Item::Const(item_const) => &item_const.attrs,
-//             Item::Enum(item_enum) => &item_enum.attrs,
-//             Item::ExternCrate(item_extern_crate) => &item_extern_crate.attrs,
-//             Item::Fn(item_fn) => &item_fn.attrs,
-//             Item::ForeignMod(item_foreign_mod) => &item_foreign_mod.attrs,
-//             Item::Impl(item_impl) => &item_impl.attrs,
-//             Item::Macro(item_macro) => &item_macro.attrs,
-//             Item::Mod(item_mod) => &item_mod.attrs,
-//             Item::Static(item_static) => &item_static.attrs,
-//             Item::Struct(item_struct) => &item_struct.attrs,
-//             Item::Trait(item_trait) => &item_trait.attrs,
-//             Item::TraitAlias(item_trait_alias) => &item_trait_alias.attrs,
-//             Item::Type(item_type) => &item_type.attrs,
-//             Item::Union(item_union) => &item_union.attrs,
-//             Item::Use(item_use) => &item_use.attrs,
-//             Item::Verbatim(token_stream) => &vec![],
-//             _ => &vec![],
-//         };
-
-//         for a in attributes.iter() {
-//             if !(a.path().is_ident("cfg") || (a.path().is_ident("cfg_attr") && is_no_std(a.clone()))) {
-//                 continue;
-//             }
-//             match a.style {
-//                 syn::AttrStyle::Outer => {
-//                     print!("outer attribute, ");
-//                 },
-//                 syn::AttrStyle::Inner(not) => {
-//                     print!("innner attribute, ");
-//                 },
-//             }
-//             let precondition: proc_macro2::TokenStream = a.parse_args().unwrap();
-//             let precondition: proc_macro2::TokenStream = precondition.into_iter().map(| a | {
-//                 let features = find_all_features_used(a.clone(), vec![]);
-//                 println!("token tree: {:?}, features: {:?}", a.to_string(), features);
-//                 a
-//             }).collect();
-//             println!("is_no_std: {:?}", is_no_std(a.clone()))
-//         }
-//     }
-// }
-
-// // no_std is an attribute (#![no_std]), and if we include it we cannot build bc println not in scope
-// // // in the case that either "bar" or "no_std" is defined, this line becomes #![no_std]
-// // #![cfg_attr(any(feature = "bar", feature = "no_std"), no_std)]
-
-// // use std::array;
-
-// // // even if we build for no_std, we can still bring in no_std with this line
-// // extern crate std;
-
-// // use core::panic::PanicInfo;
-
-// // // #[cfg(...)] says include what is under this code only if the predicate is true
-// // #[cfg(not(feature = "bar"))]
-// // #[allow(dead_code)]
-// // fn main() {
-
-// //     // this is at runtime, not compile time
-// //     if cfg!(not(feature = "bar")) {
-// //         println!("Hello, world!");
-// //     } else {
-// //         println!("hi there, world");
-// //     }
-
-// //     // must include either feature "foo" or feature "bar" in cargo.toml
-// //     #[cfg(any(feature = "bar", feature = "foo"))]
-// //     std::println!("hi");
-
-// //     #[cfg(all(target_family="unix", target_pointer_width = "64"))]
-// //     std::println!("unix?");
-
-// //     let mut vec = std::vec![0, 1, 2];
-
-// //     // because this is not specified in cargo.toml as an option, we must pass it via "billy"
-// //     #[cfg(feature = "billy")]
-// //     println!("this must be specified at the command line: rustc --cfg=feature=\"billy\" src/main.rs && ./main");
-
-// // }
-
-// // #[cfg(feature = "bar")]
-// // fn main() {}
-
-// // // if we misspell feature, it will give a warning but still compile
-// // #[cfg(featue = "no_std")]
-// // fn no_std() {
-// //     weofj
-// // }
-
-// // /*
-// // Learnings:
-// // must put feature = "foo" and then define that feature in cargo.toml
-// // we set the default feature to "foo", so the "hi" printline is not grayed out
-// // but we can pass "--no-default-features" to disable that
-// // this command adds the configuration to the compilation: rustc --cfg=feature=\"bar\" src/main.rs
-// // */
