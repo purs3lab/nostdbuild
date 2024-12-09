@@ -6,6 +6,7 @@ use proc_macro2::TokenStream;
 use proc_macro2::TokenTree;
 use regex::Regex;
 use serde_json::json;
+use syn::parse_quote;
 use z3::SatResult;
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -111,9 +112,37 @@ fn find_all_features_used(
                     last_ident_was_feature = ident.to_string() == "feature";
                     last_ident_was_feature = last_ident_was_feature
                         || !vec![
-                            // TODO: update white list, if ident is not one of these, consider it
+                            "clippy",
+                            "debug_assertions",
+                            "doc",
+                            "doctest",
+                            "fmt_debug",
+                            "miri",
+                            "overflow_checks",
+                            "panic",
+                            "proc_macro",
+                            "relocation_model",
+                            "rustfmt",
+                            "sanitize",
+                            "sanitizer_cfi_generalize_pointers",
+                            "sanitizer_cfi_normalize_integers",
+                            "target_abi",
                             "target_arch",
+                            "target_endian",
+                            "target_env",
+                            "target_family",
                             "target_feature",
+                            "target_has_atomic",
+                            "target_has_atomic_equal_alignment",
+                            "target_has_atomic_load_store",
+                            "target_os",
+                            "target_pointer_width",
+                            "target_thread_local",
+                            "target_vendor",
+                            "test",
+                            "ub_checks",
+                            "unix",
+                            "windows",
                         ]
                         .contains(&ident.to_string().as_str());
                     (vec![], vec![], vec![])
@@ -212,7 +241,8 @@ fn ast_to_features(
     features: HashSet<String>,
     no_std_predicate: proc_macro2::TokenStream
 ) -> (HashSet<String>, Vec<z3::ast::Bool>, Vec<z3::ast::Bool>) {
-    let attributes = find_all_attributes(syntax).unwrap_or(vec![]);
+    let (attributes, auto_include) = find_all_attributes(syntax);
+    let attributes = attributes.unwrap_or_default();
 
     let mut new_features: HashSet<String> = features;
     let mut all_bools: Vec<z3::ast::Bool> = vec![];
@@ -226,10 +256,15 @@ fn ast_to_features(
         let precondition: proc_macro2::TokenStream = a.parse_args().unwrap();
         dbg!(&precondition.to_string());
         if !(stream_contains_no_std_predicate(no_std_predicate.clone(), precondition.clone())) {
-            dbg!("continuing ");
-            dbg!(&no_std_predicate.to_string());
-            dbg!(&precondition.to_string());
-            continue;
+            if !auto_include.contains(&a) {
+                dbg!("continuing ");
+                dbg!(&no_std_predicate.to_string());
+                dbg!(&precondition.to_string());
+                continue;
+            } else {
+                dbg!("not continuing because compile error things");
+                dbg!(&precondition.to_string());
+            }
         } else {
             dbg!("not continuing");
             dbg!(&no_std_predicate.to_string());
@@ -330,7 +365,7 @@ fn find_cfg_attr_no_std_features(
     let mut all_constants: Vec<z3::ast::Bool> = vec![];
     for file in files {
         let ast = file_to_ast(&file);
-        let attributes = find_all_attributes(ast);
+        let (attributes, _) = find_all_attributes(ast);
         if let Some(attributes) = attributes {
             for a in attributes {
                 if a.path().is_ident("cfg_attr") && is_no_std(a.clone()) {
@@ -366,8 +401,9 @@ fn find_cfg_attr_no_std_features(
     (all_features, all_bools, all_streams, all_constants)
 }
 
-fn find_all_attributes(file: syn::File) -> Option<Vec<Attribute>> {
+fn find_all_attributes(file: syn::File) -> (Option<Vec<Attribute>>, Vec<Attribute>) {
     let mut all_attributes: Vec<Attribute> = file.attrs.into_iter().collect();
+    let mut auto_include: Vec<Attribute> = vec![];
     let attrs: Vec<Vec<Attribute>> = file
         .items
         .into_iter()
@@ -379,8 +415,48 @@ fn find_all_attributes(file: syn::File) -> Option<Vec<Attribute>> {
             Item::ForeignMod(item_foreign_mod) => item_foreign_mod.attrs.clone(),
             Item::Impl(item_impl) => item_impl.attrs.clone(),
             Item::Macro(item_macro) => {
+                let mut attributes: Vec<Attribute> = vec![];
                 if item_macro.mac.path.is_ident("compile_error") {
-                    vec![]
+                    for a in item_macro.attrs.clone().into_iter() {
+                        let debug_stuff: proc_macro2::TokenStream = a.clone().parse_args().unwrap();
+                        dbg!(&debug_stuff.to_string());
+
+                        dbg!(&a.meta);
+
+                        if !a.path().is_ident("cfg") {
+                            attributes.push(a);
+                            continue;
+                        }
+
+                        let args: proc_macro2::TokenStream = a.parse_args().unwrap();
+                        dbg!(&args.clone().to_string());
+                        // let nested_meta: syn::Meta = syn::parse2(args.clone()).expect("Failed to parse args as NestedMeta");
+                        // dbg!(&nested_meta);
+                        let new_thing: proc_macro2::TokenStream = parse_quote!(not(#args));
+                        dbg!(&new_thing.to_string());
+                        let new_meta = syn::Meta::List(syn::MetaList {
+                            path: syn::Path::from(syn::Ident::new("cfg", proc_macro2::Span::call_site())),
+                            delimiter: syn::MacroDelimiter::Paren(syn::token::Paren::default()),
+                            tokens: new_thing.clone(),
+                        });
+                        dbg!(&new_thing);
+                        dbg!(&new_meta);
+
+                        // Create a new Attribute with the negated `cfg`
+                        let new_attribute = Attribute {
+                            pound_token: a.pound_token,
+                            style: a.style.clone(),
+                            bracket_token: a.bracket_token,
+                            meta: new_meta,
+                        };
+                        attributes.push(new_attribute.clone());
+                        
+                        auto_include.push(new_attribute.clone());
+
+                        let debug_stuff: proc_macro2::TokenStream = new_attribute.clone().parse_args().unwrap();
+                        dbg!(&debug_stuff.to_string());
+                    }
+                    attributes
                 } else {
                     item_macro.attrs.clone()
                 }
@@ -402,9 +478,9 @@ fn find_all_attributes(file: syn::File) -> Option<Vec<Attribute>> {
     }
 
     if all_attributes.is_empty() {
-        None
+        (None, auto_include)
     } else {
-        Some(all_attributes)
+        (Some(all_attributes), auto_include)
     }
 }
 
@@ -442,7 +518,7 @@ fn execute_cargo_build_command(args: Vec<String>, project: String) -> (serde_jso
     )
 }
 
-fn solve_and_build_project(project: PathBuf, solver: z3::Solver, constants: HashSet<z3::ast::Bool>) -> Result<(serde_json::Value, String), ()> {
+fn solve_and_build_project(project: PathBuf, solver: z3::Solver, constants: HashSet<z3::ast::Bool>) -> Result<(serde_json::Value, Option<String>), ()> {
     let result = solver.check();
     if result != SatResult::Sat {
         return Err(());
@@ -466,28 +542,28 @@ fn solve_and_build_project(project: PathBuf, solver: z3::Solver, constants: Hash
     Ok(build_once(project, features_to_use))
 }
 
-fn build_once(project: PathBuf, features: HashSet<String>) -> (serde_json::Value, String) {
+fn build_once(project: PathBuf, features: HashSet<String>) -> (serde_json::Value, Option<String>) {
     let project_string: String = String::from(project.to_str().unwrap_or(""));
     dbg!(&project_string);
 
     let mut args: Vec<String> = vec!["build".to_string()];
     args.push("--target".to_string());
     args.push("thumbv7m-none-eabi".to_string());
-    let mut correct_features: String;
+    let mut correct_features: Option<String>;
 
     if features.is_empty() {
-        correct_features = "default".to_string();
+        correct_features = Some("default".to_string());
     } else {
         args.push("--no-default-features".to_string());
         args.push("--features".to_string());
         let features: String = features.into_iter().join(",");
         args.push(features.clone());
-        correct_features = features;
+        correct_features = Some(features);
     }
     let (command, is_successful) =
         execute_cargo_build_command(args.clone(), project_string.clone());
     if !is_successful {
-        correct_features = "no correct features".to_string()
+        correct_features = None
     }
 
     (json!(command), correct_features)
@@ -541,72 +617,31 @@ fn main() {
     let ctx = z3::Context::new(&cfg);
     let solver = z3::Solver::new(&ctx);
 
-
-    // let formula = z3::ast::Bool::and(&ctx, &[&and_var1_var2_bit, &not_var3]);
-
-    // all ar z3::ast::Bool
-    // print_type(&another_formula);
-    // print_type(&formula);
-    // print_type(&var1);
-    // print_type(&var2);
-    // print_type(&var3);
-    // solver.assert(&formula);
-    // solver.assert(&another_formula);
-    // let result = solver.check();
-    // dbg!(&result);
-    // let model = solver.get_model().unwrap();
-    // dbg!(&model);
-    // println!(
-    //     "var1 -> {}",
-    //     model.eval(&var1, false).unwrap().as_bool().unwrap()
-    // );
-    // println!(
-    //     "var2 -> {}",
-    //     model.eval(&var2, false).unwrap().as_bool().unwrap()
-    // );
-    // println!(
-    //     "var3 -> {}",
-    //     model.eval(&var3, false).unwrap().as_bool().unwrap()
-    // );
-    // println!(
-    //     "var4 -> {}",
-    //     model.eval(&var4, false).unwrap().as_bool().unwrap()
-    // );
-    // println!(
-    //     "hi -> {}",
-    //     model.eval(&hi, false).unwrap().as_bool().unwrap()
-    // );
-
-    // for i in model.iter() {
-    //     dbg!(&i);
-    // }
-
     let folder = std::env::args().nth(1).expect("no directory given");
     let path = Path::new(&folder);
-    let mut rust_files: Vec<String> = vec![];
     let projects: Vec<PathBuf> = find_all_projects(path).unwrap_or(vec![]);
     dbg!(&projects);
 
     let mut filename = String::from(path.file_name().unwrap().to_str().unwrap());
     filename.push_str(".json");
-    let mut file = fs::File::create(filename).expect("bad");
+    let mut directory = "results/".to_string();
+    directory.push_str(filename.as_str()); 
 
+    let mut file = fs::File::create(directory).expect("bad");
     let mut projects_json: Vec<serde_json::Value> = vec![];
     let mut all_constants: HashSet<z3::ast::Bool> = HashSet::new();
 
     for project in projects {
         dbg!(&project);
         let rust_files = find_all_rust_files(&project).unwrap_or(vec![]);
-        // dbg!(&rust_files);
         let (initial_features, initial_bools, predicate, cs) =
             find_cfg_attr_no_std_features(&ctx, rust_files.clone());
         for c in cs {
             all_constants.insert(c);
         }
-        // dbg!(&initial_features);
         if initial_features.is_none() {
             dbg!("no features for this project");
-            let (commands, correct_features) = build_project(project.clone(), HashSet::new());
+            let (commands, correct_features) = build_once(project.clone(), HashSet::new());
             projects_json.push(json!({
                 "project": String::from(project.clone().to_str().unwrap()),
                 "features": [],
@@ -615,6 +650,7 @@ fn main() {
             }));
             continue;
         }
+
         let predicate = predicate[0].clone();
         dbg!(&initial_bools);
         solver.assert(&initial_bools.unwrap());
@@ -653,8 +689,6 @@ fn main() {
             return;
         }
         let (commands, correct_features) = r.unwrap();
-
-        // let (commands, correct_features) = build_project(project.clone(), initial_features.clone());
 
         projects_json.push(json!({
             "project": String::from(project.clone().to_str().unwrap()),
