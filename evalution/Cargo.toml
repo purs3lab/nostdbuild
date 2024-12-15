@@ -1,0 +1,7 @@
+[package]
+name = "evaluation"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crates_io_api = "0.11.0"
