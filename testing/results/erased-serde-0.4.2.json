@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling serde v1.0.215\n   Compiling erased-serde v0.4.2 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/erased-serde-0.4.2)\nerror: expected item, found `\"erased-serde requires that either `std` (default) or `alloc` feature is enabled\"`\n --> src/features_check/error.rs:1:1\n  |\n1 | \"erased-serde requires that either `std` (default) or `alloc` feature is enabled\"\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nwarning: unused variable: `value`\n   --> src/ser.rs:894:29\n    |\n894 |     fn collect_str<T>(self, value: &T) -> Result<Self::Ok, Self::Error>\n    |                             ^^^^^ help: if this is intentional, prefix it with an underscore: `_value`\n    |\n    = note: `#[warn(unused_variables)]` on by default\n\nwarning: `erased-serde` (lib) generated 1 warning\nerror: could not compile `erased-serde` (lib) due to 1 previous error; 1 warning emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/erased-serde-0.4.2/src",
+    "time_to_build": 13887,
+    "time_to_solve": 153
+  }
+]

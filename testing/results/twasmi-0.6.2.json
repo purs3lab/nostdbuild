@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "warning: `/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/twasmi-0.6.2/.cargo/config` is deprecated in favor of `config.toml`\nnote: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`\n   Compiling num-traits v0.2.14\n   Compiling num-integer v0.1.44\n   Compiling num-rational v0.2.4\n   Compiling tetsy-wasm v0.41.0\n   Compiling downcast-rs v1.2.0\n   Compiling twasmi-validation v0.3.0\n   Compiling twasmi v0.6.2 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/twasmi-0.6.2)\nerror[E0463]: can't find crate for `libm`\n   --> src/lib.rs:125:1\n    |\n125 | extern crate libm;\n    | ^^^^^^^^^^^^^^^^^^ can't find crate\n\nFor more information about this error, try `rustc --explain E0463`.\nerror: could not compile `twasmi` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/twasmi-0.6.2/src",
+    "time_to_build": 2373,
+    "time_to_solve": 347
+  }
+]

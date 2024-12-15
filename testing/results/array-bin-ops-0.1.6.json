@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling array-bin-ops v0.1.6 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/array-bin-ops-0.1.6)\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n --> src/iter.rs:4:5\n  |\n4 | use std::ops::Range;\n  |     ^^^ use of undeclared crate or module `std`\n\nFor more information about this error, try `rustc --explain E0433`.\nerror: could not compile `array-bin-ops` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/array-bin-ops-0.1.6/src",
+    "time_to_build": 172,
+    "time_to_solve": 26
+  }
+]

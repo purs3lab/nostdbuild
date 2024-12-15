@@ -1,0 +1,19 @@
+[
+  {
+    "built_with_features": "default",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi"
+      ],
+      "code": 0,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\nwarning: unexpected `cfg` condition name: `std`\n --> src/lib.rs:1:21\n  |\n1 | #![cfg_attr(not(any(std, test)), no_std)]\n  |                     ^^^ help: found config with similar value: `feature = \"std\"`\n  |\n  = help: expected names are: `clippy`, `debug_assertions`, `doc`, `docsrs`, `doctest`, `feature`, `miri`, `overflow_checks`, `panic`, `proc_macro`, `relocation_model`, `rustfmt`, `sanitize`, `sanitizer_cfi_generalize_pointers`, `sanitizer_cfi_normalize_integers`, `target_abi`, `target_arch`, `target_endian`, `target_env`, `target_family`, `target_feature`, `target_has_atomic`, `target_has_atomic_equal_alignment`, `target_has_atomic_load_store`, `target_os`, `target_pointer_width`, `target_thread_local`, `target_vendor`, `test`, `ub_checks`, `unix`, and `windows`\n  = help: consider using a Cargo feature instead\n  = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:\n           [lints.rust]\n           unexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(std)'] }\n  = help: or consider adding `println!(\"cargo::rustc-check-cfg=cfg(std)\");` to the top of the `build.rs`\n  = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n  = note: `#[warn(unexpected_cfgs)]` on by default\n\nwarning: unexpected `cfg` condition name: `std`\n  --> src/lib.rs:26:11\n   |\n26 | #[cfg(any(std, test))]\n   |           ^^^ help: found config with similar value: `feature = \"std\"`\n   |\n   = help: consider using a Cargo feature instead\n   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:\n            [lints.rust]\n            unexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(std)'] }\n   = help: or consider adding `println!(\"cargo::rustc-check-cfg=cfg(std)\");` to the top of the `build.rs`\n   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n\nwarning: `rev_slice` (lib) generated 2 warnings\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/rev_slice-0.1.5/src",
+    "time_to_build": 36,
+    "time_to_solve": 14
+  }
+]

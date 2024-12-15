@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": "none",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 0,
+      "stderr": "   Compiling generic-vec v0.1.2 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/generic-vec-0.1.2)\nwarning: unexpected `cfg` condition value: `8`\n  --> src/raw/capacity.rs:11:5\n   |\n11 |     target_pointer_width = \"8\",\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n   = note: expected values for `target_pointer_width` are: `16`, `32`, and `64`\n   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n   = note: `#[warn(unexpected_cfgs)]` on by default\n\nwarning: unexpected `cfg` condition value: `8`\n  --> src/raw/capacity.rs:24:11\n   |\n24 |     #[cfg(target_pointer_width = \"8\")]\n   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n   = note: expected values for `target_pointer_width` are: `16`, `32`, and `64`\n   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n\nwarning: calls to `std::mem::drop` with a reference instead of an owned value does nothing\n  --> src/iter.rs:41:30\n   |\n41 |         iter.for_each(|item| drop(self.push(item)));\n   |                              ^^^^^---------------^\n   |                                   |\n   |                                   argument has type `&mut T`\n   |\n   = note: use `let _ = ...` to ignore the expression or result\n   = note: `#[warn(dropping_references)]` on by default\n\nwarning: calls to `std::mem::drop` with a reference instead of an owned value does nothing\n  --> src/iter.rs:50:39\n   |\n50 |         iter.cloned().for_each(|item| drop(self.push(item)));\n   |                                       ^^^^^---------------^\n   |                                            |\n   |                                            argument has type `&mut T`\n   |\n   = note: use `let _ = ...` to ignore the expression or result\n\nwarning: `generic-vec` (lib) generated 4 warnings\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.24s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/generic-vec-0.1.2/src",
+    "time_to_build": 1108,
+    "time_to_solve": 196
+  }
+]

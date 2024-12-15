@@ -1,0 +1,19 @@
+[
+  {
+    "built_with_features": "default",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi"
+      ],
+      "code": 0,
+      "stderr": "warning: unused import: `::alloc::*`\n  --> src/lib.rs:76:17\n   |\n76 |         pub use ::alloc::*;\n   |                 ^^^^^^^^^^\n   |\n   = note: `#[warn(unused_imports)]` on by default\n\nwarning: unused import: `::alloc::collections::*`\n  --> src/lib.rs:79:17\n   |\n79 |         pub use ::alloc::collections::*;\n   |                 ^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `::alloc::vec`\n  --> src/lib.rs:81:13\n   |\n81 |     pub use ::alloc::vec;\n   |             ^^^^^^^^^^^^\n\nwarning: unused import: `::alloc::*`\n  --> src/core_iterators.rs:29:17\n   |\n29 |         pub use ::alloc::*;\n   |                 ^^^^^^^^^^\n\nwarning: unused import: `::alloc::collections::*`\n  --> src/core_iterators.rs:32:17\n   |\n32 |         pub use ::alloc::collections::*;\n   |                 ^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `::alloc::*`\n  --> src/double_priority_queue/iterators.rs:28:17\n   |\n28 |         pub use ::alloc::*;\n   |                 ^^^^^^^^^^\n\nwarning: unused import: `::alloc::collections::*`\n  --> src/double_priority_queue/iterators.rs:31:17\n   |\n31 |         pub use ::alloc::collections::*;\n   |                 ^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `::alloc::*`\n  --> src/priority_queue/iterators.rs:28:17\n   |\n28 |         pub use ::alloc::*;\n   |                 ^^^^^^^^^^\n\nwarning: unused import: `::alloc::collections::*`\n  --> src/priority_queue/iterators.rs:31:17\n   |\n31 |         pub use ::alloc::collections::*;\n   |                 ^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: `priority-queue` (lib) generated 9 warnings (run `cargo fix --lib -p priority-queue` to apply 9 suggestions)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/priority-queue-1.4.0/src",
+    "time_to_build": 51,
+    "time_to_solve": 110
+  }
+]

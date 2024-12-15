@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling astr v0.3.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/astr-0.3.1)\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n   --> src/lib.rs:120:24\n    |\n120 | impl<const LEN: usize> std::hash::Hash for AStr<LEN> {\n    |                        ^^^ use of undeclared crate or module `std`\n    |\nhelp: consider importing this module\n    |\n4   + use core::hash;\n    |\nhelp: if you import `hash`, refer to it directly\n    |\n120 - impl<const LEN: usize> std::hash::Hash for AStr<LEN> {\n120 + impl<const LEN: usize> hash::Hash for AStr<LEN> {\n    |\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n   --> src/lib.rs:121:16\n    |\n121 |     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {\n    |                ^^^ use of undeclared crate or module `std`\n    |\nhelp: consider importing this module\n    |\n4   + use core::hash;\n    |\nhelp: if you import `hash`, refer to it directly\n    |\n121 -     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {\n121 +     fn hash<H: hash::Hasher>(&self, state: &mut H) {\n    |\n\nFor more information about this error, try `rustc --explain E0433`.\nerror: could not compile `astr` (lib) due to 2 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/astr-0.3.1/src",
+    "time_to_build": 187,
+    "time_to_solve": 44
+  }
+]

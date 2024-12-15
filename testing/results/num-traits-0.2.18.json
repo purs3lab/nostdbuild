@@ -1,0 +1,20 @@
+[
+  {
+    "built_with_features": "none",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 0,
+      "stderr": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/num-traits-0.2.18/src",
+    "time_to_build": 519,
+    "time_to_solve": 199
+  }
+]

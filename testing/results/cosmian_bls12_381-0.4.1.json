@@ -1,0 +1,19 @@
+[
+  {
+    "built_with_features": "default",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi"
+      ],
+      "code": 0,
+      "stderr": "warning: lint `intra_doc_link_resolution_failure` has been removed: use `rustdoc::broken_intra_doc_links` instead\n  --> src/lib.rs:14:9\n   |\n14 | #![deny(intra_doc_link_resolution_failure)]\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(renamed_and_removed_lints)]` on by default\n\nwarning: unexpected `cfg` condition value: `std`\n   --> src/scalar.rs:811:7\n    |\n811 | #[cfg(feature = \"std\")]\n    |       ^^^^^^^^^^^^^^^\n    |\n    = note: expected values for `feature` are: `alloc`, `default`, `endo`, `group`, `groups`, `nightly`, `pairing`, and `pairings`\n    = help: consider adding `std` as a feature in `Cargo.toml`\n    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n    = note: `#[warn(unexpected_cfgs)]` on by default\n\nwarning: `cosmian_bls12_381` (lib) generated 2 warnings\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.11s\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/cosmian_bls12_381-0.4.1/src",
+    "time_to_build": 150,
+    "time_to_solve": 374
+  }
+]

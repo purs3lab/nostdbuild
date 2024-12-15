@@ -1,0 +1,25 @@
+[
+  {
+    "built_with_features": "libm-math",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "libm-math"
+      ],
+      "code": 0,
+      "stderr": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s\n",
+      "stdout": ""
+    },
+    "features": [
+      "libm-math",
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/rusttype-0.9.3/src",
+    "time_to_build": 46,
+    "time_to_solve": 110
+  }
+]

@@ -1,0 +1,20 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling indexmap v2.7.0\nerror[E0463]: can't find crate for `std`\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/indexmap-2.7.0/src/lib.rs:110:1\n    |\n110 | extern crate std;\n    | ^^^^^^^^^^^^^^^^^ can't find crate\n    |\n    = note: the `thumbv7m-none-eabi` target may not support the standard library\n\nFor more information about this error, try `rustc --explain E0463`.\nerror: could not compile `indexmap` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/choco-0.1.2/src",
+    "time_to_build": 239,
+    "time_to_solve": 53
+  }
+]

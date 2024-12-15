@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling enumscribe v0.4.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/enumscribe-0.4.0)\nerror[E0463]: can't find crate for `enumscribe_derive`\n   --> src/lib.rs:189:1\n    |\n189 | extern crate enumscribe_derive;\n    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ can't find crate\n\nwarning: unused import: `fmt`\n --> src/internal/capped_string.rs:4:45\n  |\n4 | use core::{str, ops::Deref, borrow::Borrow, fmt};\n  |                                             ^^^\n  |\n  = note: `#[warn(unused_imports)]` on by default\n\nFor more information about this error, try `rustc --explain E0463`.\nwarning: `enumscribe` (lib) generated 1 warning\nerror: could not compile `enumscribe` (lib) due to 1 previous error; 1 warning emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/enumscribe-0.4.0/src",
+    "time_to_build": 11945,
+    "time_to_solve": 47
+  }
+]

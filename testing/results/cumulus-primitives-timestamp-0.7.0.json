@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling impl-trait-for-tuples v0.2.3\n   Compiling derive_more-impl v1.0.0\n   Compiling serde v1.0.215\n   Compiling sp-debug-derive v14.0.0\n   Compiling zeroize_derive v1.4.2\n   Compiling ref-cast-impl v1.0.23\n   Compiling derive-syn-parse v0.2.0\n   Compiling ahash v0.8.11\n   Compiling sp-core-hashing-proc-macro v15.0.0\n   Compiling slab v0.4.9\n   Compiling futures-sink v0.3.31\nerror[E0463]: can't find crate for `std`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-sink-0.3.31/src/lib.rs:19:1\n   |\n19 | extern crate std;\n   | ^^^^^^^^^^^^^^^^^ can't find crate\n   |\n   = note: the `thumbv7m-none-eabi` target may not support the standard library\n\n   Compiling ref-cast v1.0.23\nFor more information about this error, try `rustc --explain E0463`.\nerror: could not compile `futures-sink` (lib) due to 1 previous error\nwarning: build failed, waiting for other jobs to finish...\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/cumulus-primitives-timestamp-0.7.0/src",
+    "time_to_build": 3569,
+    "time_to_solve": 9
+  }
+]

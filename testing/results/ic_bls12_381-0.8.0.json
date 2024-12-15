@@ -1,0 +1,19 @@
+[
+  {
+    "built_with_features": "default",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi"
+      ],
+      "code": 0,
+      "stderr": "warning: unexpected `cfg` condition value: `std`\n   --> src/scalar.rs:803:7\n    |\n803 | #[cfg(feature = \"std\")]\n    |       ^^^^^^^^^^^^^^^\n    |\n    = note: expected values for `feature` are: `alloc`, `bits`, `default`, `digest`, `experimental`, `group`, `groups`, `nightly`, `pairing`, `pairings`, and `zeroize`\n    = help: consider adding `std` as a feature in `Cargo.toml`\n    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n    = note: `#[warn(unexpected_cfgs)]` on by default\n\nwarning: `ic_bls12_381` (lib) generated 1 warning\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/ic_bls12_381-0.8.0/src",
+    "time_to_build": 57,
+    "time_to_solve": 486
+  }
+]

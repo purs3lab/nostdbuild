@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": "none",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 0,
+      "stderr": "   Compiling asciirend v0.3.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/asciirend-0.3.1)\nwarning: dropping unsupported crate type `cdylib` for target `thumbv7m-none-eabi`\n\nwarning: unexpected `cfg` condition value: `pyo3`\n   --> src/color.rs:393:12\n    |\n393 | #[cfg_attr(feature = \"pyo3\", pyo3::pyclass)]\n    |            ^^^^^^^^^^^^^^^^\n    |\n    = note: expected values for `feature` are: `anyhow`, `bindings`, `console_error_panic_hook`, `crossterm`, `default`, `global-state`, `rhai`, `scripting`, `serde`, `serde-all`, `serde_json`, `signal-hook`, `std`, `test-bin`, `wasm`, `wasm-bindgen`, and `wee_alloc`\n    = help: consider adding `pyo3` as a feature in `Cargo.toml`\n    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n    = note: `#[warn(unexpected_cfgs)]` on by default\n\nwarning: unexpected `cfg` condition value: `pyo3`\n   --> src/color.rs:404:12\n    |\n404 | #[cfg_attr(feature = \"pyo3\", pyo3::pyclass)]\n    |            ^^^^^^^^^^^^^^^^\n    |\n    = note: expected values for `feature` are: `anyhow`, `bindings`, `console_error_panic_hook`, `crossterm`, `default`, `global-state`, `rhai`, `scripting`, `serde`, `serde-all`, `serde_json`, `signal-hook`, `std`, `test-bin`, `wasm`, `wasm-bindgen`, and `wee_alloc`\n    = help: consider adding `pyo3` as a feature in `Cargo.toml`\n    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n\nwarning: `asciirend` (lib) generated 3 warnings\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.49s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/asciirend-0.3.1/src",
+    "time_to_build": 869,
+    "time_to_solve": 132
+  }
+]

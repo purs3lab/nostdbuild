@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling num-traits v0.2.19\n   Compiling serde v1.0.215\n   Compiling subtle v2.4.1\n   Compiling either v1.13.0\n   Compiling byte-slice-cast v1.2.2\n   Compiling digest v0.10.7\n   Compiling parity-scale-codec v3.6.12\n   Compiling itertools v0.10.5\n   Compiling blake2 v0.10.6\n   Compiling scale-info v2.11.6\n   Compiling tuple v0.5.2\n   Compiling obce-codegen v0.1.0\n   Compiling obce-macro v0.1.0\n   Compiling obce v0.1.0\n   Compiling pallet-assets-chain-extension v0.1.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/pallet-assets-chain-extension-0.1.1)\nerror[E0405]: cannot find trait `PalletAssets` in this scope\n  --> src/traits.rs:60:11\n   |\n60 | pub trait PalletAssets<T: Environment> {\n   |           ^^^^^^^^^^^^ not found in this scope\n\nerror[E0412]: cannot find type `Vec` in this scope\n   --> src/traits.rs:102:54\n    |\n102 |     fn set_metadata(&mut self, id: T::AssetId, name: Vec<u8>, symbol: Vec<u8>, decimals: u8) -> Result<(), Error<T>>;\n    |                                                      ^^^ not found in this scope\n    |\nhelp: consider importing this struct\n    |\n22  + use scale_info::prelude::vec::Vec;\n    |\n\nerror[E0412]: cannot find type `Vec` in this scope\n   --> src/traits.rs:102:71\n    |\n102 |     fn set_metadata(&mut self, id: T::AssetId, name: Vec<u8>, symbol: Vec<u8>, decimals: u8) -> Result<(), Error<T>>;\n    |                                                                       ^^^ not found in this scope\n    |\nhelp: consider importing this struct\n    |\n22  + use scale_info::prelude::vec::Vec;\n    |\n\nerror[E0412]: cannot find type `Vec` in this scope\n   --> src/traits.rs:104:48\n    |\n104 |     fn metadata_name(&self, id: T::AssetId) -> Vec<u8>;\n    |                                                ^^^ not found in this scope\n    |\nhelp: consider importing this struct\n    |\n22  + use scale_info::prelude::vec::Vec;\n    |\n\nerror[E0412]: cannot find type `Vec` in this scope\n   --> src/traits.rs:106:50\n    |\n106 |     fn metadata_symbol(&self, id: T::AssetId) -> Vec<u8>;\n    |                                                  ^^^ not found in this scope\n    |\nhelp: consider importing this struct\n    |\n22  + use scale_info::prelude::vec::Vec;\n    |\n\nSome errors have detailed explanations: E0405, E0412.\nFor more information about an error, try `rustc --explain E0405`.\nerror: could not compile `pallet-assets-chain-extension` (lib) due to 5 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/pallet-assets-chain-extension-0.1.1/src",
+    "time_to_build": 16613,
+    "time_to_solve": 26
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling rtrb-basedrop v0.1.2 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/rtrb-basedrop-0.1.2)\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n  --> src/lib.rs:76:5\n   |\n76 | use std::fmt::Debug;\n   |     ^^^ use of undeclared crate or module `std`\n\nwarning: use of deprecated struct `cache_padded::CachePadded`: This crate is now deprecated in favor of [crossbeam-utils::CachePadded](https://docs.rs/crossbeam-utils/latest/crossbeam_utils/struct.CachePadded.html).\n  --> src/lib.rs:78:19\n   |\n78 | use cache_padded::CachePadded;\n   |                   ^^^^^^^^^^^\n   |\n   = note: `#[warn(deprecated)]` on by default\n\nwarning: use of deprecated struct `cache_padded::CachePadded`: This crate is now deprecated in favor of [crossbeam-utils::CachePadded](https://docs.rs/crossbeam-utils/latest/crossbeam_utils/struct.CachePadded.html).\n  --> src/lib.rs:96:11\n   |\n96 |     head: CachePadded<AtomicUsize>,\n   |           ^^^^^^^^^^^\n\nwarning: use of deprecated struct `cache_padded::CachePadded`: This crate is now deprecated in favor of [crossbeam-utils::CachePadded](https://docs.rs/crossbeam-utils/latest/crossbeam_utils/struct.CachePadded.html).\n   --> src/lib.rs:101:11\n    |\n101 |     tail: CachePadded<AtomicUsize>,\n    |           ^^^^^^^^^^^\n\nwarning: use of deprecated struct `cache_padded::CachePadded`: This crate is now deprecated in favor of [crossbeam-utils::CachePadded](https://docs.rs/crossbeam-utils/latest/crossbeam_utils/struct.CachePadded.html).\n   --> src/lib.rs:157:23\n    |\n157 |                 head: CachePadded::new(AtomicUsize::new(0)),\n    |                       ^^^^^^^^^^^\n\nwarning: use of deprecated struct `cache_padded::CachePadded`: This crate is now deprecated in favor of [crossbeam-utils::CachePadded](https://docs.rs/crossbeam-utils/latest/crossbeam_utils/struct.CachePadded.html).\n   --> src/lib.rs:158:23\n    |\n158 |                 tail: CachePadded::new(AtomicUsize::new(0)),\n    |                       ^^^^^^^^^^^\n\nFor more information about this error, try `rustc --explain E0433`.\nwarning: `rtrb-basedrop` (lib) generated 5 warnings\nerror: could not compile `rtrb-basedrop` (lib) due to 1 previous error; 5 warnings emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/rtrb-basedrop-0.1.2/src",
+    "time_to_build": 283,
+    "time_to_solve": 65
+  }
+]

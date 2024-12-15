@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": "none",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 0,
+      "stderr": "   Compiling atb v0.1.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/atb-0.1.0)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/atb-0.1.0",
+    "time_to_build": 210,
+    "time_to_solve": 28
+  }
+]

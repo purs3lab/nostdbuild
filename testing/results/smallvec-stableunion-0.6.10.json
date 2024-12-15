@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": "none",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 0,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\n   Compiling smallvec-stableunion v0.6.10 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/smallvec-stableunion-0.6.10)\nwarning: use of deprecated function `core::mem::uninitialized`: use `mem::MaybeUninit` instead\n   --> lib.rs:344:54\n    |\n344 |                 data: SmallVecData::from_inline(mem::uninitialized()),\n    |                                                      ^^^^^^^^^^^^^\n    |\n    = note: `#[warn(deprecated)]` on by default\n\nwarning: use of deprecated function `core::mem::uninitialized`: use `mem::MaybeUninit` instead\n   --> lib.rs:385:68\n    |\n385 |                 let mut data = SmallVecData::<A>::from_inline(mem::uninitialized());\n    |                                                                    ^^^^^^^^^^^^^\n\nwarning: use of deprecated function `core::mem::uninitialized`: use `mem::MaybeUninit` instead\n   --> lib.rs:589:60\n    |\n589 |                 self.data = SmallVecData::from_inline(mem::uninitialized());\n    |                                                            ^^^^^^^^^^^^^\n\nwarning: use of deprecated function `core::mem::uninitialized`: use `mem::MaybeUninit` instead\n   --> lib.rs:655:60\n    |\n655 |                 self.data = SmallVecData::from_inline(mem::uninitialized());\n    |                                                            ^^^^^^^^^^^^^\n\nwarning: use of deprecated function `core::mem::uninitialized`: use `mem::MaybeUninit` instead\n   --> lib.rs:979:44\n    |\n979 |                     let mut data: A = mem::uninitialized();\n    |                                            ^^^^^^^^^^^^^\n\nwarning: `smallvec-stableunion` (lib) generated 5 warnings\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/smallvec-stableunion-0.6.10",
+    "time_to_build": 273,
+    "time_to_solve": 109
+  }
+]

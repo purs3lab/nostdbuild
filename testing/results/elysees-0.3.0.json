@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling elysees v0.3.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/elysees-0.3.0)\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n   --> src/arc.rs:215:9\n    |\n215 |         std::mem::forget(self);\n    |         ^^^ use of undeclared crate or module `std`\n    |\nhelp: consider importing this module\n    |\n1   + use core::mem;\n    |\nhelp: if you import `mem`, refer to it directly\n    |\n215 -         std::mem::forget(self);\n215 +         mem::forget(self);\n    |\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n   --> src/arc_ref.rs:212:9\n    |\n212 |         std::mem::forget(self);\n    |         ^^^ use of undeclared crate or module `std`\n    |\nhelp: consider importing this module\n    |\n1   + use core::mem;\n    |\nhelp: if you import `mem`, refer to it directly\n    |\n212 -         std::mem::forget(self);\n212 +         mem::forget(self);\n    |\n\nwarning: unused import: `core::alloc::Layout`\n --> src/arc.rs:2:5\n  |\n2 | use core::alloc::Layout;\n  |     ^^^^^^^^^^^^^^^^^^^\n  |\n  = note: `#[warn(unused_imports)]` on by default\n\nwarning: unused import: `core::slice`\n  --> src/arc.rs:14:5\n   |\n14 | use core::slice;\n   |     ^^^^^^^^^^^\n\nFor more information about this error, try `rustc --explain E0433`.\nwarning: `elysees` (lib) generated 2 warnings\nerror: could not compile `elysees` (lib) due to 2 previous errors; 2 warnings emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/elysees-0.3.0/src",
+    "time_to_build": 397,
+    "time_to_solve": 94
+  }
+]

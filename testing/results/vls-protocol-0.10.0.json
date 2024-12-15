@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling bitcoin_hashes v0.11.0\n   Compiling bech32 v0.9.1\n   Compiling secp256k1-sys v0.6.1\nThe following warnings were emitted during compilation:\n\nwarning: secp256k1-sys@0.6.1: Compiler family detection failed due to error: ToolNotFound: Failed to find tool. Is `arm-none-eabi-gcc` installed?\nwarning: secp256k1-sys@0.6.1: Compiler family detection failed due to error: ToolNotFound: Failed to find tool. Is `arm-none-eabi-gcc` installed?\n\nerror: failed to run custom build command for `secp256k1-sys v0.6.1`\n\nCaused by:\n  process didn't exit successfully: `/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/vls-protocol-0.10.0/target/debug/build/secp256k1-sys-ebcd29532331c47c/build-script-build` (exit status: 1)\n  --- stdout\n  OUT_DIR = Some(/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/vls-protocol-0.10.0/target/thumbv7m-none-eabi/debug/build/secp256k1-sys-f0df38050e80cb03/out)\n  OPT_LEVEL = Some(0)\n  TARGET = Some(thumbv7m-none-eabi)\n  HOST = Some(aarch64-apple-darwin)\n  cargo:rerun-if-env-changed=CC_thumbv7m-none-eabi\n  CC_thumbv7m-none-eabi = None\n  cargo:rerun-if-env-changed=CC_thumbv7m_none_eabi\n  CC_thumbv7m_none_eabi = None\n  cargo:rerun-if-env-changed=TARGET_CC\n  TARGET_CC = None\n  cargo:rerun-if-env-changed=CC\n  CC = None\n  cargo:rerun-if-env-changed=CROSS_COMPILE\n  CROSS_COMPILE = None\n  RUSTC_LINKER = None\n  cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT\n  cargo:warning=Compiler family detection failed due to error: ToolNotFound: Failed to find tool. Is `arm-none-eabi-gcc` installed?\n  RUSTC_WRAPPER = None\n  cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS\n  CRATE_CC_NO_DEFAULTS = None\n  DEBUG = Some(true)\n  CARGO_CFG_TARGET_FEATURE = None\n  cargo:rerun-if-env-changed=CFLAGS_thumbv7m-none-eabi\n  CFLAGS_thumbv7m-none-eabi = None\n  cargo:rerun-if-env-changed=CFLAGS_thumbv7m_none_eabi\n  CFLAGS_thumbv7m_none_eabi = None\n  cargo:rerun-if-env-changed=TARGET_CFLAGS\n  TARGET_CFLAGS = None\n  cargo:rerun-if-env-changed=CFLAGS\n  CFLAGS = None\n  CARGO_ENCODED_RUSTFLAGS = Some()\n  OUT_DIR = Some(/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/vls-protocol-0.10.0/target/thumbv7m-none-eabi/debug/build/secp256k1-sys-f0df38050e80cb03/out)\n  cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT\n  cargo:warning=Compiler family detection failed due to error: ToolNotFound: Failed to find tool. Is `arm-none-eabi-gcc` installed?\n  cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS\n  CRATE_CC_NO_DEFAULTS = None\n  TARGET = Some(thumbv7m-none-eabi)\n  CARGO_CFG_TARGET_FEATURE = None\n  HOST = Some(aarch64-apple-darwin)\n  cargo:rerun-if-env-changed=CFLAGS_thumbv7m-none-eabi\n  CFLAGS_thumbv7m-none-eabi = None\n  cargo:rerun-if-env-changed=CFLAGS_thumbv7m_none_eabi\n  CFLAGS_thumbv7m_none_eabi = None\n  cargo:rerun-if-env-changed=TARGET_CFLAGS\n  TARGET_CFLAGS = None\n  cargo:rerun-if-env-changed=CFLAGS\n  CFLAGS = None\n\n  --- stderr\n\n\n  error occurred in cc-rs: Failed to find tool. Is `arm-none-eabi-gcc` installed?\n\n\nwarning: build failed, waiting for other jobs to finish...\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/vls-protocol-0.10.0/src",
+    "time_to_build": 1139,
+    "time_to_solve": 59
+  }
+]

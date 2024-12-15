@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\n   Compiling elastic-array-plus v0.9.1\n   Compiling ethereum-hexutil v0.2.3\n   Compiling byteorder v1.5.0\nerror[E0432]: unresolved imports `alloc::String`, `alloc::Vec`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ethereum-hexutil-0.2.3/src/lib.rs:13:13\n   |\n13 | use alloc::{String, Vec};\n   |             ^^^^^^  ^^^ no `Vec` in the root\n   |             |\n   |             no `String` in the root\n   |\n   = help: consider importing this struct instead:\n           alloc::string::String\n   = help: consider importing this struct instead:\n           alloc::vec::Vec\nhelp: a similar name exists in the module (notice the capitalization difference)\n   |\n13 | use alloc::{string, Vec};\n   |             ~~~~~~\nhelp: a similar name exists in the module (notice the capitalization difference)\n   |\n13 | use alloc::{String, vec};\n   |                     ~~~\n\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ethereum-hexutil-0.2.3/src/lib.rs:2:35\n  |\n2 | #![cfg_attr(not(feature = \"std\"), feature(alloc))]\n  |                                   ^^^^^^^^^^^^^^\n\nerror[E0432]: unresolved import `alloc::Vec`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/elastic-array-plus-0.9.1/src/lib.rs:25:5\n   |\n25 | use alloc::Vec;\n   |     ^^^^^^^^^^ no `Vec` in the root\n   |\nhelp: a similar name exists in the module (notice the capitalization difference)\n   |\n25 | use alloc::vec;\n   |            ~~~\nhelp: consider importing one of these items instead\n   |\n25 | use ElasticArray1024Dummy::Vec;\n   |     ~~~~~~~~~~~~~~~~~~~~~~~~~~\n25 | use ElasticArray128Dummy::Vec;\n   |     ~~~~~~~~~~~~~~~~~~~~~~~~~\n25 | use ElasticArray16Dummy::Vec;\n   |     ~~~~~~~~~~~~~~~~~~~~~~~~\n25 | use ElasticArray2048Dummy::Vec;\n   |     ~~~~~~~~~~~~~~~~~~~~~~~~~~\n     and 9 other candidates\n\nSome errors have detailed explanations: E0432, E0554.\nFor more information about an error, try `rustc --explain E0432`.\nerror: could not compile `ethereum-hexutil` (lib) due to 2 previous errors\nwarning: build failed, waiting for other jobs to finish...\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/elastic-array-plus-0.9.1/src/lib.rs:2:35\n  |\n2 | #![cfg_attr(not(feature = \"std\"), feature(alloc))]\n  |                                   ^^^^^^^^^^^^^^\n\nerror: could not compile `elastic-array-plus` (lib) due to 2 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/ethereum-rlp-0.2.3/src",
+    "time_to_build": 340,
+    "time_to_solve": 86
+  }
+]

@@ -1,0 +1,24 @@
+[
+  {
+    "built_with_features": "align_selected",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "align_selected"
+      ],
+      "code": 101,
+      "stderr": "   Compiling strobe v0.2.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/strobe-0.2.0)\nerror[E0412]: cannot find type `Storage` in this scope\n  --> src/expr.rs:61:14\n   |\n61 |     storage: Storage<T, N>,\n   |              ^^^^^^^ not found in this scope\n\nerror[E0412]: cannot find type `Storage` in this scope\n   --> src/expr.rs:319:31\n    |\n319 | impl<T: Elem, const N: usize> Storage<T, N> {\n    |                               ^^^^^^^ not found in this scope\n\nerror[E0433]: failed to resolve: use of undeclared type `Storage`\n  --> src/expr.rs:70:22\n   |\n70 |             storage: Storage::new(v),\n   |                      ^^^^^^^ use of undeclared type `Storage`\n\nerror[E0425]: cannot find function, tuple struct or tuple variant `Storage` in this scope\n   --> src/expr.rs:180:40\n    |\n180 |                         self.storage = Storage([v; N]);\n    |                                        ^^^^^^^ not found in this scope\n\nerror: the `Self` constructor can only be used with tuple or unit structs\n   --> src/expr.rs:321:9\n    |\n321 |         Self([v; N])\n    |         ^^^^^^^^^^^^\n\nSome errors have detailed explanations: E0412, E0425, E0433.\nFor more information about an error, try `rustc --explain E0412`.\nerror: could not compile `strobe` (lib) due to 5 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/strobe-0.2.0/src",
+    "time_to_build": 141,
+    "time_to_solve": 114
+  }
+]

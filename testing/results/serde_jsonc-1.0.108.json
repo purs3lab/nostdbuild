@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling serde_jsonc v1.0.108 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/serde_jsonc-1.0.108)\nerror: expected item, found `\"serde_json requires that either `std` (default) or `alloc` feature is enabled\"`\n --> src/features_check/error.rs:1:1\n  |\n1 | \"serde_json requires that either `std` (default) or `alloc` feature is enabled\"\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror[E0004]: non-exhaustive patterns: `Value::String(_)` not covered\n   --> src/value/de.rs:216:15\n    |\n216 |         match self {\n    |               ^^^^ pattern `Value::String(_)` not covered\n    |\nnote: `Value` defined here\n   --> src/value/mod.rs:115:10\n    |\n115 | pub enum Value {\n    |          ^^^^^\n...\n150 |     String(String),\n    |     ------ not covered\n    = note: the matched value is of type `Value`\nhelp: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown\n    |\n223 ~             Value::Object(v) => visit_object(v, visitor),\n224 ~             Value::String(_) => todo!(),\n    |\n\nerror[E0004]: non-exhaustive patterns: `Cow::Owned(_)` not covered\n    --> src/value/de.rs:1338:15\n     |\n1338 |         match self.value {\n     |               ^^^^^^^^^^ pattern `Cow::Owned(_)` not covered\n     |\nnote: `Cow<'_, str>` defined here\n    --> /Users/graysonnocera/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/borrow.rs:180:1\n     |\n180  | pub enum Cow<'a, B: ?Sized + 'a>\n     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n...\n190  |     Owned(#[stable(feature = \"rust1\", since = \"1.0.0\")] <B as ToOwned>::Owned),\n     |     ----- not covered\n     = note: the matched value is of type `Cow<'_, str>`\nhelp: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown\n     |\n1339 ~             Cow::Borrowed(string) => visitor.visit_borrowed_str(string),\n1340 ~             Cow::Owned(_) => todo!(),\n     |\n\nerror[E0004]: non-exhaustive patterns: `&Value::Object(_)` not covered\n   --> src/value/ser.rs:17:15\n    |\n17  |         match self {\n    |               ^^^^ pattern `&Value::Object(_)` not covered\n    |\nnote: `Value` defined here\n   --> src/value/mod.rs:115:10\n    |\n115 | pub enum Value {\n    |          ^^^^^\n...\n174 |     Object(Map<String, Value>),\n    |     ------ not covered\n    = note: the matched value is of type `&Value`\nhelp: ensure that all possible cases are being handled by adding a match arm with a wildcard pattern or an explicit pattern as shown\n    |\n22  ~             Value::Array(v) => v.serialize(serializer),\n23  ~             &Value::Object(_) => todo!(),\n    |\n\nFor more information about this error, try `rustc --explain E0004`.\nerror: could not compile `serde_jsonc` (lib) due to 4 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/serde_jsonc-1.0.108/src",
+    "time_to_build": 11907,
+    "time_to_solve": 600
+  }
+]

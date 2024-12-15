@@ -1,0 +1,23 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling serde_single_or_vec2 v1.0.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/serde_single_or_vec2-1.0.0)\nerror: This crate requires either the std or the alloc feature\n   --> src/lib.rs:134:1\n    |\n134 | core::compile_error!(\"This crate requires either the std or the alloc feature\");\n    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nerror[E0432]: unresolved imports `serde::__private::de::Content`, `serde::__private::de::ContentRefDeserializer`\n   --> src/lib.rs:146:21\n    |\n146 |     __private::de::{Content, ContentRefDeserializer},\n    |                     ^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^ no `ContentRefDeserializer` in `__private::de`\n    |                     |\n    |                     no `Content` in `__private::de`\n    |\nnote: found an item that was configured out\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.215/src/private/de.rs:14:5\n    |\n14  |     Content, ContentDeserializer, ContentRefDeserializer, EnumDeserializer,\n    |     ^^^^^^^\nnote: the item is gated here\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.215/src/private/de.rs:12:1\n    |\n12  | #[cfg(any(feature = \"std\", feature = \"alloc\"))]\n    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nnote: found an item that was configured out\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.215/src/private/de.rs:14:35\n    |\n14  |     Content, ContentDeserializer, ContentRefDeserializer, EnumDeserializer,\n    |                                   ^^^^^^^^^^^^^^^^^^^^^^\nnote: the item is gated here\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.215/src/private/de.rs:12:1\n    |\n12  | #[cfg(any(feature = \"std\", feature = \"alloc\"))]\n    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nerror: cannot find macro `vec` in this scope\n   --> src/lib.rs:184:20\n    |\n184 |         Cow::Owned(vec![ty])\n    |                    ^^^\n\nerror: cannot find macro `vec` in this scope\n   --> src/lib.rs:172:9\n    |\n172 |         vec![ty]\n    |         ^^^\n\nerror[E0412]: cannot find type `Vec` in this scope\n   --> src/lib.rs:168:28\n    |\n168 | impl<T> Storage<'_, T> for Vec<T> {\n    |                            ^^^ not found in this scope\n\nerror[E0412]: cannot find type `Cow` in this scope\n   --> src/lib.rs:180:44\n    |\n180 | impl<'a, T: 'a + Clone> Storage<'a, T> for Cow<'a, [T]> {\n    |                                            ^^^ not found in this scope\n\nerror[E0412]: cannot find type `Vec` in this scope\n   --> src/lib.rs:222:77\n    |\n222 | pub struct SingleOrVec<'a, T, F: Format = PreferSingle, S: Storage<'a, T> = Vec<T>> {\n    |                                                                             ^^^ not found in this scope\n\nerror[E0433]: failed to resolve: use of undeclared type `Cow`\n   --> src/lib.rs:184:9\n    |\n184 |         Cow::Owned(vec![ty])\n    |         ^^^ use of undeclared type `Cow`\n\nSome errors have detailed explanations: E0412, E0432, E0433.\nFor more information about an error, try `rustc --explain E0412`.\nerror: could not compile `serde_single_or_vec2` (lib) due to 8 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std",
+      "alloc"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/serde_single_or_vec2-1.0.0/src",
+    "time_to_build": 9250,
+    "time_to_solve": 31
+  }
+]

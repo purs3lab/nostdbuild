@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling rust_cfg_parser v0.1.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/rust_cfg_parser-0.1.0)\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n  --> src/lib.rs:31:5\n   |\n31 | use std::fmt::{Display, Formatter};\n   |     ^^^ use of undeclared crate or module `std`\n\nerror[E0432]: unresolved import `std`\n  --> src/lib.rs:30:5\n   |\n30 | use std::fmt;\n   |     ^^^ use of undeclared crate or module `std`\n\nerror: cannot find macro `vec` in this scope\n   --> src/lib.rs:226:49\n    |\n226 |                 let mut entries: Vec<CfgExpr> = vec![];\n    |                                                 ^^^\n    |\nhelp: consider importing this macro\n    |\n29  + use alloc::vec;\n    |\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n  --> src/lib.rs:78:6\n   |\n78 | impl std::error::Error for CfgParseError {}\n   |      ^^^ use of undeclared crate or module `std`\n   |\nhelp: consider importing this module\n   |\n29 + use core::error;\n   |\nhelp: if you import `error`, refer to it directly\n   |\n78 - impl std::error::Error for CfgParseError {}\n78 + impl error::Error for CfgParseError {}\n   |\n\nSome errors have detailed explanations: E0432, E0433.\nFor more information about an error, try `rustc --explain E0432`.\nerror: could not compile `rust_cfg_parser` (lib) due to 4 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/rust_cfg_parser-0.1.0/src",
+    "time_to_build": 190,
+    "time_to_solve": 35
+  }
+]

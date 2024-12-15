@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling sweeper v0.3.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/sweeper-0.3.1)\nerror[E0433]: failed to resolve: use of undeclared type `Vec`\n   --> src/tile.rs:139:25\n    |\n139 |         let mut stack = Vec::<StackFrame>::with_capacity(10);\n    |                         ^^^ use of undeclared type `Vec`\n...\n226 |         for_every_tile!(self.field, self.anchor_location, f, include_shore);\n    |         ------------------------------------------------------------------- in this macro invocation\n    |\n    = note: this error originates in the macro `for_every_tile` (in Nightly builds, run with -Z macro-backtrace for more info)\nhelp: consider importing this struct\n    |\n1   + use alloc::vec::Vec;\n    |\n\nerror[E0433]: failed to resolve: use of undeclared type `Vec`\n   --> src/tile.rs:139:25\n    |\n139 |         let mut stack = Vec::<StackFrame>::with_capacity(10);\n    |                         ^^^ use of undeclared type `Vec`\n...\n283 |         for_every_tile!(self.field, self.anchor_location, f, include_shore);\n    |         ------------------------------------------------------------------- in this macro invocation\n    |\n    = note: this error originates in the macro `for_every_tile` (in Nightly builds, run with -Z macro-backtrace for more info)\nhelp: consider importing this struct\n    |\n1   + use alloc::vec::Vec;\n    |\n\nerror[E0433]: failed to resolve: use of undeclared type `Vec`\n   --> src/tile.rs:139:25\n    |\n139 |         let mut stack = Vec::<StackFrame>::with_capacity(10);\n    |                         ^^^ use of undeclared type `Vec`\n...\n291 |         for_every_tile!(self.field, self.anchor_location, f, include_shore);\n    |         ------------------------------------------------------------------- in this macro invocation\n    |\n    = note: this error originates in the macro `for_every_tile` (in Nightly builds, run with -Z macro-backtrace for more info)\nhelp: consider importing this struct\n    |\n1   + use alloc::vec::Vec;\n    |\n\nwarning: unused attribute\n   --> src/field.rs:435:5\n    |\n435 |     #[inline(always)]\n    |     ^^^^^^^^^^^^^^^^^ help: remove this attribute\n    |\nnote: attribute also specified here\n   --> src/field.rs:430:5\n    |\n430 |     #[inline(always)]\n    |     ^^^^^^^^^^^^^^^^^\n    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!\n    = note: `#[warn(unused_attributes)]` on by default\n\nFor more information about this error, try `rustc --explain E0433`.\nwarning: `sweeper` (lib) generated 1 warning\nerror: could not compile `sweeper` (lib) due to 3 previous errors; 1 warning emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/sweeper-0.3.1/src",
+    "time_to_build": 1078,
+    "time_to_solve": 66
+  }
+]

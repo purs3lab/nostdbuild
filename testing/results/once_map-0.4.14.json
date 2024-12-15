@@ -1,0 +1,25 @@
+[
+  {
+    "built_with_features": "ahash",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "ahash"
+      ],
+      "code": 0,
+      "stderr": "warning: struct `PhantomUnsend` is never constructed\n   --> src/lib.rs:164:8\n    |\n164 | struct PhantomUnsend(core::marker::PhantomData<*const ()>);\n    |        ^^^^^^^^^^^^^\n    |\n    = note: `#[warn(dead_code)]` on by default\n\nwarning: field `0` is never read\n   --> src/map.rs:218:14\n    |\n218 |     Occupied(OccupiedEntry<'a, K, V>),\n    |     -------- ^^^^^^^^^^^^^^^^^^^^^^^\n    |     |\n    |     field in this variant\n    |\nhelp: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field\n    |\n218 |     Occupied(()),\n    |              ~~\n\nwarning: field `0` is never read\n   --> src/map.rs:221:36\n    |\n221 | pub struct OccupiedEntry<'a, K, V>(hash_table::OccupiedEntry<'a, (K, V)>);\n    |            -------------           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |            |\n    |            field in this struct\n    |\n    = help: consider removing this field\n\nwarning: method `get` is never used\n   --> src/map.rs:225:12\n    |\n223 | impl<'a, K, V> OccupiedEntry<'a, K, V> {\n    | -------------------------------------- method in this implementation\n224 |     #[inline]\n225 |     pub fn get(&self) -> &V {\n    |            ^^^\n\nwarning: `once_map` (lib) generated 4 warnings\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std",
+      "ahash"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/once_map-0.4.14/src",
+    "time_to_build": 57,
+    "time_to_solve": 95
+  }
+]

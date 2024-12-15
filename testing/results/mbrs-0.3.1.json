@@ -1,0 +1,23 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling mbrs v0.3.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/mbrs-0.3.1)\nerror: cannot find derive macro `Error` in this scope\n   --> src/lib.rs:468:51\n    |\n468 | #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Error)]\n    |                                                   ^^^^^\n\nerror: cannot find attribute `error` in this scope\n   --> src/lib.rs:470:7\n    |\n470 |     #[error(\"the `bootable` value {0:#X} of the partition is invalid. Set to 0x80 for bootable and 0x00 for non-bootable.\")]\n    |       ^^^^^\n\nerror: cannot find attribute `error` in this scope\n   --> src/lib.rs:472:7\n    |\n472 |     #[error(\"the partition type is unknown.\")]\n    |       ^^^^^\n\nerror: cannot find attribute `error` in this scope\n   --> src/lib.rs:474:7\n    |\n474 |     #[error(\"the partition type is {0:?} is not valid for MBR.\")]\n    |       ^^^^^\n\nerror: cannot find derive macro `Error` in this scope\n   --> src/lib.rs:715:38\n    |\n715 | #[derive(Debug, PartialEq, Eq, Hash, Error)]\n    |                                      ^^^^^\n\nerror: cannot find attribute `error` in this scope\n   --> src/lib.rs:717:7\n    |\n717 |     #[error(\"can't create partition type from value {part_id:#X}. If you think this value should be valid please open an issue.\")]\n    |       ^^^^^\n\nerror: cannot find attribute `error` in this scope\n   --> src/lib.rs:719:7\n    |\n719 |     #[error(\"an MBR is 512 bytes long, however the input size was only {input_size} bytes long. Couldn't read {error_location}\")]\n    |       ^^^^^\n\nerror: cannot find attribute `error` in this scope\n   --> src/lib.rs:724:7\n    |\n724 |     #[error(\"the null sector in the provided MBR should be identically 0 or contain 0x5A 0x5A, but it contains {:#X} {:#X}\", val[0], val[...\n    |       ^^^^^\n\nerror: cannot find attribute `error` in this scope\n   --> src/lib.rs:729:7\n    |\n729 |     #[error(\"a valid MBR should contain a bootsector signature of 0x55, 0xAA at addresses 0x01FE, 0x01FF, but it contains {:#X} {:#X}\", s...\n    |       ^^^^^\n\nerror: cannot find attribute `error` in this scope\n   --> src/lib.rs:731:7\n    |\n731 |     #[error(\"too many missing fields in input, can't deduce remaining fields\")]\n    |       ^^^^^\n\nerror: cannot find attribute `error` in this scope\n   --> src/lib.rs:733:7\n    |\n733 |     #[error(\"a MBR-based CHS partition can't support CHS address ({cylinder}, {head}, {sector}). Consider switching to LBA or making the ...\n    |       ^^^^^\n\nerror: cannot find attribute `error` in this scope\n   --> src/lib.rs:739:7\n    |\n739 |     #[error(\"the given partition information is inconsistent: there can be no partition of size {size}s starting at {start}s and ending a...\n    |       ^^^^^\n\nerror: cannot find attribute `error` in this scope\n   --> src/lib.rs:741:7\n    |\n741 |     #[error(\"you attempted to create a partition with a negative size or address\")]\n    |       ^^^^^\n\nerror[E0277]: `MbrError` doesn't implement `Display`\n   --> src/lib.rs:318:48\n    |\n318 |                 panic!(\"Unexpected error: {}\", e)\n    |                                                ^ `MbrError` cannot be formatted with the default formatter\n    |\n    = help: the trait `Display` is not implemented for `MbrError`\n    = note: in format strings you may be able to use `{:?}` (or {:#?} for pretty-print) instead\n    = note: this error originates in the macro `$crate::const_format_args` which comes from the expansion of the macro `panic` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nFor more information about this error, try `rustc --explain E0277`.\nerror: could not compile `mbrs` (lib) due to 14 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std",
+      "no-std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/mbrs-0.3.1/src",
+    "time_to_build": 213,
+    "time_to_solve": 51
+  }
+]

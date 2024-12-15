@@ -1,0 +1,21 @@
+[
+  {
+    "built_with_features": "default",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi"
+      ],
+      "code": 0,
+      "stderr": "warning: variable does not need to be mutable\n   --> src/ota/state.rs:189:36\n    |\n189 |         let file_ctx = if let Some(mut file_ctx) = cur_file_ctx {\n    |                                    ----^^^^^^^^\n    |                                    |\n    |                                    help: remove this `mut`\n    |\n    = note: `#[warn(unused_mut)]` on by default\n\nwarning: method `into_result` is never used\n   --> src/fmt.rs:226:8\n    |\n223 | pub trait Try {\n    |           --- method in this trait\n...\n226 |     fn into_result(self) -> Result<Self::Ok, Self::Error>;\n    |        ^^^^^^^^^^^\n    |\n    = note: `#[warn(dead_code)]` on by default\n\nwarning: `rustot` (lib) generated 2 warnings (run `cargo fix --lib -p rustot` to apply 1 suggestion)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/rustot-0.4.1/src",
+    "time_to_build": 93,
+    "time_to_solve": 292
+  }
+]

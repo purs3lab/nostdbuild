@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\n   Compiling nb v0.1.3\n   Compiling embedded-hal v0.2.7\n   Compiling max7301 v0.3.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/max7301-0.3.0)\nerror[E0432]: unresolved import `hal::digital::v2::InputPin`\n   --> src/expander/pin.rs:3:5\n    |\n3   | use hal::digital::v2::InputPin;\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^ no `InputPin` in `digital::v2`\n    |\nnote: found an item that was configured out\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-hal-0.2.7/src/digital/v2.rs:180:11\n    |\n180 | pub trait InputPin {\n    |           ^^^^^^^^\nnote: the item is gated behind the `unproven` feature\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/embedded-hal-0.2.7/src/digital/v2.rs:179:7\n    |\n179 | #[cfg(feature = \"unproven\")]\n    |       ^^^^^^^^^^^^^^^^^^^^\n\nerror[E0432]: unresolved import `mutex::DefaultMutex`\n   --> src/lib.rs:214:17\n    |\n214 | pub use mutex::{DefaultMutex, IOMutex};\n    |                 ^^^^^^^^^^^^ no `DefaultMutex` in `mutex`\n    |\nnote: found an item that was configured out\n   --> src/mutex.rs:23:10\n    |\n23  | pub type DefaultMutex<T> = std::sync::Mutex<T>;\n    |          ^^^^^^^^^^^^\nnote: the item is gated behind the `std` feature\n   --> src/mutex.rs:22:7\n    |\n22  | #[cfg(feature = \"std\")]\n    |       ^^^^^^^^^^^^^^^\nnote: found an item that was configured out\n   --> src/mutex.rs:26:10\n    |\n26  | pub type DefaultMutex<T> = cortex_m::interrupt::Mutex<core::cell::RefCell<T>>;\n    |          ^^^^^^^^^^^^\nnote: the item is gated behind the `cortexm` feature\n   --> src/mutex.rs:25:7\n    |\n25  | #[cfg(feature = \"cortexm\")]\n    |       ^^^^^^^^^^^^^^^^^^^\n\nerror[E0223]: ambiguous associated type\n  --> src/expander/pin.rs:55:39\n   |\n55 |     fn is_high(&self) -> Result<bool, Self::Error> {\n   |                                       ^^^^^^^^^^^\n   |\nhelp: use fully-qualified syntax\n   |\n55 |     fn is_high(&self) -> Result<bool, <PortPin<'io, IO> as TryFrom>::Error> {\n   |                                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n55 |     fn is_high(&self) -> Result<bool, <PortPin<'io, IO> as TryInto>::Error> {\n   |                                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n55 |     fn is_high(&self) -> Result<bool, <PortPin<'io, IO> as _embedded_hal_blocking_serial_Write>::Error> {\n   |                                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n55 |     fn is_high(&self) -> Result<bool, <PortPin<'io, IO> as _embedded_hal_blocking_spi_Transfer>::Error> {\n   |                                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n     and 2 other candidates\n\nerror[E0223]: ambiguous associated type\n  --> src/expander/pin.rs:58:38\n   |\n58 |     fn is_low(&self) -> Result<bool, Self::Error> {\n   |                                      ^^^^^^^^^^^\n   |\nhelp: use fully-qualified syntax\n   |\n58 |     fn is_low(&self) -> Result<bool, <PortPin<'io, IO> as TryFrom>::Error> {\n   |                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n58 |     fn is_low(&self) -> Result<bool, <PortPin<'io, IO> as TryInto>::Error> {\n   |                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n58 |     fn is_low(&self) -> Result<bool, <PortPin<'io, IO> as _embedded_hal_blocking_serial_Write>::Error> {\n   |                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n58 |     fn is_low(&self) -> Result<bool, <PortPin<'io, IO> as _embedded_hal_blocking_spi_Transfer>::Error> {\n   |                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n     and 2 other candidates\n\nSome errors have detailed explanations: E0223, E0432.\nFor more information about an error, try `rustc --explain E0223`.\nerror: could not compile `max7301` (lib) due to 4 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/max7301-0.3.0/src",
+    "time_to_build": 263,
+    "time_to_solve": 84
+  }
+]

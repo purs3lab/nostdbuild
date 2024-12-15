@@ -1,0 +1,25 @@
+[
+  {
+    "built_with_features": "spin-lock",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "spin-lock"
+      ],
+      "code": 101,
+      "stderr": "   Compiling unimock v0.5.8 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/unimock-0.5.8)\nerror[E0432]: unresolved import `once_cell::sync`\n   --> src/value_chain.rs:2:16\n    |\n2   | use once_cell::sync::OnceCell;\n    |                ^^^^ could not find `sync` in `once_cell`\n    |\nnote: found an item that was configured out\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/once_cell-1.20.2/src/lib.rs:863:9\n    |\n863 | pub mod sync {\n    |         ^^^^\nnote: the item is gated here\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/once_cell-1.20.2/src/lib.rs:862:1\n    |\n862 | #[cfg(any(feature = \"std\", feature = \"critical-section\"))]\n    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nerror[E0432]: unresolved import `once_cell::sync`\n   --> src/lib.rs:481:16\n    |\n481 | use once_cell::sync::OnceCell;\n    |                ^^^^ could not find `sync` in `once_cell`\n    |\nnote: found an item that was configured out\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/once_cell-1.20.2/src/lib.rs:863:9\n    |\n863 | pub mod sync {\n    |         ^^^^\nnote: the item is gated here\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/once_cell-1.20.2/src/lib.rs:862:1\n    |\n862 | #[cfg(any(feature = \"std\", feature = \"critical-section\"))]\n    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nFor more information about this error, try `rustc --explain E0432`.\nerror: could not compile `unimock` (lib) due to 2 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std",
+      "spin-lock"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/unimock-0.5.8/src",
+    "time_to_build": 283,
+    "time_to_solve": 167
+  }
+]

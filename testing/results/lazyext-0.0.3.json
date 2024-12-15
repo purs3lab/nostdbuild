@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling lazyext v0.0.3 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/lazyext-0.0.3)\nerror[E0432]: unresolved import `lazyext_slice`\n --> src/lib.rs:9:9\n  |\n9 | pub use lazyext_slice as slice_ext;\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^ no external crate `lazyext_slice`\n\nFor more information about this error, try `rustc --explain E0432`.\nerror: could not compile `lazyext` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/lazyext-0.0.3/src",
+    "time_to_build": 173,
+    "time_to_solve": 6
+  }
+]

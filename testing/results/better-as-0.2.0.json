@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling better-as v0.2.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/better-as-0.2.0)\nerror[E0599]: no method named `trunc` found for type `f32` in the current scope\n   --> src/number.rs:171:25\n    |\n171 |                 if self.trunc().to_bits() != self.to_bits() {\n    |                         ^^^^^ method not found in `f32`\n...\n377 | checked_cast!(f32 => u8);\n    | ------------------------ in this macro invocation\n    |\n    = note: this error originates in the macro `checked_cast` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nerror[E0599]: no method named `trunc` found for type `f32` in the current scope\n   --> src/number.rs:171:25\n    |\n171 |                 if self.trunc().to_bits() != self.to_bits() {\n    |                         ^^^^^ method not found in `f32`\n...\n378 | checked_cast!(f32 => u16);\n    | ------------------------- in this macro invocation\n    |\n    = note: this error originates in the macro `checked_cast` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nerror[E0599]: no method named `trunc` found for type `f32` in the current scope\n   --> src/number.rs:171:25\n    |\n171 |                 if self.trunc().to_bits() != self.to_bits() {\n    |                         ^^^^^ method not found in `f32`\n...\n379 | checked_cast!(f32 => i8);\n    | ------------------------ in this macro invocation\n    |\n    = note: this error originates in the macro `checked_cast` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nerror[E0599]: no method named `trunc` found for type `f32` in the current scope\n   --> src/number.rs:171:25\n    |\n171 |                 if self.trunc().to_bits() != self.to_bits() {\n    |                         ^^^^^ method not found in `f32`\n...\n380 | checked_cast!(f32 => i16);\n    | ------------------------- in this macro invocation\n    |\n    = note: this error originates in the macro `checked_cast` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nerror[E0599]: no method named `trunc` found for type `f64` in the current scope\n   --> src/number.rs:190:25\n    |\n190 |                 if self.trunc().to_bits() != self.to_bits() {\n    |                         ^^^^^ method not found in `f64`\n...\n385 | checked_cast!(f64 => u8);\n    | ------------------------ in this macro invocation\n    |\n    = note: this error originates in the macro `checked_cast` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nerror[E0599]: no method named `trunc` found for type `f64` in the current scope\n   --> src/number.rs:190:25\n    |\n190 |                 if self.trunc().to_bits() != self.to_bits() {\n    |                         ^^^^^ method not found in `f64`\n...\n386 | checked_cast!(f64 => u16);\n    | ------------------------- in this macro invocation\n    |\n    = note: this error originates in the macro `checked_cast` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nerror[E0599]: no method named `trunc` found for type `f64` in the current scope\n   --> src/number.rs:190:25\n    |\n190 |                 if self.trunc().to_bits() != self.to_bits() {\n    |                         ^^^^^ method not found in `f64`\n...\n387 | checked_cast!(f64 => i8);\n    | ------------------------ in this macro invocation\n    |\n    = note: this error originates in the macro `checked_cast` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nerror[E0599]: no method named `trunc` found for type `f64` in the current scope\n   --> src/number.rs:190:25\n    |\n190 |                 if self.trunc().to_bits() != self.to_bits() {\n    |                         ^^^^^ method not found in `f64`\n...\n388 | checked_cast!(f64 => i16);\n    | ------------------------- in this macro invocation\n    |\n    = note: this error originates in the macro `checked_cast` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nFor more information about this error, try `rustc --explain E0599`.\nerror: could not compile `better-as` (lib) due to 8 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/better-as-0.2.0/src",
+    "time_to_build": 746,
+    "time_to_solve": 25
+  }
+]

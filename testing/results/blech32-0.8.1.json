@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\n   Compiling blech32 v0.8.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/blech32-0.8.1)\nerror: cannot find macro `eprintln` in this scope\n   --> src/lib.rs:217:17\n    |\n217 |                 eprintln!(\"Unhandled error writing the checksum on drop: {}\", e);\n    |                 ^^^^^^^^\n\nerror: could not compile `blech32` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/blech32-0.8.1/src",
+    "time_to_build": 228,
+    "time_to_solve": 48
+  }
+]

@@ -1,0 +1,21 @@
+[
+  {
+    "built_with_features": "default",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi"
+      ],
+      "code": 0,
+      "stderr": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s\n",
+      "stdout": ""
+    },
+    "features": [
+      "with_std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/bme280-0.5.0/src",
+    "time_to_build": 66,
+    "time_to_solve": 59
+  }
+]

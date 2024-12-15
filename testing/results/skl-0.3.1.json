@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling getrandom v0.2.10\n   Compiling bytes v1.4.0\n   Compiling syn v1.0.109\nerror: target is not supported, for more information see: https://docs.rs/getrandom/#unsupported-targets\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/getrandom-0.2.10/src/lib.rs:290:9\n    |\n290 | /         compile_error!(\"target is not supported, for more information see: \\\n291 | |                         https://docs.rs/getrandom/#unsupported-targets\");\n    | |________________________________________________________________________^\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `imp`\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/getrandom-0.2.10/src/lib.rs:341:9\n    |\n341 |         imp::getrandom_inner(dest)?;\n    |         ^^^ use of undeclared crate or module `imp`\n\nFor more information about this error, try `rustc --explain E0433`.\nerror: could not compile `getrandom` (lib) due to 2 previous errors\nwarning: build failed, waiting for other jobs to finish...\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/skl-0.3.1/src",
+    "time_to_build": 1886,
+    "time_to_solve": 116
+  }
+]

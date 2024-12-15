@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling sr-std v1.0.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/sr-std-1.0.1)\nerror[E0432]: unresolved import `alloc`\n  --> src/../without_std.rs:48:9\n   |\n48 | pub use alloc::boxed;\n   |         ^^^^^ help: a similar path exists: `core::alloc`\n\nerror[E0432]: unresolved import `alloc`\n  --> src/../without_std.rs:49:9\n   |\n49 | pub use alloc::rc;\n   |         ^^^^^ help: a similar path exists: `core::alloc`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `alloc`\n  --> src/../without_std.rs:71:10\n   |\n71 |     pub use alloc::collections::btree_map;\n   |             ^^^^^ use of undeclared crate or module `alloc`\n   |\n   = help: add `extern crate alloc` to use the `alloc` crate\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `alloc`\n  --> src/../without_std.rs:72:10\n   |\n72 |     pub use alloc::collections::btree_set;\n   |             ^^^^^ use of undeclared crate or module `alloc`\n   |\n   = help: add `extern crate alloc` to use the `alloc` crate\n\nerror[E0432]: unresolved import `alloc`\n  --> src/../without_std.rs:50:9\n   |\n50 | pub use alloc::vec;\n   |         ^^^^^ help: a similar path exists: `core::alloc`\n\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n  --> src/lib.rs:21:35\n   |\n21 | #![cfg_attr(not(feature = \"std\"), feature(core_intrinsics))]\n   |                                   ^^^^^^^^^^^^^^^^^^^^^^^^\n\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n  --> src/lib.rs:22:35\n   |\n22 | #![cfg_attr(not(feature = \"std\"), feature(alloc))]\n   |                                   ^^^^^^^^^^^^^^\n\nwarning: the feature `core_intrinsics` is internal to the compiler or standard library\n  --> src/lib.rs:21:43\n   |\n21 | #![cfg_attr(not(feature = \"std\"), feature(core_intrinsics))]\n   |                                           ^^^^^^^^^^^^^^^\n   |\n   = note: using it is strongly discouraged\n   = note: `#[warn(internal_features)]` on by default\n\nerror[E0635]: unknown feature `alloc`\n  --> src/lib.rs:22:43\n   |\n22 | #![cfg_attr(not(feature = \"std\"), feature(alloc))]\n   |                                           ^^^^^\n\nSome errors have detailed explanations: E0432, E0433, E0554, E0635.\nFor more information about an error, try `rustc --explain E0432`.\nwarning: `sr-std` (lib) generated 1 warning\nerror: could not compile `sr-std` (lib) due to 8 previous errors; 1 warning emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/sr-std-1.0.1/src",
+    "time_to_build": 420,
+    "time_to_solve": 11
+  }
+]

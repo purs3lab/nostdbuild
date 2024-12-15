@@ -1,0 +1,24 @@
+[
+  {
+    "built_with_features": "mesalock_sgx",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "mesalock_sgx"
+      ],
+      "code": 101,
+      "stderr": "error: Package `gbdt v0.1.3 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/gbdt-0.1.3)` does not have the feature `mesalock_sgx`\n",
+      "stdout": ""
+    },
+    "features": [
+      "mesalock_sgx"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/gbdt-0.1.3/src",
+    "time_to_build": 84,
+    "time_to_solve": 185
+  }
+]

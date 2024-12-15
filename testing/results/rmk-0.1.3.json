@@ -1,0 +1,20 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling usbd-hid-macros v0.6.0\n   Compiling usb-device v0.2.9\n   Compiling embedded-hal v1.0.0\n   Compiling embassy-futures v0.1.1\n   Compiling embassy-sync v0.5.0\n   Compiling embassy-usb-driver v0.1.0\nerror[E0277]: the trait bound `usbd_hid_descriptors::MainItemKind: From<std::string::String>` is not satisfied\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/usbd-hid-macros-0.6.0/src/spec.rs:512:43\n    |\n512 |             self.set_item(name, item_kind.into(), settings, bits, quirks);\n    |                                           ^^^^ the trait `From<std::string::String>` is not implemented for `usbd_hid_descriptors::MainItemKind`, which is required by `std::string::String: Into<_>`\n    |\n    = help: the trait `From<&str>` is implemented for `usbd_hid_descriptors::MainItemKind`\n    = help: for that trait implementation, expected `&str`, found `std::string::String`\n    = note: required for `std::string::String` to implement `Into<usbd_hid_descriptors::MainItemKind>`\n\n   Compiling embassy-net-driver-channel v0.2.0\nFor more information about this error, try `rustc --explain E0277`.\nerror: could not compile `usbd-hid-macros` (lib) due to 1 previous error\nwarning: build failed, waiting for other jobs to finish...\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/rmk-0.1.3/src",
+    "time_to_build": 1140,
+    "time_to_solve": 156
+  }
+]

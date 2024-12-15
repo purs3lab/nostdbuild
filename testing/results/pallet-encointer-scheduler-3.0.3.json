@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "error: failed to create directory `/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/pallet-encointer-scheduler-3.0.3/target/thumbv7m-none-eabi/debug/.fingerprint/pallet-encointer-scheduler-305f611021f4d4f9`\n\nCaused by:\n  No space left on device (os error 28)\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/pallet-encointer-scheduler-3.0.3/src",
+    "time_to_build": 813,
+    "time_to_solve": 37
+  }
+]

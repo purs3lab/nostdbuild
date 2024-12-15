@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling syn v1.0.109\n   Compiling higher-derive v0.2.0\n   Compiling higher v0.2.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/higher-0.2.0)\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n --> src/effect.rs:1:5\n  |\n1 | use std::future::IntoFuture;\n  |     ^^^ use of undeclared crate or module `std`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `futures`\n --> src/effect.rs:3:5\n  |\n3 | use futures::{executor::LocalPool, future::LocalBoxFuture, Future};\n  |     ^^^^^^^ use of undeclared crate or module `futures`\n\nerror[E0432]: unresolved import `futures`\n --> src/effect.rs:3:5\n  |\n3 | use futures::{executor::LocalPool, future::LocalBoxFuture, Future};\n  |     ^^^^^^^ use of undeclared crate or module `futures`\n\nerror: cannot find macro `format` in this scope\n  --> src/apply.rs:31:22\n   |\n31 |         f.write_str(&format!(\n   |                      ^^^^^^\n\nerror: cannot find macro `format` in this scope\n  --> src/effect.rs:61:22\n   |\n61 |         f.write_str(&format!(\"Effect<{}>\", std::any::type_name::<A>()))\n   |                      ^^^^^^\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n   --> src/apply.rs:107:19\n    |\n107 |     let fun_ref = std::rc::Rc::new(fun);\n    |                   ^^^ use of undeclared crate or module `std`\n\nerror[E0412]: cannot find type `Vec` in this scope\n  --> src/bifunctor.rs:56:36\n   |\n56 | impl<A, B> Bifunctor<'_, A, B> for Vec<(A, B)> {\n   |                                    ^^^ not found in this scope\n\nerror[E0412]: cannot find type `Vec` in this scope\n  --> src/bifunctor.rs:57:25\n   |\n57 |     type Target<T, U> = Vec<(T, U)>;\n   |                         ^^^ not found in this scope\n\nerror[E0412]: cannot find type `Box` in this scope\n --> src/apply.rs:8:15\n  |\n8 |     function: Box<dyn Fn(A) -> B + 'a>,\n  |               ^^^ not found in this scope\n\nerror[E0433]: failed to resolve: use of undeclared type `Box`\n  --> src/apply.rs:24:23\n   |\n24 |             function: Box::new(f),\n   |                       ^^^ use of undeclared type `Box`\n\nerror[E0433]: failed to resolve: use of undeclared type `Box`\n  --> src/effect.rs:81:21\n   |\n81 |             future: Box::pin(future),\n   |                     ^^^ use of undeclared type `Box`\n\nSome errors have detailed explanations: E0412, E0432, E0433.\nFor more information about an error, try `rustc --explain E0412`.\nerror: could not compile `higher` (lib) due to 11 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/higher-0.2.0/src",
+    "time_to_build": 1757,
+    "time_to_solve": 73
+  }
+]

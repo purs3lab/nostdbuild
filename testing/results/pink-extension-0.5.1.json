@@ -1,0 +1,25 @@
+[
+  {
+    "built_with_features": "dlmalloc",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "dlmalloc"
+      ],
+      "code": 101,
+      "stderr": "   Compiling ink_allocator v4.3.0\n   Compiling dlmalloc v0.2.7\nerror: ink! only supports wasm32 and riscv32\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-4.3.0/src/bump.rs:147:13\n    |\n147 |             core::compile_error!(\"ink! only supports wasm32 and riscv32\");\n    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nerror[E0432]: unresolved import `crate::sys::enable_alloc_after_fork`\n --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dlmalloc-0.2.7/src/global.rs:5:9\n  |\n5 | pub use crate::sys::enable_alloc_after_fork;\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `enable_alloc_after_fork` in `sys`\n\nerror[E0425]: cannot find function `acquire_global_lock` in module `crate::sys`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dlmalloc-0.2.7/src/global.rs:46:17\n   |\n46 |     crate::sys::acquire_global_lock();\n   |                 ^^^^^^^^^^^^^^^^^^^ not found in `crate::sys`\n\nerror[E0425]: cannot find function `release_global_lock` in module `crate::sys`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dlmalloc-0.2.7/src/global.rs:51:25\n   |\n51 |             crate::sys::release_global_lock()\n   |                         ^^^^^^^^^^^^^^^^^^^ not found in `crate::sys`\n\nerror[E0599]: no function or associated item named `heap_start` found for struct `InnerAlloc` in the current scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-4.3.0/src/bump.rs:71:25\n   |\n60 | struct InnerAlloc {\n   | ----------------- function or associated item `heap_start` not found for this struct\n...\n71 |             next: Self::heap_start(),\n   |                         ^^^^^^^^^^ function or associated item not found in `InnerAlloc`\n   |\nnote: if you're trying to build a new `InnerAlloc`, consider using `InnerAlloc::new` which returns `InnerAlloc`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-4.3.0/src/bump.rs:69:5\n   |\n69 |     const fn new() -> Self {\n   |     ^^^^^^^^^^^^^^^^^^^^^^\n\nerror[E0599]: no function or associated item named `heap_end` found for struct `InnerAlloc` in the current scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-4.3.0/src/bump.rs:72:32\n   |\n60 | struct InnerAlloc {\n   | ----------------- function or associated item `heap_end` not found for this struct\n...\n72 |             upper_limit: Self::heap_end(),\n   |                                ^^^^^^^^ function or associated item not found in `InnerAlloc`\n   |\nnote: if you're trying to build a new `InnerAlloc`, consider using `InnerAlloc::new` which returns `InnerAlloc`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-4.3.0/src/bump.rs:69:5\n   |\n69 |     const fn new() -> Self {\n   |     ^^^^^^^^^^^^^^^^^^^^^^\n\nerror[E0599]: no method named `request_pages` found for mutable reference `&mut InnerAlloc` in the current scope\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-4.3.0/src/bump.rs:164:35\n    |\n164 |             let page_start = self.request_pages(required_pages)?;\n    |                                   ^^^^^^^^^^^^^ method not found in `&mut InnerAlloc`\n\nFor more information about this error, try `rustc --explain E0599`.\nerror: could not compile `ink_allocator` (lib) due to 4 previous errors\nwarning: build failed, waiting for other jobs to finish...\nSome errors have detailed explanations: E0425, E0432.\nFor more information about an error, try `rustc --explain E0425`.\nerror: could not compile `dlmalloc` (lib) due to 3 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "dlmalloc",
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/pink-extension-0.5.1/src",
+    "time_to_build": 640,
+    "time_to_solve": 79
+  }
+]

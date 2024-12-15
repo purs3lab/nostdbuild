@@ -1,0 +1,25 @@
+[
+  {
+    "built_with_features": "alloc",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "alloc"
+      ],
+      "code": 0,
+      "stderr": "warning: unused import: `::alloc::vec`\n  --> src/lib.rs:69:13\n   |\n69 |     pub use ::alloc::vec;\n   |             ^^^^^^^^^^^^\n   |\n   = note: `#[warn(unused_imports)]` on by default\n\nwarning: `amplify_apfloat` (lib) generated 1 warning (run `cargo fix --lib -p amplify_apfloat` to apply 1 suggestion)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s\n",
+      "stdout": ""
+    },
+    "features": [
+      "alloc",
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/amplify_apfloat-0.2.0/src",
+    "time_to_build": 47,
+    "time_to_solve": 173
+  }
+]

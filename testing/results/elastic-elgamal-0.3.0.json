@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling elastic-elgamal v0.3.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/elastic-elgamal-0.3.0)\nerror: One of `std` or `hashbrown` features must be enabled in order to get a hash map implementation\n   --> src/lib.rs:163:5\n    |\n163 | /     compile_error!(\n164 | |         \"One of `std` or `hashbrown` features must be enabled in order \\\n165 | |          to get a hash map implementation\"\n166 | |     );\n    | |_____^\n\nerror[E0432]: unresolved import `std::collections::HashMap`\n   --> src/lib.rs:171:13\n    |\n171 |     pub use std::collections::HashMap;\n    |             ^^^^^^^^^^^^^^^^^^^^^^^^^ no `HashMap` in `collections`\n\nFor more information about this error, try `rustc --explain E0432`.\nerror: could not compile `elastic-elgamal` (lib) due to 2 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/elastic-elgamal-0.3.0/src",
+    "time_to_build": 969,
+    "time_to_solve": 320
+  }
+]

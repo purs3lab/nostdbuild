@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling hcl-primitives v0.1.2 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/hcl-primitives-0.1.2)\nerror: cannot find macro `format` in this scope\n   --> src/expr.rs:141:33\n    |\n141 |             _ => Err(Error::new(format!(\"invalid binary operator: `{s}`\"))),\n    |                                 ^^^^^^\n    |\nhelp: consider importing this macro\n    |\n3   + use alloc::format;\n    |\n\nerror: cannot find macro `format` in this scope\n  --> src/expr.rs:42:33\n   |\n42 |             _ => Err(Error::new(format!(\"invalid unary operator: `{s}`\"))),\n   |                                 ^^^^^^\n   |\nhelp: consider importing this macro\n   |\n3  + use alloc::format;\n   |\n\nerror[E0412]: cannot find type `String` in this scope\n   --> src/template.rs:110:55\n    |\n24  | pub enum Strip {\n    | -------------- similarly named enum `Strip` defined here\n...\n110 | fn escape_markers_owned(literal: &str, idx: usize) -> String {\n    |                                                       ^^^^^^\n    |\nhelp: an enum with a similar name exists\n    |\n110 | fn escape_markers_owned(literal: &str, idx: usize) -> Strip {\n    |                                                       ~~~~~\nhelp: consider importing this struct\n    |\n3   + use alloc::string::String;\n    |\n\nerror[E0412]: cannot find type `String` in this scope\n   --> src/template.rs:165:57\n    |\n24  | pub enum Strip {\n    | -------------- similarly named enum `Strip` defined here\n...\n165 | fn unescape_markers_owned(literal: &str, idx: usize) -> String {\n    |                                                         ^^^^^^\n    |\nhelp: an enum with a similar name exists\n    |\n165 | fn unescape_markers_owned(literal: &str, idx: usize) -> Strip {\n    |                                                         ~~~~~\nhelp: consider importing this struct\n    |\n3   + use alloc::string::String;\n    |\n\nerror[E0412]: cannot find type `String` in this scope\n   --> src/template.rs:194:39\n    |\n24  | pub enum Strip {\n    | -------------- similarly named enum `Strip` defined here\n...\n194 | fn split_buf(s: &str, idx: usize) -> (String, &str) {\n    |                                       ^^^^^^\n    |\nhelp: an enum with a similar name exists\n    |\n194 | fn split_buf(s: &str, idx: usize) -> (Strip, &str) {\n    |                                       ~~~~~\nhelp: consider importing this struct\n    |\n3   + use alloc::string::String;\n    |\n\nerror[E0433]: failed to resolve: use of undeclared type `String`\n   --> src/template.rs:195:19\n    |\n195 |     let mut buf = String::with_capacity(s.len());\n    |                   ^^^^^^ use of undeclared type `String`\n    |\nhelp: an enum with a similar name exists\n    |\n195 |     let mut buf = Strip::with_capacity(s.len());\n    |                   ~~~~~\nhelp: consider importing this struct\n    |\n3   + use alloc::string::String;\n    |\n\nSome errors have detailed explanations: E0412, E0433.\nFor more information about an error, try `rustc --explain E0412`.\nerror: could not compile `hcl-primitives` (lib) due to 6 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/hcl-primitives-0.1.2/src",
+    "time_to_build": 274,
+    "time_to_solve": 72
+  }
+]

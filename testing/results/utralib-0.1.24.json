@@ -1,0 +1,21 @@
+[
+  {
+    "built_with_features": "default",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi"
+      ],
+      "code": 0,
+      "stderr": "warning: unused import: `generated::*`\n --> src/lib.rs:4:9\n  |\n4 | pub use generated::*;\n  |         ^^^^^^^^^^^^\n  |\n  = note: `#[warn(unused_imports)]` on by default\n\nwarning: `utralib` (lib) generated 1 warning (run `cargo fix --lib -p utralib` to apply 1 suggestion)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/utralib-0.1.24/src",
+    "time_to_build": 46,
+    "time_to_solve": 13762
+  }
+]

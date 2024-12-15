@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling sp-io v27.0.0\nerror[E0433]: failed to resolve: could not find `wasm32` in `arch`\n    --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/sp-io-27.0.0/src/lib.rs:1777:15\n     |\n1777 |         core::arch::wasm32::unreachable();\n     |                     ^^^^^^ could not find `wasm32` in `arch`\n\nerror[E0308]: mismatched types\n    --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/sp-io-27.0.0/src/lib.rs:1775:2\n     |\n1775 | /     {\n1776 | |         logging::log(LogLevel::Error, \"runtime\", message.as_bytes());\n1777 | |         core::arch::wasm32::unreachable();\n1778 | |     }\n     | |_____^ expected `!`, found `()`\n     |\n     = note:   expected type `!`\n             found unit type `()`\n\nSome errors have detailed explanations: E0308, E0433.\nFor more information about an error, try `rustc --explain E0308`.\nerror: could not compile `sp-io` (lib) due to 2 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/pallet-encointer-bazaar-rpc-runtime-api-3.0.2/src",
+    "time_to_build": 13827,
+    "time_to_solve": 10
+  }
+]

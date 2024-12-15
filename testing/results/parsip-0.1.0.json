@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\n   Compiling nom v3.2.1\nerror[E0463]: can't find crate for `collections`\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nom-3.2.1/src/lib.rs:401:1\n    |\n401 | extern crate collections;\n    | ^^^^^^^^^^^^^^^^^^^^^^^^^ can't find crate\n\nerror[E0432]: unresolved imports `std::vec::Vec`, `std::string::ToString`, `std::boxed::Box`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nom-3.2.1/src/util.rs:14:5\n   |\n14 | use std::vec::Vec;\n   |     ^^^^^^^^^^^^^\n15 | use std::string::ToString;\n   |     ^^^^^^^^^^^^^^^^^^^^^\n   |\n  ::: /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nom-3.2.1/src/nom.rs:11:5\n   |\n11 | use std::boxed::Box;\n   |     ^^^^^^^^^^^^^^^\n\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nom-3.2.1/src/lib.rs:391:35\n    |\n391 | #![cfg_attr(not(feature = \"std\"), feature(no_std))]\n    |                                   ^^^^^^^^^^^^^^^ help: remove the attribute\n    |\n    = help: the feature `no_std` has been stable since `1.6.0` and no longer requires an attribute to enable\n\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nom-3.2.1/src/lib.rs:392:35\n    |\n392 | #![cfg_attr(not(feature = \"std\"), feature(collections))]\n    |                                   ^^^^^^^^^^^^^^^^^^^^\n\nerror[E0635]: unknown feature `collections`\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nom-3.2.1/src/lib.rs:392:43\n    |\n392 | #![cfg_attr(not(feature = \"std\"), feature(collections))]\n    |                                           ^^^^^^^^^^^\n\nerror[E0599]: no method named `to_string` found for type `u8` in the current scope\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nom-3.2.1/src/util.rs:335:17\n    |\n335 |   let s = color.to_string();\n    |                 ^^^^^^^^^ method not found in `u8`\n\nerror[E0599]: no method named `to_lowercase` found for reference `&&'a str` in the current scope\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nom-3.2.1/src/traits.rs:404:20\n    |\n404 |     let pos = self.to_lowercase().chars().zip(t.to_lowercase().chars()).position(|(a,b)| a != b);\n    |                    ^^^^^^^^^^^^ method not found in `&&'a str`\n\nerror[E0599]: no method named `to_lowercase` found for reference `&'b str` in the current scope\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nom-3.2.1/src/traits.rs:404:49\n    |\n404 |     let pos = self.to_lowercase().chars().zip(t.to_lowercase().chars()).position(|(a,b)| a != b);\n    |                                                 ^^^^^^^^^^^^ method not found in `&'b str`\n\nSome errors have detailed explanations: E0432, E0463, E0554, E0599, E0635.\nFor more information about an error, try `rustc --explain E0432`.\nerror: could not compile `nom` (lib) due to 8 previous errors; 10 warnings emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/parsip-0.1.0/src",
+    "time_to_build": 260,
+    "time_to_solve": 35
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "    Updating crates.io index\nerror: failed to select a version for `sp-api-proc-macro`.\n    ... required by package `sp-api v26.0.0`\n    ... which satisfies dependency `sp-api = \"^26.0.0\"` of package `frame-benchmarking v28.0.0`\n    ... which satisfies dependency `frame-benchmarking = \"^28.0.0\"` of package `pallet-staking v28.0.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/pallet-staking-28.0.0)`\nversions that meet the requirements `^15.0.0` are: 15.0.1\n\nthe package `sp-api` depends on `sp-api-proc-macro`, with features: `frame-metadata` but `sp-api-proc-macro` does not have these features.\n\n\nfailed to select a version for `sp-api-proc-macro` which could resolve this conflict\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/pallet-staking-28.0.0/src",
+    "time_to_build": 601,
+    "time_to_solve": 603
+  }
+]

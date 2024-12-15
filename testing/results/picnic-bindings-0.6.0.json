@@ -1,0 +1,24 @@
+[
+  {
+    "built_with_features": "picnic",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "picnic"
+      ],
+      "code": 101,
+      "stderr": "   Compiling libpicnic-sys v0.1.0+3.0.18\nerror: failed to run custom build command for `libpicnic-sys v0.1.0+3.0.18`\n\nCaused by:\n  process didn't exit successfully: `/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/picnic-bindings-0.6.0/target/debug/build/libpicnic-sys-4236e58ab6a504d6/build-script-build` (exit status: 101)\n  --- stderr\n  thread 'main' panicked at /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/libpicnic-sys-0.1.0+3.0.18/build.rs:196:5:\n  Unable to find library with pkg-config and vendored is not enabled!\n  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/picnic-bindings-0.6.0/src",
+    "time_to_build": 207,
+    "time_to_solve": 51
+  }
+]

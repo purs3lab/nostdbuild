@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\n   Compiling flat_map v0.0.10 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/flat_map-0.0.10)\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n --> src/lib.rs:2:35\n  |\n2 | #![cfg_attr(not(feature = \"std\"), feature(alloc))]\n  |                                   ^^^^^^^^^^^^^^\n\nwarning: unused `#[macro_use]` import\n --> src/lib.rs:8:1\n  |\n8 | #[macro_use]\n  | ^^^^^^^^^^^^\n  |\n  = note: `#[warn(unused_imports)]` on by default\n\nwarning: unused import: `marker`\n  --> src/lib.rs:14:50\n   |\n14 |     pub use core::{borrow, cmp, fmt, hash, iter, marker, mem, ops, slice};\n   |                                                  ^^^^^^\n\nwarning: the feature `alloc` has been stable since 1.36.0 and no longer requires an attribute to enable\n --> src/lib.rs:2:43\n  |\n2 | #![cfg_attr(not(feature = \"std\"), feature(alloc))]\n  |                                           ^^^^^\n  |\n  = note: `#[warn(stable_features)]` on by default\n\nFor more information about this error, try `rustc --explain E0554`.\nwarning: `flat_map` (lib) generated 3 warnings\nerror: could not compile `flat_map` (lib) due to 1 previous error; 3 warnings emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/flat_map-0.0.10/src",
+    "time_to_build": 205,
+    "time_to_solve": 46
+  }
+]

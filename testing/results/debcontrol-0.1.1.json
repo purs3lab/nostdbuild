@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling memchr v2.3.3\n   Compiling nom v5.1.1\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nom-5.1.1/src/lib.rs:402:59\n    |\n402 | #![cfg_attr(all(not(feature = \"std\"), feature = \"alloc\"), feature(alloc))]\n    |                                                           ^^^^^^^^^^^^^^\n\nFor more information about this error, try `rustc --explain E0554`.\nerror: could not compile `nom` (lib) due to 1 previous error; 214 warnings emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/debcontrol-0.1.1/src",
+    "time_to_build": 1214,
+    "time_to_solve": 46
+  }
+]

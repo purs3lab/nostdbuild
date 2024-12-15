@@ -1,0 +1,21 @@
+[
+  {
+    "built_with_features": "default",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi"
+      ],
+      "code": 0,
+      "stderr": "warning: unexpected `cfg` condition value: `num_traits`\n --> src/ulps.rs:4:7\n  |\n4 | #[cfg(feature=\"num_traits\")]\n  |       ^^^^^^^^------------\n  |               |\n  |               help: there is a expected value with a similar name: `\"num-traits\"`\n  |\n  = note: expected values for `feature` are: `default`, `num-traits`, `ratio`, and `std`\n  = help: consider adding `num_traits` as a feature in `Cargo.toml`\n  = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n  = note: `#[warn(unexpected_cfgs)]` on by default\n\nwarning: unexpected `cfg` condition value: `num_traits`\n --> src/ulps.rs:9:7\n  |\n9 | #[cfg(feature=\"num_traits\")]\n  |       ^^^^^^^^------------\n  |               |\n  |               help: there is a expected value with a similar name: `\"num-traits\"`\n  |\n  = note: expected values for `feature` are: `default`, `num-traits`, `ratio`, and `std`\n  = help: consider adding `num_traits` as a feature in `Cargo.toml`\n  = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n\nwarning: unexpected `cfg` condition value: `num_traits`\n  --> src/ulps.rs:25:11\n   |\n25 | #[cfg(not(feature=\"num_traits\"))]\n   |           ^^^^^^^^------------\n   |                   |\n   |                   help: there is a expected value with a similar name: `\"num-traits\"`\n   |\n   = note: expected values for `feature` are: `default`, `num-traits`, `ratio`, and `std`\n   = help: consider adding `num_traits` as a feature in `Cargo.toml`\n   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n\nwarning: `float-cmp` (lib) generated 3 warnings\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/float-cmp-0.9.0/src",
+    "time_to_build": 44,
+    "time_to_solve": 46
+  }
+]

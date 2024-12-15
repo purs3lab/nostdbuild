@@ -1,0 +1,24 @@
+[
+  {
+    "built_with_features": "nightly",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "nightly"
+      ],
+      "code": 101,
+      "stderr": "   Compiling zopfli v0.8.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/zopfli-0.8.0)\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n  --> src/lib.rs:31:5\n   |\n31 |     feature(doc_auto_cfg),\n   |     ^^^^^^^^^^^^^^^^^^^^^\n\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n  --> src/lib.rs:32:5\n   |\n32 |     feature(error_in_core),\n   |     ^^^^^^^^^^^^^^^^^^^^^^\n\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n  --> src/lib.rs:33:5\n   |\n33 |     feature(core_intrinsics)\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: the feature `core_intrinsics` is internal to the compiler or standard library\n  --> src/lib.rs:33:13\n   |\n33 |     feature(core_intrinsics)\n   |             ^^^^^^^^^^^^^^^\n   |\n   = note: using it is strongly discouraged\n   = note: `#[warn(internal_features)]` on by default\n\nwarning: the feature `error_in_core` has been stable since 1.81.0 and no longer requires an attribute to enable\n  --> src/lib.rs:32:13\n   |\n32 |     feature(error_in_core),\n   |             ^^^^^^^^^^^^^\n   |\n   = note: `#[warn(stable_features)]` on by default\n\nFor more information about this error, try `rustc --explain E0554`.\nwarning: `zopfli` (lib) generated 2 warnings\nerror: could not compile `zopfli` (lib) due to 3 previous errors; 2 warnings emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/zopfli-0.8.0/src",
+    "time_to_build": 247,
+    "time_to_solve": 206
+  }
+]

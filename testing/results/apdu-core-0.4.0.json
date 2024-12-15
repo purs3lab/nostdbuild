@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling apdu-core v0.4.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/apdu-core-0.4.0)\nerror[E0412]: cannot find type `Box` in this scope\n  --> src/lib.rs:23:9\n   |\n23 |     Nfc(Box<dyn Display>),\n   |         ^^^ not found in this scope\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n  --> src/lib.rs:27:45\n   |\n27 |     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {\n   |                                             ^^^ use of undeclared crate or module `std`\n   |\nhelp: consider importing this module\n   |\n10 + use core::fmt;\n   |\nhelp: if you import `fmt`, refer to it directly\n   |\n27 -     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {\n27 +     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {\n   |\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n  --> src/lib.rs:40:45\n   |\n40 |     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {\n   |                                             ^^^ use of undeclared crate or module `std`\n   |\nhelp: consider importing this module\n   |\n10 + use core::fmt;\n   |\nhelp: if you import `fmt`, refer to it directly\n   |\n40 -     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {\n40 +     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {\n   |\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n  --> src/lib.rs:46:45\n   |\n46 |     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {\n   |                                             ^^^ use of undeclared crate or module `std`\n   |\nhelp: consider importing this module\n   |\n10 + use core::fmt;\n   |\nhelp: if you import `fmt`, refer to it directly\n   |\n46 -     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {\n46 +     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {\n   |\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n  --> src/lib.rs:54:19\n   |\n54 | pub type Result = std::result::Result<usize, HandleError>;\n   |                   ^^^ use of undeclared crate or module `std`\n   |\nhelp: consider importing this module\n   |\n10 + use core::result;\n   |\nhelp: if you import `result`, refer to it directly\n   |\n54 - pub type Result = std::result::Result<usize, HandleError>;\n54 + pub type Result = result::Result<usize, HandleError>;\n   |\n\nwarning: unused import: `crate::Error`\n --> src/response.rs:1:5\n  |\n1 | use crate::Error;\n  |     ^^^^^^^^^^^^\n  |\n  = note: `#[warn(unused_imports)]` on by default\n\nSome errors have detailed explanations: E0412, E0433.\nFor more information about an error, try `rustc --explain E0412`.\nwarning: `apdu-core` (lib) generated 1 warning\nerror: could not compile `apdu-core` (lib) due to 5 previous errors; 1 warning emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/apdu-core-0.4.0/src",
+    "time_to_build": 159,
+    "time_to_solve": 20
+  }
+]

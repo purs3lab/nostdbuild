@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling fst-no-std v0.4.8 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/fst-no-std-0.4.8)\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n   --> src/lib.rs:307:35\n    |\n307 | #![cfg_attr(not(feature = \"std\"), feature(error_in_core))]\n    |                                   ^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: the feature `error_in_core` has been stable since 1.81.0 and no longer requires an attribute to enable\n   --> src/lib.rs:307:43\n    |\n307 | #![cfg_attr(not(feature = \"std\"), feature(error_in_core))]\n    |                                           ^^^^^^^^^^^^^\n    |\n    = note: `#[warn(stable_features)]` on by default\n\nFor more information about this error, try `rustc --explain E0554`.\nwarning: `fst-no-std` (lib) generated 1 warning\nerror: could not compile `fst-no-std` (lib) due to 1 previous error; 1 warning emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/fst-no-std-0.4.8/src",
+    "time_to_build": 625,
+    "time_to_solve": 312
+  }
+]

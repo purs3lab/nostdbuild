@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\n   Compiling framed-serial v0.4.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/framed-serial-0.4.0)\nerror[E0432]: unresolved import `collections`\n   --> src/lib.rs:103:5\n    |\n103 | use collections::String;\n    |     ^^^^^^^^^^^ maybe a missing crate `collections`?\n    |\n    = help: consider adding `extern crate collections` to use the `collections` crate\n\nerror[E0412]: cannot find type `Vec` in this scope\n   --> src/lib.rs:155:12\n    |\n155 |     frame: Vec<u8>,\n    |            ^^^ not found in this scope\n\nerror[E0412]: cannot find type `Vec` in this scope\n   --> src/lib.rs:205:15\n    |\n205 |     recv_buf: Vec<u8>,\n    |               ^^^ not found in this scope\n\nerror[E0412]: cannot find type `Vec` in this scope\n   --> src/lib.rs:233:44\n    |\n233 |     pub fn schedule_send(&mut self, frame: Vec<u8>) -> Result<()> {\n    |                                            ^^^ not found in this scope\n\nerror[E0412]: cannot find type `Vec` in this scope\n   --> src/lib.rs:394:43\n    |\n394 |     pub fn get_frame(&mut self) -> Result<Vec<u8>> {\n    |                                           ^^^ not found in this scope\n\nwarning: trait objects without an explicit `dyn` are deprecated\n   --> src/lib.rs:124:32\n    |\n124 |     fn cause(&self) -> Option<&StdError> { None }\n    |                                ^^^^^^^^\n    |\n    = warning: this is accepted in the current edition (Rust 2015) but is a hard error in Rust 2021!\n    = note: for more information, see <https://doc.rust-lang.org/nightly/edition-guide/rust-2021/warnings-promoted-to-error.html>\n    = note: `#[warn(bare_trait_objects)]` on by default\nhelp: if this is an object-safe trait, use `dyn`\n    |\n124 |     fn cause(&self) -> Option<&dyn StdError> { None }\n    |                                +++\n\nerror[E0433]: failed to resolve: use of undeclared type `Vec`\n   --> src/lib.rs:217:23\n    |\n217 |             recv_buf: Vec::new(),\n    |                       ^^^ use of undeclared type `Vec`\n\nerror[E0433]: failed to resolve: use of undeclared type `Vec`\n   --> src/lib.rs:401:37\n    |\n401 |                     let mut frame = Vec::with_capacity(0);\n    |                                     ^^^ use of undeclared type `Vec`\n\nSome errors have detailed explanations: E0412, E0432, E0433.\nFor more information about an error, try `rustc --explain E0412`.\nwarning: `framed-serial` (lib) generated 1 warning\nerror: could not compile `framed-serial` (lib) due to 7 previous errors; 1 warning emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/framed-serial-0.4.0/src",
+    "time_to_build": 147,
+    "time_to_solve": 29
+  }
+]

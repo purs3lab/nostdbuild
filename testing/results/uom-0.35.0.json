@@ -1,0 +1,24 @@
+[
+  {
+    "built_with_features": "usize",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "usize"
+      ],
+      "code": 0,
+      "stderr": "warning: unexpected `cfg` condition value: `cargo-clippy`\n   --> src/lib.rs:179:5\n    |\n179 |     feature = \"cargo-clippy\",\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n    = note: expected values for `feature` are: `autoconvert`, `bigint`, `bigint-support`, `bigrational`, `biguint`, `complex-support`, `complex32`, `complex64`, `default`, `f32`, `f64`, `i128`, `i16`, `i32`, `i64`, `i8`, `isize`, `num-bigint`, `num-complex`, `num-rational`, `rational`, `rational-support`, `rational32`, `rational64`, `serde`, `si`, `std`, `try-from`, `u128`, `u16`, `u32`, `u64`, `u8`, `use_serde`, and `usize`\n    = help: consider adding `cargo-clippy` as a feature in `Cargo.toml`\n    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n    = note: `#[warn(unexpected_cfgs)]` on by default\n\nwarning: unexpected `cfg` condition value: `cargo-clippy`\n   --> src/lib.rs:194:9\n    |\n194 |     all(feature = \"cargo-clippy\", test),\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n    = note: expected values for `feature` are: `autoconvert`, `bigint`, `bigint-support`, `bigrational`, `biguint`, `complex-support`, `complex32`, `complex64`, `default`, `f32`, `f64`, `i128`, `i16`, `i32`, `i64`, `i8`, `isize`, `num-bigint`, `num-complex`, `num-rational`, `rational`, `rational-support`, `rational32`, `rational64`, `serde`, `si`, `std`, `try-from`, `u128`, `u16`, `u32`, `u64`, `u8`, `use_serde`, and `usize`\n    = help: consider adding `cargo-clippy` as a feature in `Cargo.toml`\n    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n\nwarning: unnecessary qualification\n   --> src/lib.rs:435:9\n    |\n435 |         <Self::T as crate::num::One>::one()\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\nnote: the lint level is defined here\n   --> src/lib.rs:174:5\n    |\n174 |     unused_qualifications,\n    |     ^^^^^^^^^^^^^^^^^^^^^\nhelp: remove the unnecessary path segments\n    |\n435 -         <Self::T as crate::num::One>::one()\n435 +         <Self::T as num::One>::one()\n    |\n\nwarning: unnecessary qualification\n   --> src/lib.rs:447:9\n    |\n447 |         <Self::T as crate::num::Zero>::zero()\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\nhelp: remove the unnecessary path segments\n    |\n447 -         <Self::T as crate::num::Zero>::zero()\n447 +         <Self::T as num::Zero>::zero()\n    |\n\nwarning: `uom` (lib) generated 4 warnings (run `cargo fix --lib -p uom` to apply 2 suggestions)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/uom-0.35.0/src",
+    "time_to_build": 53,
+    "time_to_solve": 428
+  }
+]

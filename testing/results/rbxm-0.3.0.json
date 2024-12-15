@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling lz4_flex v0.9.5\n   Compiling uuid v1.11.0\n   Compiling num-traits v0.2.19\n   Compiling syn v1.0.109\n   Compiling num-integer v0.1.46\n   Compiling num-complex v0.4.6\n   Compiling num-rational v0.4.2\n   Compiling num-iter v0.1.45\n   Compiling num v0.4.3\n   Compiling rbxm-proc v0.2.1\n   Compiling rbxm v0.3.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/rbxm-0.3.0)\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n   --> src/tree.rs:468:9\n    |\n468 |         std::mem::drop(self.node);\n    |         ^^^ use of undeclared crate or module `std`\n    |\nhelp: consider importing this module\n    |\n4   + use core::mem;\n    |\nhelp: if you import `mem`, refer to it directly\n    |\n468 -         std::mem::drop(self.node);\n468 +         mem::drop(self.node);\n    |\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n   --> src/tree.rs:509:9\n    |\n509 |         std::mem::drop(self.node);\n    |         ^^^ use of undeclared crate or module `std`\n    |\nhelp: consider importing this module\n    |\n4   + use core::mem;\n    |\nhelp: if you import `mem`, refer to it directly\n    |\n509 -         std::mem::drop(self.node);\n509 +         mem::drop(self.node);\n    |\n\nwarning: lint `pointer_structural_match` has been removed: converted into hard error, see RFC #3535 <https://rust-lang.github.io/rfcs/3535-constants-in-patterns.html> for more information\n  --> src/lib.rs:42:5\n   |\n42 |     pointer_structural_match,\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(renamed_and_removed_lints)]` on by default\n\nFor more information about this error, try `rustc --explain E0433`.\nwarning: `rbxm` (lib) generated 1 warning\nerror: could not compile `rbxm` (lib) due to 2 previous errors; 1 warning emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/rbxm-0.3.0/src",
+    "time_to_build": 3325,
+    "time_to_solve": 323
+  }
+]

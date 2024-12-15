@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": "none",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 0,
+      "stderr": "warning: trait `TranscriptProtocol` is never used\n  --> src/transcript.rs:16:18\n   |\n16 | pub(crate) trait TranscriptProtocol {\n   |                  ^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(dead_code)]` on by default\n\nwarning: `plonkup` (lib) generated 1 warning\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/plonkup-0.1.0/src",
+    "time_to_build": 2088,
+    "time_to_solve": 507
+  }
+]

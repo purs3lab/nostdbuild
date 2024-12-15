@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling cordoba v0.3.4 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/cordoba-0.3.4)\nwarning: dropping unsupported crate type `cdylib` for target `thumbv7m-none-eabi`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n  --> src/read.rs:22:9\n   |\n22 | impl<A> std::fmt::Debug for Reader<A> {\n   |         ^^^ use of undeclared crate or module `std`\n   |\nhelp: consider importing this module\n   |\n1  + use core::fmt;\n   |\nhelp: if you import `fmt`, refer to it directly\n   |\n22 - impl<A> std::fmt::Debug for Reader<A> {\n22 + impl<A> fmt::Debug for Reader<A> {\n   |\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n  --> src/read.rs:23:29\n   |\n23 |     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {\n   |                             ^^^ use of undeclared crate or module `std`\n   |\nhelp: consider importing this module\n   |\n1  + use core::fmt;\n   |\nhelp: if you import `fmt`, refer to it directly\n   |\n23 -     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {\n23 +     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {\n   |\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n  --> src/read.rs:23:57\n   |\n23 |     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {\n   |                                                         ^^^ use of undeclared crate or module `std`\n   |\nhelp: consider importing this module\n   |\n1  + use core::result;\n   |\nhelp: if you import `result`, refer to it directly\n   |\n23 -     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {\n23 +     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> result::Result<(), std::fmt::Error> {\n   |\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n  --> src/read.rs:23:81\n   |\n23 |     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {\n   |                                                                                 ^^^ use of undeclared crate or module `std`\n   |\nhelp: consider importing this module\n   |\n1  + use core::fmt;\n   |\nhelp: if you import `fmt`, refer to it directly\n   |\n23 -     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {\n23 +     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), fmt::Error> {\n   |\n\nFor more information about this error, try `rustc --explain E0433`.\nwarning: `cordoba` (lib) generated 1 warning\nerror: could not compile `cordoba` (lib) due to 4 previous errors; 1 warning emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/cordoba-0.3.4/src",
+    "time_to_build": 215,
+    "time_to_solve": 53
+  }
+]

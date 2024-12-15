@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling linfo v0.1.3 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/linfo-0.1.3)\nerror[E0412]: cannot find type `Vec` in this scope\n  --> src/expr.rs:81:14\n   |\n81 |         ) -> Vec<License> {\n   |              ^^^ not found in this scope\n\nerror[E0412]: cannot find type `Vec` in this scope\n   --> src/expr.rs:189:15\n    |\n189 | pub struct Or(Vec<License>);\n    |               ^^^ not found in this scope\n\nerror[E0412]: cannot find type `Vec` in this scope\n   --> src/expr.rs:204:16\n    |\n204 | pub struct And(Vec<License>);\n    |                ^^^ not found in this scope\n\nerror[E0277]: the trait bound `Expr: From<&expr::And>` is not satisfied\n   --> src/expr.rs:109:63\n    |\n109 |                         Ok(And(handle_iter(l1, l2, iter_and)).into())\n    |                                                               ^^^^ the trait `From<&expr::And>` is not implemented for `Expr`, which is required by `&expr::And: Into<_>`\n    |\n    = help: the following other types implement trait `From<T>`:\n              `Expr` implements `From<License>`\n              `Expr` implements `From<SpdxLicense>`\n              `Expr` implements `From<expr::And>`\n              `Expr` implements `From<expr::Or>`\n    = note: required for `&expr::And` to implement `Into<Expr>`\n\nerror[E0277]: the trait bound `Expr: From<&expr::Or>` is not satisfied\n   --> src/expr.rs:114:53\n    |\n114 |                 Ok(Or(handle_iter(l1, l2, iter_or)).into())\n    |                                                     ^^^^ the trait `From<&expr::Or>` is not implemented for `Expr`, which is required by `&expr::Or: Into<_>`\n    |\n    = help: the following other types implement trait `From<T>`:\n              `Expr` implements `From<License>`\n              `Expr` implements `From<SpdxLicense>`\n              `Expr` implements `From<expr::And>`\n              `Expr` implements `From<expr::Or>`\n    = note: required for `&expr::Or` to implement `Into<Expr>`\n\nSome errors have detailed explanations: E0277, E0412.\nFor more information about an error, try `rustc --explain E0277`.\nerror: could not compile `linfo` (lib) due to 5 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/linfo-0.1.3/src",
+    "time_to_build": 813,
+    "time_to_solve": 47
+  }
+]

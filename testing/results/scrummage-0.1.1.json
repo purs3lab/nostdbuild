@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling scrummage v0.1.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/scrummage-0.1.1)\nerror[E0583]: file not found for module `imp`\n  --> src/lib.rs:33:1\n   |\n33 | mod imp;\n   | ^^^^^^^^\n   |\n   = help: to create the module `imp`, create file \"src/imp.rs\" or \"src/imp/mod.rs\"\n   = note: if there is a `mod imp` elsewhere in the crate already, import it with `use crate::...` instead\n\nerror[E0433]: failed to resolve: could not find `Priority` in `imp`\n  --> src/lib.rs:55:19\n   |\n55 |         Self(imp::Priority::normal())\n   |                   ^^^^^^^^ could not find `Priority` in `imp`\n\nerror[E0433]: failed to resolve: could not find `Process` in `imp`\n  --> src/lib.rs:90:22\n   |\n90 |         Process(imp::Process::current())\n   |                      ^^^^^^^ could not find `Process` in `imp`\n\nerror[E0412]: cannot find type `Priority` in module `imp`\n  --> src/lib.rs:42:26\n   |\n42 | pub struct Priority(imp::Priority);\n   |                          ^^^^^^^^ not found in `imp`\n\nerror[E0412]: cannot find type `Process` in module `imp`\n  --> src/lib.rs:81:29\n   |\n81 | pub struct Process<'a>(imp::Process<'a>);\n   |                             ^^^^^^^ not found in `imp`\n\nwarning: unused doc comment\n  --> src/lib.rs:26:9\n   |\n26 |         #[doc = $x]\n   |         ^^^^^^^^^^^\n27 |         extern {}\n   |         --------- rustdoc does not generate documentation for extern blocks\n...\n30 | doctest!(include_str!(\"../README.md\"));\n   | -------------------------------------- in this macro invocation\n   |\n   = help: use `//` for a plain comment\n   = note: `#[warn(unused_doc_comments)]` on by default\n   = note: this warning originates in the macro `doctest` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nSome errors have detailed explanations: E0412, E0433, E0583.\nFor more information about an error, try `rustc --explain E0412`.\nwarning: `scrummage` (lib) generated 1 warning\nerror: could not compile `scrummage` (lib) due to 5 previous errors; 1 warning emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/scrummage-0.1.1/src",
+    "time_to_build": 158,
+    "time_to_solve": 24
+  }
+]

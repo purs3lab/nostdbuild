@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling rand_core v0.6.4\n   Compiling base16ct v0.2.0\n   Compiling rustversion v1.0.14\n   Compiling zerocopy v0.7.32\n   Compiling heck v0.4.1\n   Compiling crunchy v0.2.2\n   Compiling static_assertions v1.1.0\n   Compiling zeroize_derive v1.4.2\n   Compiling curve25519-dalek v4.1.1\n   Compiling synstructure v0.13.1\n   Compiling hex v0.4.3\n   Compiling ff v0.13.0\n   Compiling derive_more v0.99.17\n   Compiling group v0.13.0\n   Compiling libm v0.2.8\n   Compiling byteorder v1.5.0\n   Compiling ahash v0.8.7\n   Compiling async-trait v0.1.77\n   Compiling bitflags v2.4.2\n   Compiling paste v1.0.14\n   Compiling hashbrown v0.13.2\n   Compiling fixed-hash v0.8.0\n   Compiling either v1.9.0\n   Compiling uint v0.9.5\n   Compiling allocator-api2 v0.2.16\n   Compiling fuel-storage v0.45.0\n   Compiling zeroize v1.7.0\n   Compiling primitive-types v0.12.2\n   Compiling itertools v0.10.5\n   Compiling fuel-derive v0.45.0\n   Compiling strum_macros v0.24.3\n   Compiling hashbrown v0.14.3\n   Compiling generic-array v0.14.7\n   Compiling der v0.7.8\n   Compiling fuel-types v0.45.0\n   Compiling derivative v2.2.0\n   Compiling ethnum v1.5.0\n   Compiling percent-encoding v2.3.1\n   Compiling tai64 v4.0.0\n   Compiling crypto-common v0.1.6\n   Compiling block-buffer v0.10.4\n   Compiling crypto-bigint v0.5.5\n   Compiling digest v0.10.7\n   Compiling signature v2.2.0\n   Compiling sec1 v0.7.3\n   Compiling sha2 v0.10.8\n   Compiling hmac v0.12.1\n   Compiling ed25519 v2.2.3\n   Compiling rfc6979 v0.4.0\n   Compiling elliptic-curve v0.13.8\n   Compiling fuel-merkle v0.45.0\n   Compiling sha3 v0.10.8\n   Compiling ecdsa v0.16.9\n   Compiling primeorder v0.13.6\n   Compiling ed25519-dalek v2.1.0\n   Compiling strum v0.24.1\n   Compiling p256 v0.13.2\n   Compiling k256 v0.13.3\n   Compiling fuel-asm v0.45.0\n   Compiling fuel-crypto v0.45.0\n   Compiling fuel-tx v0.45.0\nerror[E0432]: unresolved import `transaction`\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/fuel-tx-0.45.0/src/lib.rs:104:9\n    |\n104 | pub use transaction::{\n    |         ^^^^^^^^^^^ use of undeclared crate or module `transaction`\n\nFor more information about this error, try `rustc --explain E0432`.\nerror: could not compile `fuel-tx` (lib) due to 1 previous error\nwarning: build failed, waiting for other jobs to finish...\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/fuel-vm-0.45.0/src",
+    "time_to_build": 6850,
+    "time_to_solve": 1137
+  }
+]

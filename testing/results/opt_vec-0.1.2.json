@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling opt_vec v0.1.2 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/opt_vec-0.1.2)\nerror[E0412]: cannot find type `Vec` in this scope\n  --> src/lib.rs:77:12\n   |\n77 |     inner: Vec<Option<T>>,\n   |            ^^^ not found in this scope\n\nerror[E0412]: cannot find type `Vec` in this scope\n  --> src/lib.rs:78:11\n   |\n78 |     free: Vec<usize>,\n   |           ^^^ not found in this scope\n\nerror[E0412]: cannot find type `Vec` in this scope\n   --> src/lib.rs:103:28\n    |\n103 |     pub fn to_vec(self) -> Vec<T> {\n    |                            ^^^ not found in this scope\n\nerror[E0433]: failed to resolve: use of undeclared type `Vec`\n   --> src/lib.rs:111:20\n    |\n111 |             inner: Vec::new(),\n    |                    ^^^ use of undeclared type `Vec`\n\nerror[E0433]: failed to resolve: use of undeclared type `Vec`\n   --> src/lib.rs:112:19\n    |\n112 |             free: Vec::new(),\n    |                   ^^^ use of undeclared type `Vec`\n\nerror[E0433]: failed to resolve: use of undeclared type `Vec`\n   --> src/lib.rs:120:20\n    |\n120 |             inner: Vec::with_capacity(capacity),\n    |                    ^^^ use of undeclared type `Vec`\n\nerror[E0433]: failed to resolve: use of undeclared type `Vec`\n   --> src/lib.rs:121:19\n    |\n121 |             free: Vec::with_capacity(capacity),\n    |                   ^^^ use of undeclared type `Vec`\n\nSome errors have detailed explanations: E0412, E0433.\nFor more information about an error, try `rustc --explain E0412`.\nerror: could not compile `opt_vec` (lib) due to 7 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/opt_vec-0.1.2/src",
+    "time_to_build": 145,
+    "time_to_solve": 18
+  }
+]

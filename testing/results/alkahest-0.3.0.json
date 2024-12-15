@@ -1,0 +1,21 @@
+[
+  {
+    "built_with_features": "default",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi"
+      ],
+      "code": 0,
+      "stderr": "warning: call to `.borrow()` on a reference in this situation does nothing\n   --> src/primitive.rs:160:56\n    |\n160 |         <u8 as Serialize<u8>>::serialize(u8::from(*self.borrow()), sizes, buffer)\n    |                                                        ^^^^^^^^^ help: remove this redundant call\n    |\n    = note: the type `bool` does not implement `Borrow`, so calling `borrow` on `&bool` copies the reference, which does not do anything and can be removed\n    = note: `#[warn(noop_method_call)]` on by default\n\nwarning: `alkahest` (lib) generated 1 warning (run `cargo fix --lib -p alkahest` to apply 1 suggestion)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/alkahest-0.3.0/src",
+    "time_to_build": 40,
+    "time_to_solve": 233
+  }
+]

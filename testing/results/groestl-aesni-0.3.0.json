@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling digest v0.9.0\n   Compiling block-buffer v0.9.0\n   Compiling groestl-aesni v0.3.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/groestl-aesni-0.3.0)\nerror[E0432]: unresolved import `core::arch::x86_64`\n --> src/compressor.rs:3:17\n  |\n3 | use core::arch::x86_64::*;\n  |                 ^^^^^^ could not find `x86_64` in `arch`\n\nerror[E0432]: unresolved imports `crate::compressor::init1024`, `crate::compressor::init512`, `crate::compressor::of1024`, `crate::compressor::of512`, `crate::compressor::tf1024`, `crate::compressor::tf512`\n  --> src/lib.rs:23:25\n   |\n23 | use crate::compressor::{init1024, init512, of1024, of512, tf1024, tf512};\n   |                         ^^^^^^^^  ^^^^^^^  ^^^^^^  ^^^^^  ^^^^^^  ^^^^^ no `tf512` in `compressor`\n   |                         |         |        |       |      |\n   |                         |         |        |       |      no `tf1024` in `compressor`\n   |                         |         |        |       no `of512` in `compressor`\n   |                         |         |        no `of1024` in `compressor`\n   |                         |         no `init512` in `compressor`\n   |                         no `init1024` in `compressor`\n\nwarning: unused imports: `U128` and `U64`\n --> src/compressor.rs:1:44\n  |\n1 | use block_buffer::generic_array::typenum::{U128, U64};\n  |                                            ^^^^  ^^^\n  |\n  = note: `#[warn(unused_imports)]` on by default\n\nwarning: unused import: `block_buffer::generic_array::GenericArray`\n --> src/compressor.rs:2:5\n  |\n2 | use block_buffer::generic_array::GenericArray;\n  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nFor more information about this error, try `rustc --explain E0432`.\nwarning: `groestl-aesni` (lib) generated 2 warnings\nerror: could not compile `groestl-aesni` (lib) due to 2 previous errors; 2 warnings emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/groestl-aesni-0.3.0/src",
+    "time_to_build": 451,
+    "time_to_solve": 61
+  }
+]

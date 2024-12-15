@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling bucket_vec v0.8.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/bucket_vec-0.8.0)\nerror[E0433]: failed to resolve: use of undeclared crate or module `scale`\n --> src/scale.rs:3:12\n  |\n3 | impl<T, C> scale::Encode for BucketVec<T, C>\n  |            ^^^^^ use of undeclared crate or module `scale`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `scale`\n --> src/scale.rs:5:8\n  |\n5 |     T: scale::Encode,\n  |        ^^^^^ use of undeclared crate or module `scale`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `scale`\n --> src/scale.rs:7:21\n  |\n7 |     fn encode_to<O: scale::Output>(&self, output: &mut O) {\n  |                     ^^^^^ use of undeclared crate or module `scale`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `scale`\n --> src/scale.rs:8:22\n  |\n8 |         output.push(&scale::Compact(self.len() as u64));\n  |                      ^^^^^ use of undeclared crate or module `scale`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `scale`\n  --> src/scale.rs:15:12\n   |\n15 | impl<T, C> scale::Decode for BucketVec<T, C>\n   |            ^^^^^ use of undeclared crate or module `scale`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `scale`\n  --> src/scale.rs:18:8\n   |\n18 |     T: scale::Decode,\n   |        ^^^^^ use of undeclared crate or module `scale`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `scale`\n  --> src/scale.rs:20:18\n   |\n20 |     fn decode<I: scale::Input>(input: &mut I) -> Result<Self, scale::Error> {\n   |                  ^^^^^ use of undeclared crate or module `scale`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `scale`\n  --> src/scale.rs:20:63\n   |\n20 |     fn decode<I: scale::Input>(input: &mut I) -> Result<Self, scale::Error> {\n   |                                                               ^^^^^ use of undeclared crate or module `scale`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `scale`\n  --> src/scale.rs:21:43\n   |\n21 |         let len = <scale::Compact<u64> as scale::Decode>::decode(input)?.0;\n   |                                           ^^^^^ use of undeclared crate or module `scale`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `scale`\n  --> src/scale.rs:21:20\n   |\n21 |         let len = <scale::Compact<u64> as scale::Decode>::decode(input)?.0;\n   |                    ^^^^^ use of undeclared crate or module `scale`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `scale`\n  --> src/scale.rs:24:28\n   |\n24 |             vec.push(<T as scale::Decode>::decode(input)?);\n   |                            ^^^^^ use of undeclared crate or module `scale`\n\nFor more information about this error, try `rustc --explain E0433`.\nerror: could not compile `bucket_vec` (lib) due to 11 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/bucket_vec-0.8.0/src",
+    "time_to_build": 11896,
+    "time_to_solve": 64
+  }
+]

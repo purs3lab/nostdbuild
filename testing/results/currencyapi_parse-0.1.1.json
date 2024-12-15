@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling currencyapi_parse v0.1.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/currencyapi_parse-0.1.1)\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n  --> src/lib.rs:31:9\n   |\n31 |         std::str::from_utf8(self.last_updated_at_bytes())\n   |         ^^^ use of undeclared crate or module `std`\n   |\nhelp: consider importing this builtin type\n   |\n5  + use core::primitive::str;\n   |\nhelp: if you import `str`, refer to it directly\n   |\n31 -         std::str::from_utf8(self.last_updated_at_bytes())\n31 +         str::from_utf8(self.last_updated_at_bytes())\n   |\n\nFor more information about this error, try `rustc --explain E0433`.\nerror: could not compile `currencyapi_parse` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/currencyapi_parse-0.1.1/src",
+    "time_to_build": 167,
+    "time_to_solve": 16
+  }
+]

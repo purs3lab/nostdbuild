@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling tracing-core v0.1.33\n   Compiling tracing v0.1.41\n   Compiling midi-codec v0.4.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/midi-codec-0.4.0)\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n --> src/io.rs:2:5\n  |\n2 | use std::io::ErrorKind;\n  |     ^^^ use of undeclared crate or module `std`\n\nwarning: unused import: `time::Duration`\n --> src/de.rs:1:24\n  |\n1 | use core::{fmt::Debug, time::Duration};\n  |                        ^^^^^^^^^^^^^^\n  |\n  = note: `#[warn(unused_imports)]` on by default\n\nerror[E0277]: `?` couldn't convert the error to `DecodeError<<R as ReadSimple>::Error>`\n  --> src/de.rs:80:36\n   |\n80 |         let byte = self.read_byte()?;\n   |                                    ^ the trait `From<<R as ReadSimple>::Error>` is not implemented for `DecodeError<<R as ReadSimple>::Error>`, which is required by `Result<Result<u8, RealTimeMessage>, DecodeError<<R as ReadSimple>::Error>>: FromResidual<Result<Infallible, <R as ReadSimple>::Error>>`\n   |\n   = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait\n   = note: required for `Result<Result<u8, RealTimeMessage>, DecodeError<<R as ReadSimple>::Error>>` to implement `FromResidual<Result<Infallible, <R as ReadSimple>::Error>>`\nhelp: consider extending the `where` clause, but there might be an alternative better way to express this requirement\n   |\n39 |     B: AsMut<[u8]>, DecodeError<<R as ReadSimple>::Error>: From<<R as ReadSimple>::Error>\n   |                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nerror[E0277]: `?` couldn't convert the error to `DecodeError<<R as ReadSimple>::Error>`\n   --> src/de.rs:131:71\n    |\n131 |             let status = match parse_byte(self.decoder_buf.read_byte()?) {\n    |                                                                       ^ the trait `From<<R as ReadSimple>::Error>` is not implemented for `DecodeError<<R as ReadSimple>::Error>`, which is required by `Result<Message, DecodeError<<R as ReadSimple>::Error>>: FromResidual<Result<Infallible, <R as ReadSimple>::Error>>`\n    |\n    = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait\n    = note: required for `Result<Message, DecodeError<<R as ReadSimple>::Error>>` to implement `FromResidual<Result<Infallible, <R as ReadSimple>::Error>>`\nhelp: consider extending the `where` clause, but there might be an alternative better way to express this requirement\n    |\n107 |     B: AsMut<[u8]>, DecodeError<<R as ReadSimple>::Error>: From<<R as ReadSimple>::Error>\n    |                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nwarning: variable `should_wait` is assigned to, but never used\n  --> src/de.rs:51:17\n   |\n51 |         let mut should_wait = false;\n   |                 ^^^^^^^^^^^\n   |\n   = note: consider using `_should_wait` instead\n   = note: `#[warn(unused_variables)]` on by default\n\nwarning: value assigned to `should_wait` is never read\n  --> src/de.rs:59:13\n   |\n59 |             should_wait = true;\n   |             ^^^^^^^^^^^\n   |\n   = help: maybe it is overwritten before being read?\n   = note: `#[warn(unused_assignments)]` on by default\n\nSome errors have detailed explanations: E0277, E0433.\nFor more information about an error, try `rustc --explain E0277`.\nwarning: `midi-codec` (lib) generated 3 warnings\nerror: could not compile `midi-codec` (lib) due to 3 previous errors; 3 warnings emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/midi-codec-0.4.0/src",
+    "time_to_build": 805,
+    "time_to_solve": 47
+  }
+]

@@ -1,0 +1,20 @@
+[
+  {
+    "built_with_features": "none",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 0,
+      "stderr": "   Compiling ff v0.12.1\n   Compiling group v0.12.1\n   Compiling fil_pasta_curves v0.5.2 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/fil_pasta_curves-0.5.2)\nwarning: unused import: `curves::*`\n  --> src/arithmetic.rs:10:9\n   |\n10 | pub use curves::*;\n   |         ^^^^^^^^^\n   |\n   = note: `#[warn(unused_imports)]` on by default\n\nwarning: associated function `curve_constant_a` is never used\n   --> src/curves.rs:40:22\n    |\n39  |           impl $name {\n    |           ---------- associated function in this implementation\n40  |               const fn curve_constant_a() -> $base {\n    |                        ^^^^^^^^^^^^^^^^\n...\n963 | / new_curve_impl!(\n964 | |     (pub),\n965 | |     Ep,\n966 | |     EpAffine,\n...   |\n973 | |     special_a0_b5\n974 | | );\n    | |_- in this macro invocation\n    |\n    = note: `#[warn(dead_code)]` on by default\n    = note: this warning originates in the macro `new_curve_impl` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nwarning: associated function `curve_constant_a` is never used\n   --> src/curves.rs:40:22\n    |\n39  |           impl $name {\n    |           ---------- associated function in this implementation\n40  |               const fn curve_constant_a() -> $base {\n    |                        ^^^^^^^^^^^^^^^^\n...\n975 | / new_curve_impl!(\n976 | |     (pub),\n977 | |     Eq,\n978 | |     EqAffine,\n...   |\n985 | |     special_a0_b5\n986 | | );\n    | |_- in this macro invocation\n    |\n    = note: this warning originates in the macro `new_curve_impl` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nwarning: constant `MODULUS_LIMBS_32` is never used\n   --> src/fields/fp.rs:117:7\n    |\n117 | const MODULUS_LIMBS_32: [u32; 8] = [\n    |       ^^^^^^^^^^^^^^^^\n\nwarning: constant `MODULUS_LIMBS_32` is never used\n   --> src/fields/fq.rs:117:7\n    |\n117 | const MODULUS_LIMBS_32: [u32; 8] = [\n    |       ^^^^^^^^^^^^^^^^\n\nwarning: `fil_pasta_curves` (lib) generated 5 warnings (run `cargo fix --lib -p fil_pasta_curves` to apply 1 suggestion)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.50s\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/fil_pasta_curves-0.5.2/src",
+    "time_to_build": 1488,
+    "time_to_solve": 183
+  }
+]

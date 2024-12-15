@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\n   Compiling typed-arena-nomut v0.1.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/typed-arena-nomut-0.1.0)\nerror[E0433]: failed to resolve: maybe a missing crate `std`?\n  --> src/lib.rs:75:5\n   |\n75 | use std::cell::Ref;\n   |     ^^^ maybe a missing crate `std`?\n   |\n   = help: consider adding `extern crate std` to use the `std` crate\n\nFor more information about this error, try `rustc --explain E0433`.\nerror: could not compile `typed-arena-nomut` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/typed-arena-nomut-0.1.0/src",
+    "time_to_build": 173,
+    "time_to_solve": 44
+  }
+]

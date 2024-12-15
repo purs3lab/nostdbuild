@@ -1,0 +1,25 @@
+[
+  {
+    "built_with_features": "no_std",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "no_std"
+      ],
+      "code": 0,
+      "stderr": "warning: unexpected `cfg` condition value: `cargo-fmt`\n     --> src/code.rs:45087:14\n      |\n45087 |         #[cfg_attr(feature = \"cargo-fmt\", rustfmt::skip)]\n      |                    ^^^^^^^^^^^^^^^^^^^^^\n      |\n      = note: expected values for `feature` are: `__internal_flip`, `block_encoder`, `code_asm`, `db`, `decoder`, `default`, `encoder`, `exhaustive_enums`, `fast_fmt`, `gas`, `instr_info`, `intel`, `lazy_static`, `masm`, `mvex`, `nasm`, `no_d3now`, `no_evex`, `no_std`, `no_vex`, `no_xop`, `op_code_info`, `serde`, and `std`\n      = help: consider adding `cargo-fmt` as a feature in `Cargo.toml`\n      = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n      = note: `#[warn(unexpected_cfgs)]` on by default\n\nwarning: unexpected `cfg` condition value: `cargo-fmt`\n     --> src/code.rs:45112:14\n      |\n45112 |         #[cfg_attr(feature = \"cargo-fmt\", rustfmt::skip)]\n      |                    ^^^^^^^^^^^^^^^^^^^^^\n      |\n      = note: expected values for `feature` are: `__internal_flip`, `block_encoder`, `code_asm`, `db`, `decoder`, `default`, `encoder`, `exhaustive_enums`, `fast_fmt`, `gas`, `instr_info`, `intel`, `lazy_static`, `masm`, `mvex`, `nasm`, `no_d3now`, `no_evex`, `no_std`, `no_vex`, `no_xop`, `op_code_info`, `serde`, and `std`\n      = help: consider adding `cargo-fmt` as a feature in `Cargo.toml`\n      = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n\nwarning: unexpected `cfg` condition value: `cargo-fmt`\n     --> src/code.rs:45127:14\n      |\n45127 |         #[cfg_attr(feature = \"cargo-fmt\", rustfmt::skip)]\n      |                    ^^^^^^^^^^^^^^^^^^^^^\n      |\n      = note: expected values for `feature` are: `__internal_flip`, `block_encoder`, `code_asm`, `db`, `decoder`, `default`, `encoder`, `exhaustive_enums`, `fast_fmt`, `gas`, `instr_info`, `intel`, `lazy_static`, `masm`, `mvex`, `nasm`, `no_d3now`, `no_evex`, `no_std`, `no_vex`, `no_xop`, `op_code_info`, `serde`, and `std`\n      = help: consider adding `cargo-fmt` as a feature in `Cargo.toml`\n      = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n\nwarning: unexpected `cfg` condition value: `cargo-fmt`\n    --> src/instruction.rs:2451:14\n     |\n2451 |         #[cfg_attr(feature = \"cargo-fmt\", rustfmt::skip)]\n     |                    ^^^^^^^^^^^^^^^^^^^^^\n     |\n     = note: expected values for `feature` are: `__internal_flip`, `block_encoder`, `code_asm`, `db`, `decoder`, `default`, `encoder`, `exhaustive_enums`, `fast_fmt`, `gas`, `instr_info`, `intel`, `lazy_static`, `masm`, `mvex`, `nasm`, `no_d3now`, `no_evex`, `no_std`, `no_vex`, `no_xop`, `op_code_info`, `serde`, and `std`\n     = help: consider adding `cargo-fmt` as a feature in `Cargo.toml`\n     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n\nwarning: `iced-x86` (lib) generated 4 warnings\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s\n",
+      "stdout": ""
+    },
+    "features": [
+      "no_std",
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/iced-x86-1.21.0/src",
+    "time_to_build": 43,
+    "time_to_solve": 13830
+  }
+]

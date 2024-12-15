@@ -1,0 +1,20 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling getrandom v0.2.11\n   Compiling der v0.7.9\n   Compiling serde_derive v1.0.192\n   Compiling darling_core v0.20.10\n   Compiling block-buffer v0.10.4\n   Compiling thiserror-impl v1.0.55\n   Compiling crypto-common v0.1.6\n   Compiling libm v0.2.11\n   Compiling paste v1.0.15\n   Compiling num-traits v0.2.17\nerror[E0463]: can't find crate for `std`\n --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/getrandom-0.2.11/src/error_impls.rs:9:1\n  |\n9 | extern crate std;\n  | ^^^^^^^^^^^^^^^^^ can't find crate\n  |\n  = note: the `thumbv7m-none-eabi` target may not support the standard library\n\nerror: target is not supported, for more information see: https://docs.rs/getrandom/#unsupported-targets\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/getrandom-0.2.11/src/lib.rs:295:9\n    |\n295 | /         compile_error!(\"target is not supported, for more information see: \\\n296 | |                         https://docs.rs/getrandom/#unsupported-targets\");\n    | |________________________________________________________________________^\n\nerror[E0463]: can't find crate for `std`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crypto-common-0.1.6/src/lib.rs:13:1\n   |\n13 | extern crate std;\n   | ^^^^^^^^^^^^^^^^^ can't find crate\n   |\n   = note: the `thumbv7m-none-eabi` target may not support the standard library\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `imp`\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/getrandom-0.2.11/src/lib.rs:346:9\n    |\n346 |         imp::getrandom_inner(dest)?;\n    |         ^^^ use of undeclared crate or module `imp`\n\nSome errors have detailed explanations: E0433, E0463.\nFor more information about an error, try `rustc --explain E0433`.\nFor more information about this error, try `rustc --explain E0463`.\nerror: could not compile `getrandom` (lib) due to 3 previous errors\nwarning: build failed, waiting for other jobs to finish...\nerror: could not compile `crypto-common` (lib) due to 1 previous error\nerror[E0463]: can't find crate for `std`\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/der-0.7.9/src/lib.rs:328:1\n    |\n328 | extern crate std;\n    | ^^^^^^^^^^^^^^^^^ can't find crate\n    |\n    = note: the `thumbv7m-none-eabi` target may not support the standard library\n\nerror: could not compile `der` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/soroban-sdk-20.3.1/src",
+    "time_to_build": 3125,
+    "time_to_solve": 457
+  }
+]

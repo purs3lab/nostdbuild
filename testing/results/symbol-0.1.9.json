@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\n   Compiling lazy_static v1.5.0\nerror[E0463]: can't find crate for `std`\n --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/lazy_static-1.5.0/src/inline_lazy.rs:9:1\n  |\n9 | extern crate std;\n  | ^^^^^^^^^^^^^^^^^ can't find crate\n  |\n  = note: the `thumbv7m-none-eabi` target may not support the standard library\n\nFor more information about this error, try `rustc --explain E0463`.\nerror: could not compile `lazy_static` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/symbol-0.1.9/src",
+    "time_to_build": 155,
+    "time_to_solve": 14
+  }
+]

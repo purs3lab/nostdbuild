@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling memchr v2.7.4\n   Compiling regress v0.8.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/regress-0.8.0)\nerror[E0412]: cannot find type `Vec` in this scope\n  --> src/types.rs:34:27\n   |\n34 |     pub unicode_property: Vec<(PropertyEscape, bool)>,\n   |                           ^^^ not found in this scope\n   |\nhelp: consider importing this struct\n   |\n1  + use alloc::vec::Vec;\n   |\n\nerror[E0599]: the method `len` exists for struct `Vec<BracketContents>`, but its trait bounds were not satisfied\n   --> src/emit.rs:141:52\n    |\n141 |                     let idx = self.result.brackets.len();\n    |                                                    ^^^ private field, not a method\n    |\n   ::: src/types.rs:31:1\n    |\n31  | pub struct BracketContents {\n    | -------------------------- doesn't satisfy `BracketContents: Sized`\n    |\n    = note: the following trait bounds were not satisfied:\n            `{type error}: Sized`\n            which is required by `BracketContents: Sized`\n\nerror[E0599]: the method `push` exists for struct `Vec<BracketContents>`, but its trait bounds were not satisfied\n   --> src/emit.rs:142:42\n    |\n142 |                     self.result.brackets.push(contents.clone());\n    |                                          ^^^^ method cannot be called on `Vec<BracketContents>` due to unsatisfied trait bounds\n    |\n   ::: src/types.rs:31:1\n    |\n31  | pub struct BracketContents {\n    | -------------------------- doesn't satisfy `BracketContents: Sized`\n    |\n    = note: the following trait bounds were not satisfied:\n            `{type error}: Sized`\n            which is required by `BracketContents: Sized`\n\nSome errors have detailed explanations: E0412, E0599.\nFor more information about an error, try `rustc --explain E0412`.\nerror: could not compile `regress` (lib) due to 3 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/regress-0.8.0/src",
+    "time_to_build": 1278,
+    "time_to_solve": 1519
+  }
+]

@@ -1,0 +1,25 @@
+[
+  {
+    "built_with_features": "collections",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "collections"
+      ],
+      "code": 101,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\nerror: Package `get-trait v0.1.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/get-trait-0.1.0)` does not have the feature `collections`\n",
+      "stdout": ""
+    },
+    "features": [
+      "collections",
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/get-trait-0.1.0/src",
+    "time_to_build": 93,
+    "time_to_solve": 21
+  }
+]

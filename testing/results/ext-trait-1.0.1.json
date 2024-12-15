@@ -1,0 +1,19 @@
+[
+  {
+    "built_with_features": "default",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi"
+      ],
+      "code": 0,
+      "stderr": "warning: `/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/ext-trait-1.0.1/.cargo/config` is deprecated in favor of `config.toml`\nnote: if you need to support cargo 1.38 or earlier, you can symlink `config` to `config.toml`\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/ext-trait-1.0.1/src",
+    "time_to_build": 51,
+    "time_to_solve": 7
+  }
+]

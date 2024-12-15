@@ -1,0 +1,25 @@
+[
+  {
+    "built_with_features": "alloc",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "alloc"
+      ],
+      "code": 0,
+      "stderr": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std",
+      "alloc"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/json-feed-model-0.2.0/src",
+    "time_to_build": 47,
+    "time_to_solve": 58
+  }
+]

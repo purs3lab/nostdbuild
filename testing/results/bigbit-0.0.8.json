@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling bigbit v0.0.8 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/bigbit-0.0.8)\nerror: cannot find macro `dbg` in this scope\n  --> src/linkedbytes/ops/gcd.rs:24:21\n   |\n24 |                     dbg!(&lhs);\n   |                     ^^^\n\nerror: cannot find macro `dbg` in this scope\n  --> src/linkedbytes/ops/gcd.rs:25:21\n   |\n25 |                     dbg!(&rhs);\n   |                     ^^^\n\nerror: cannot find macro `dbg` in this scope\n  --> src/linkedbytes/ops/gcd.rs:30:21\n   |\n30 |                     dbg!(&lhs);\n   |                     ^^^\n\nerror: cannot find macro `dbg` in this scope\n  --> src/linkedbytes/ops/gcd.rs:31:21\n   |\n31 |                     dbg!(&rhs);\n   |                     ^^^\n\nerror: could not compile `bigbit` (lib) due to 4 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/bigbit-0.0.8/src",
+    "time_to_build": 682,
+    "time_to_solve": 110
+  }
+]

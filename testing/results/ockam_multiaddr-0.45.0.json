@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling serde v1.0.215\n   Compiling rand_core v0.6.4\n   Compiling minicbor v0.20.0\n   Compiling zerocopy v0.7.35\n   Compiling syn v2.0.90\n   Compiling syn v1.0.109\n   Compiling tinyvec v1.8.0\n   Compiling hex v0.4.3\n   Compiling once_cell v1.20.2\n   Compiling unsigned-varint v0.8.0\n   Compiling rand_pcg v0.3.1\n   Compiling rand v0.8.5\n   Compiling ahash v0.8.11\n   Compiling minicbor-derive v0.13.0\n   Compiling serde_derive v1.0.215\n   Compiling futures-macro v0.3.31\n   Compiling ockam_macros v0.33.0\n   Compiling async-trait v0.1.83\n   Compiling futures-util v0.3.31\n   Compiling serde_bare v0.5.0\n   Compiling hashbrown v0.14.5\n   Compiling ockam_core v0.101.0\n   Compiling ockam_multiaddr v0.45.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/ockam_multiaddr-0.45.0)\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n  --> src/lib.rs:27:5\n   |\n27 | use std::net::{SocketAddrV4, SocketAddrV6};\n   |     ^^^ use of undeclared crate or module `std`\n\nerror[E0432]: unresolved imports `crate::proto::Ip4`, `crate::proto::Ip6`\n  --> src/lib.rs:30:29\n   |\n30 | use crate::proto::{DnsAddr, Ip4, Ip6, Tcp};\n   |                             ^^^  ^^^ no `Ip6` in `proto`\n   |                             |\n   |                             no `Ip4` in `proto`\n   |\nnote: found an item that was configured out\n  --> src/proto.rs:12:12\n   |\n12 | pub struct Ip4(pub std::net::Ipv4Addr);\n   |            ^^^\nnote: the item is gated behind the `std` feature\n  --> src/proto.rs:10:7\n   |\n10 | #[cfg(feature = \"std\")]\n   |       ^^^^^^^^^^^^^^^\nnote: found an item that was configured out\n  --> src/proto.rs:63:12\n   |\n63 | pub struct Ip6(pub std::net::Ipv6Addr);\n   |            ^^^\nnote: the item is gated behind the `std` feature\n  --> src/proto.rs:61:7\n   |\n61 | #[cfg(feature = \"std\")]\n   |       ^^^^^^^^^^^^^^^\n\nerror: cannot find macro `format` in this scope\n   --> src/lib.rs:617:39\n    |\n617 | ...                   return Ok(format!(\"{}:{}\", &*host, *port));\n    |                                 ^^^^^^\n    |\nhelp: consider importing one of these macros\n    |\n21  + use alloc::format;\n    |\n21  + use ockam_core::compat::format;\n    |\n\nerror[E0433]: failed to resolve: use of undeclared type `Box`\n  --> src/lib.rs:38:26\n   |\n38 |     INSTANCE.get_or_init(Box::<Registry>::default)\n   |                          ^^^ use of undeclared type `Box`\n   |\nhelp: consider importing one of these structs\n   |\n21 + use alloc::boxed::Box;\n   |\n21 + use ockam_core::compat::boxed::Box;\n   |\n\nerror[E0412]: cannot find type `String` in this scope\n   --> src/lib.rs:598:44\n    |\n598 |     pub fn to_socket_addr(&self) -> Result<String, Error> {\n    |                                            ^^^^^^ not found in this scope\n    |\nhelp: consider importing one of these structs\n    |\n21  + use alloc::string::String;\n    |\n21  + use ockam_core::compat::string::String;\n    |\n\nSome errors have detailed explanations: E0412, E0432, E0433.\nFor more information about an error, try `rustc --explain E0412`.\nerror: could not compile `ockam_multiaddr` (lib) due to 5 previous errors\nwarning: build failed, waiting for other jobs to finish...\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/ockam_multiaddr-0.45.0/src",
+    "time_to_build": 6395,
+    "time_to_solve": 79
+  }
+]

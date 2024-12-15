@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling lua-sys v0.2.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/lua-sys-0.2.0)\nwarning: unused import: `luaconf::LuaConfig`\n  --> build/main.rs:14:5\n   |\n14 | use luaconf::LuaConfig;\n   |     ^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(unused_imports)]` on by default\n\nwarning: `lua-sys` (build script) generated 1 warning\nerror: failed to run custom build command for `lua-sys v0.2.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/lua-sys-0.2.0)`\n\nCaused by:\n  process didn't exit successfully: `/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/lua-sys-0.2.0/target/debug/build/lua-sys-df001c5eee5f452d/build-script-main` (exit status: 101)\n  --- stdout\n  cargo:rustc-cfg=lua_64_bits\n\n  --- stderr\n  thread 'main' panicked at build/main.rs:30:9:\n  missing feature 'embedded-lua' or 'system-lua'\n  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/lua-sys-0.2.0/src",
+    "time_to_build": 536,
+    "time_to_solve": 72
+  }
+]

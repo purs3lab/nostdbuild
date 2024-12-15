@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling memchr v2.7.4\n   Compiling minimal-lexical v0.2.1\n   Compiling nom v7.1.3\n   Compiling udv v0.3.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/udv-0.3.1)\nerror[E0432]: unresolved import `nom::multi::many0`\n  --> src/text.rs:9:5\n   |\n9  | use nom::multi::many0;\n   |     ^^^^^^^^^^^^^^^^^ no `many0` in `multi`\n   |\nnote: found an item that was configured out\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nom-7.1.3/src/multi/mod.rs:53:8\n   |\n53 | pub fn many0<I, O, E, F>(mut f: F) -> impl FnMut(I) -> IResult<I, Vec<O>, E>\n   |        ^^^^^\nnote: the item is gated behind the `alloc` feature\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nom-7.1.3/src/multi/mod.rs:51:7\n   |\n51 | #[cfg(feature = \"alloc\")]\n   |       ^^^^^^^^^^^^^^^^^\n\nFor more information about this error, try `rustc --explain E0432`.\nerror: could not compile `udv` (lib) due to 1 previous error\nwarning: build failed, waiting for other jobs to finish...\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/udv-0.3.1/src",
+    "time_to_build": 1081,
+    "time_to_solve": 25
+  }
+]

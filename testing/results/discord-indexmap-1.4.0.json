@@ -1,0 +1,19 @@
+[
+  {
+    "built_with_features": "default",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi"
+      ],
+      "code": 0,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\nwarning: unused import: `alloc::*`\n  --> src/lib.rs:63:17\n   |\n63 |         pub use alloc::*;\n   |                 ^^^^^^^^\n   |\n   = note: `#[warn(unused_imports)]` on by default\n\nwarning: unused import: `alloc::collections::*`\n  --> src/lib.rs:66:17\n   |\n66 |         pub use alloc::collections::*;\n   |                 ^^^^^^^^^^^^^^^^^^^^^\n\nwarning: trait `Entries` is never used\n   --> src/lib.rs:156:7\n    |\n156 | trait Entries {\n    |       ^^^^^^^\n    |\n    = note: `#[warn(dead_code)]` on by default\n\nwarning: `discord-indexmap` (lib) generated 3 warnings (run `cargo fix --lib -p discord-indexmap` to apply 2 suggestions)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/discord-indexmap-1.4.0/src",
+    "time_to_build": 49,
+    "time_to_solve": 214
+  }
+]

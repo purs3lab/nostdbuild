@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling base91 v0.1.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/base91-0.1.0)\nerror[E0432]: unresolved imports `iter::DecodeIterator`, `iter::EncodeIterator`\n  --> src/lib.rs:89:16\n   |\n89 | pub use iter::{DecodeIterator, EncodeIterator};\n   |                ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^ no `EncodeIterator` in `iter`\n   |                |\n   |                no `DecodeIterator` in `iter`\n   |\nnote: found an item that was configured out\n  --> src/iter/mod.rs:11:10\n   |\n11 | pub type DecodeIterator<I> = DecodeGenericIterator<crate::codemap::Canonical, I>;\n   |          ^^^^^^^^^^^^^^\nnote: the item is gated behind the `canonical` feature\n  --> src/iter/mod.rs:10:7\n   |\n10 | #[cfg(feature = \"canonical\")]\n   |       ^^^^^^^^^^^^^^^^^^^^^\nnote: found an item that was configured out\n  --> src/iter/mod.rs:18:10\n   |\n18 | pub type DecodeIterator<I> = DecodeGenericIterator<crate::codemap::XmlFriendly, I>;\n   |          ^^^^^^^^^^^^^^\nnote: the item is gated here\n  --> src/iter/mod.rs:17:1\n   |\n17 | #[cfg(all(feature = \"xml-friendly\", not(feature = \"canonical\")))]\n   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nnote: found an item that was configured out\n  --> src/iter/mod.rs:8:10\n   |\n8  | pub type EncodeIterator<I> = EncodeGenericIterator<crate::codemap::Canonical, I>;\n   |          ^^^^^^^^^^^^^^\nnote: the item is gated behind the `canonical` feature\n  --> src/iter/mod.rs:7:7\n   |\n7  | #[cfg(feature = \"canonical\")]\n   |       ^^^^^^^^^^^^^^^^^^^^^\nnote: found an item that was configured out\n  --> src/iter/mod.rs:15:10\n   |\n15 | pub type EncodeIterator<I> = EncodeGenericIterator<crate::codemap::XmlFriendly, I>;\n   |          ^^^^^^^^^^^^^^\nnote: the item is gated here\n  --> src/iter/mod.rs:14:1\n   |\n14 | #[cfg(all(feature = \"xml-friendly\", not(feature = \"canonical\")))]\n   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nFor more information about this error, try `rustc --explain E0432`.\nerror: could not compile `base91` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/base91-0.1.0/src",
+    "time_to_build": 175,
+    "time_to_solve": 37
+  }
+]

@@ -1,0 +1,24 @@
+[
+  {
+    "built_with_features": "nostd",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "nostd"
+      ],
+      "code": 101,
+      "stderr": "   Compiling getrandom v0.1.16\n   Compiling thiserror-impl v1.0.69\n   Compiling rustix v0.38.42\n   Compiling zerocopy-derive v0.7.35\n   Compiling zeroize_derive v1.4.2\n   Compiling regex v1.11.1\n   Compiling digest v0.9.0\n   Compiling block-buffer v0.9.0\n   Compiling signature v1.6.4\n   Compiling serde v1.0.215\nerror[E0463]: can't find crate for `std`\n --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/getrandom-0.1.16/src/error_impls.rs:8:1\n  |\n8 | extern crate std;\n  | ^^^^^^^^^^^^^^^^^ can't find crate\n  |\n  = note: the `thumbv7m-none-eabi` target may not support the standard library\n\nerror: target is not supported, for more information see: https://docs.rs/getrandom/#unsupported-targets\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/getrandom-0.1.16/src/lib.rs:267:9\n    |\n267 | /         compile_error!(\"\\\n268 | |             target is not supported, for more information see: \\\n269 | |             https://docs.rs/getrandom/#unsupported-targets\\\n270 | |         \");\n    | |__________^\n\nerror[E0463]: can't find crate for `std`\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/signature-1.6.4/src/lib.rs:147:1\n    |\n147 | extern crate std;\n    | ^^^^^^^^^^^^^^^^^ can't find crate\n    |\n    = note: the `thumbv7m-none-eabi` target may not support the standard library\n\nerror[E0463]: can't find crate for `std`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/digest-0.9.0/src/lib.rs:36:1\n   |\n36 | extern crate std;\n   | ^^^^^^^^^^^^^^^^^ can't find crate\n   |\n   = note: the `thumbv7m-none-eabi` target may not support the standard library\n\nFor more information about this error, try `rustc --explain E0463`.\nerror: could not compile `signature` (lib) due to 1 previous error\nwarning: build failed, waiting for other jobs to finish...\nerror[E0433]: failed to resolve: use of undeclared crate or module `imp`\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/getrandom-0.1.16/src/lib.rs:291:5\n    |\n291 |     imp::getrandom_inner(dest)\n    |     ^^^ use of undeclared crate or module `imp`\n\nSome errors have detailed explanations: E0433, E0463.\nFor more information about an error, try `rustc --explain E0433`.\nerror: could not compile `getrandom` (lib) due to 3 previous errors\nerror: could not compile `digest` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "nostd"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/akd_client-0.8.9/src",
+    "time_to_build": 731,
+    "time_to_solve": 17
+  }
+]

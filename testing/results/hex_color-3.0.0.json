@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling hex_color v3.0.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/hex_color-3.0.0)\nwarning: unexpected `cfg` condition name: `doc_cfg`\n   --> src/lib.rs:181:13\n    |\n181 | #![cfg_attr(doc_cfg, feature(doc_cfg))]\n    |             ^^^^^^^\n    |\n    = help: expected names are: `clippy`, `debug_assertions`, `doc`, `docsrs`, `doctest`, `feature`, `miri`, `overflow_checks`, `panic`, `proc_macro`, `relocation_model`, `rustfmt`, `sanitize`, `sanitizer_cfi_generalize_pointers`, `sanitizer_cfi_normalize_integers`, `target_abi`, `target_arch`, `target_endian`, `target_env`, `target_family`, `target_feature`, `target_has_atomic`, `target_has_atomic_equal_alignment`, `target_has_atomic_load_store`, `target_os`, `target_pointer_width`, `target_thread_local`, `target_vendor`, `test`, `ub_checks`, `unix`, and `windows`\n    = help: consider using a Cargo feature instead\n    = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:\n             [lints.rust]\n             unexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(doc_cfg)'] }\n    = help: or consider adding `println!(\"cargo::rustc-check-cfg=cfg(doc_cfg)\");` to the top of the `build.rs`\n    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n    = note: `#[warn(unexpected_cfgs)]` on by default\n\nerror[E0599]: no method named `round` found for type `f32` in the current scope\n    --> src/lib.rs:1472:47\n     |\n1472 |         let r = (f32::from(r) * f).min(255.0).round() as u8;\n     |                                               ^^^^^ method not found in `f32`\n\nerror[E0599]: no method named `round` found for type `f32` in the current scope\n    --> src/lib.rs:1473:47\n     |\n1473 |         let g = (f32::from(g) * f).min(255.0).round() as u8;\n     |                                               ^^^^^ method not found in `f32`\n\nerror[E0599]: no method named `round` found for type `f32` in the current scope\n    --> src/lib.rs:1474:47\n     |\n1474 |         let b = (f32::from(b) * f).min(255.0).round() as u8;\n     |                                               ^^^^^ method not found in `f32`\n\nFor more information about this error, try `rustc --explain E0599`.\nwarning: `hex_color` (lib) generated 1 warning\nerror: could not compile `hex_color` (lib) due to 3 previous errors; 1 warning emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/hex_color-3.0.0/src",
+    "time_to_build": 255,
+    "time_to_solve": 86
+  }
+]

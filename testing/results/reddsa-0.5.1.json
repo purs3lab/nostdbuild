@@ -1,0 +1,20 @@
+[
+  {
+    "built_with_features": "none",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 0,
+      "stderr": "   Compiling blake2b_simd v1.0.2\n   Compiling reddsa v0.5.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/reddsa-0.5.1)\nwarning: associated function `from_raw` is never used\n  --> src/lib.rs:73:12\n   |\n71 |     pub trait SealedScalar {\n   |               ------------ associated function in this trait\n72 |         fn from_bytes_wide(bytes: &[u8; 64]) -> Self;\n73 |         fn from_raw(val: [u64; 4]) -> Self;\n   |            ^^^^^^^^\n   |\n   = note: `#[warn(dead_code)]` on by default\n\nwarning: `reddsa` (lib) generated 1 warning\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.27s\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/reddsa-0.5.1/src",
+    "time_to_build": 2263,
+    "time_to_solve": 111
+  }
+]

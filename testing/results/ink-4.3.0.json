@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling libc v0.2.168\n   Compiling crypto-common v0.1.6\n   Compiling block-buffer v0.10.4\n   Compiling aho-corasick v1.1.3\n   Compiling regex-syntax v0.8.5\n   Compiling subtle v2.6.1\n   Compiling smallvec v1.13.2\n   Compiling autocfg v1.4.0\n   Compiling scale-info v2.11.6\n   Compiling byte-slice-cast v1.2.2\n   Compiling ink_prelude v4.3.0\n   Compiling parity-scale-codec v3.6.12\n   Compiling paste v1.0.15\n   Compiling serde_json v1.0.133\n   Compiling digest v0.10.7\n   Compiling either v1.13.0\n   Compiling xxhash-rust v0.8.12\n   Compiling itertools v0.10.5\n   Compiling blake2 v0.10.6\n   Compiling humantime v2.1.0\n   Compiling num-traits v0.2.19\n   Compiling ink_primitives v4.3.0\n   Compiling termcolor v1.4.1\n   Compiling itoa v1.0.14\n   Compiling scale-bits v0.4.0\n   Compiling regex-automata v0.4.9\n   Compiling scale-decode v0.9.0\n   Compiling scale-encode v0.5.0\n   Compiling is-terminal v0.4.13\n   Compiling log v0.4.22\n   Compiling ryu v1.0.18\n   Compiling ink_storage_traits v4.3.0\n   Compiling ink_ir v4.3.0\n   Compiling impl-serde v0.4.0\n   Compiling ink_allocator v4.3.0\nerror: ink! only supports wasm32 and riscv32\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-4.3.0/src/bump.rs:147:13\n    |\n147 |             core::compile_error!(\"ink! only supports wasm32 and riscv32\");\n    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nerror[E0599]: no function or associated item named `heap_start` found for struct `InnerAlloc` in the current scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-4.3.0/src/bump.rs:71:25\n   |\n60 | struct InnerAlloc {\n   | ----------------- function or associated item `heap_start` not found for this struct\n...\n71 |             next: Self::heap_start(),\n   |                         ^^^^^^^^^^ function or associated item not found in `InnerAlloc`\n   |\nnote: if you're trying to build a new `InnerAlloc`, consider using `InnerAlloc::new` which returns `InnerAlloc`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-4.3.0/src/bump.rs:69:5\n   |\n69 |     const fn new() -> Self {\n   |     ^^^^^^^^^^^^^^^^^^^^^^\n\nerror[E0599]: no function or associated item named `heap_end` found for struct `InnerAlloc` in the current scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-4.3.0/src/bump.rs:72:32\n   |\n60 | struct InnerAlloc {\n   | ----------------- function or associated item `heap_end` not found for this struct\n...\n72 |             upper_limit: Self::heap_end(),\n   |                                ^^^^^^^^ function or associated item not found in `InnerAlloc`\n   |\nnote: if you're trying to build a new `InnerAlloc`, consider using `InnerAlloc::new` which returns `InnerAlloc`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-4.3.0/src/bump.rs:69:5\n   |\n69 |     const fn new() -> Self {\n   |     ^^^^^^^^^^^^^^^^^^^^^^\n\nerror[E0599]: no method named `request_pages` found for mutable reference `&mut InnerAlloc` in the current scope\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-4.3.0/src/bump.rs:164:35\n    |\n164 |             let page_start = self.request_pages(required_pages)?;\n    |                                   ^^^^^^^^^^^^^ method not found in `&mut InnerAlloc`\n\nFor more information about this error, try `rustc --explain E0599`.\nerror: could not compile `ink_allocator` (lib) due to 4 previous errors\nwarning: build failed, waiting for other jobs to finish...\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/ink-4.3.0/src",
+    "time_to_build": 16424,
+    "time_to_solve": 81
+  }
+]

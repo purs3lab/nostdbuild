@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling libdrm_amdgpu_sys v0.5.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/libdrm_amdgpu_sys-0.5.0)\nwarning: unused import: `self::drm_map_flags as drm_map_flags_t`\n    --> bindings/drm.rs:8835:9\n     |\n8835 | pub use self::drm_map_flags as drm_map_flags_t;\n     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n     |\n     = note: `#[warn(unused_imports)]` on by default\n\nwarning: unused import: `self::drm_map_type as drm_map_type_t`\n    --> bindings/drm.rs:8836:9\n     |\n8836 | pub use self::drm_map_type as drm_map_type_t;\n     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `self::drm_stat_type as drm_stat_type_t`\n    --> bindings/drm.rs:8840:9\n     |\n8840 | pub use self::drm_stat_type as drm_stat_type_t;\n     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `self::drm_lock_flags as drm_lock_flags_t`\n    --> bindings/drm.rs:8842:9\n     |\n8842 | pub use self::drm_lock_flags as drm_lock_flags_t;\n     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `self::drm_dma_flags as drm_dma_flags_t`\n    --> bindings/drm.rs:8844:9\n     |\n8844 | pub use self::drm_dma_flags as drm_dma_flags_t;\n     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `self::drm_ctx_flags as drm_ctx_flags_t`\n    --> bindings/drm.rs:8853:9\n     |\n8853 | pub use self::drm_ctx_flags as drm_ctx_flags_t;\n     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `self::drm_vblank_seq_type as drm_vblank_seq_type_t`\n    --> bindings/drm.rs:8860:9\n     |\n8860 | pub use self::drm_vblank_seq_type as drm_vblank_seq_type_t;\n     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `GfxTargetVersion`\n  --> amdgpu/asic.rs:31:46\n   |\n31 | use crate::AMDGPU::{CHIP_CLASS, FAMILY_NAME, GfxTargetVersion};\n   |                                              ^^^^^^^^^^^^^^^^\n\nwarning: unused import: `super::vbios::*`\n  --> amdgpu/mod.rs:85:13\n   |\n85 |     pub use super::vbios::*;\n   |             ^^^^^^^^^^^^^^^\n\nwarning: unused import: `status::*`\n  --> pci/mod.rs:27:9\n   |\n27 | pub use status::*;\n   |         ^^^^^^^^^\n\nwarning: unused import: `link::*`\n  --> pci/mod.rs:30:9\n   |\n30 | pub use link::*;\n   |         ^^^^^^^\n\nwarning: unused import: `drm_version::*`\n  --> lib.rs:33:9\n   |\n33 | pub use drm_version::*;\n   |         ^^^^^^^^^^^^^^\n\nerror[E0308]: arguments to this function are incorrect\n     --> amdgpu/vbios.rs:60:17\n      |\n60    |         let r = drmCommandWrite(\n      |                 ^^^^^^^^^^^^^^^\n61    |             self.1,\n62    |             DRM_AMDGPU_INFO as u64,\n      |             ---------------------- expected `u32`, found `u64`\n63    |             device_info.as_mut_ptr() as *mut ::core::ffi::c_void,\n64    |             size_of::<drm_amdgpu_info>() as u64,\n      |             ----------------------------------- expected `u32`, found `u64`\n      |\nnote: function defined here\n     --> bindings/drm.rs:10192:12\n      |\n10192 |     pub fn drmCommandWrite(\n      |            ^^^^^^^^^^^^^^^\nhelp: you can convert a `u64` to a `u32` and panic if the converted value doesn't fit\n      |\n62    |             (DRM_AMDGPU_INFO as u64).try_into().unwrap(),\n      |             +                      +++++++++++++++++++++\nhelp: you can convert a `u64` to a `u32` and panic if the converted value doesn't fit\n      |\n64    |             (size_of::<drm_amdgpu_info>() as u64).try_into().unwrap(),\n      |             +                                   +++++++++++++++++++++\n\nFor more information about this error, try `rustc --explain E0308`.\nwarning: `libdrm_amdgpu_sys` (lib) generated 12 warnings\nerror: could not compile `libdrm_amdgpu_sys` (lib) due to 1 previous error; 12 warnings emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/libdrm_amdgpu_sys-0.5.0",
+    "time_to_build": 5833,
+    "time_to_solve": 696
+  }
+]

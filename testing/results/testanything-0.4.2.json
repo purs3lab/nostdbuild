@@ -1,0 +1,25 @@
+[
+  {
+    "built_with_features": "alloc",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "alloc"
+      ],
+      "code": 101,
+      "stderr": "   Compiling testanything v0.4.2 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/testanything-0.4.2)\nerror[E0432]: unresolved import `std`\n  --> src/tap_test.rs:10:5\n   |\n10 | use std::fmt;\n   |     ^^^ use of undeclared crate or module `std`\n\nwarning: unused import: `ToString`\n --> src/tap_suite_builder.rs:3:22\n  |\n3 |     string::{String, ToString},\n  |                      ^^^^^^^^\n  |\n  = note: `#[warn(unused_imports)]` on by default\n\nFor more information about this error, try `rustc --explain E0432`.\nwarning: `testanything` (lib) generated 1 warning\nerror: could not compile `testanything` (lib) due to 1 previous error; 1 warning emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std",
+      "alloc"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/testanything-0.4.2/src",
+    "time_to_build": 67,
+    "time_to_solve": 32
+  }
+]

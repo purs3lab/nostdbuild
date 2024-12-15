@@ -1,0 +1,24 @@
+[
+  {
+    "built_with_features": "alloc",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "alloc"
+      ],
+      "code": 0,
+      "stderr": "warning: fields `right`, `inside`, and `left` are never read\n  --> src/dict_model.rs:10:9\n   |\n9  | pub struct DictWeight {\n   |            ---------- fields in this struct\n10 |     pub right: i32,\n   |         ^^^^^\n11 |     pub inside: i32,\n   |         ^^^^^^\n12 |     pub left: i32,\n   |         ^^^^\n   |\n   = note: `DictWeight` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis\n   = note: `#[warn(dead_code)]` on by default\n\nwarning: `vaporetto` (lib) generated 1 warning\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/vaporetto-0.6.3/src",
+    "time_to_build": 58,
+    "time_to_solve": 271
+  }
+]

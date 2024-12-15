@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "    Updating crates.io index\nerror: failed to select a version for the requirement `rmp-serde = \"^0.13.0\"`\ncandidate versions found which didn't match: 1.3.0, 1.3.0-beta.1, 1.2.0, ...\nlocation searched: crates.io index\nrequired by package `exonum_sodiumoxide v0.0.24 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/exonum_sodiumoxide-0.0.24)`\nif you are looking for the prerelease package it needs to be specified explicitly\n    rmp-serde = { version = \"1.3.0-beta.1\" }\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/exonum_sodiumoxide-0.0.24/src",
+    "time_to_build": 501,
+    "time_to_solve": 248
+  }
+]

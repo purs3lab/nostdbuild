@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling snec v1.0.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/snec-1.0.0)\nerror[E0432]: unresolved import `macros`\n   --> src/lib.rs:111:9\n    |\n111 | pub use macros::*;\n    |         ^^^^^^ use of undeclared crate or module `macros`\n\nFor more information about this error, try `rustc --explain E0432`.\nerror: could not compile `snec` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/snec-1.0.0/src",
+    "time_to_build": 226,
+    "time_to_solve": 38
+  }
+]

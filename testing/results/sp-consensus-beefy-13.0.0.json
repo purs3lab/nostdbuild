@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling impl-trait-for-tuples v0.2.3\n   Compiling regex v1.11.1\n   Compiling derive_more-impl v1.0.0\n   Compiling serde v1.0.215\n   Compiling zeroize_derive v1.4.2\n   Compiling prettyplease v0.2.25\n   Compiling ref-cast-impl v1.0.23\n   Compiling sp-debug-derive v14.0.0\n   Compiling derive-syn-parse v0.2.0\n   Compiling sp-core-hashing-proc-macro v15.0.0\n   Compiling thiserror v1.0.69\n   Compiling ref-cast v1.0.23\n   Compiling expander v2.2.1\n   Compiling Inflector v0.11.4\n   Compiling zeroize v1.8.1\n   Compiling thiserror-impl v1.0.69\n   Compiling strum_macros v0.24.3\n   Compiling lazy_static v1.5.0\nerror[E0463]: can't find crate for `std`\n --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/lazy_static-1.5.0/src/inline_lazy.rs:9:1\n  |\n9 | extern crate std;\n  | ^^^^^^^^^^^^^^^^^ can't find crate\n  |\n  = note: the `thumbv7m-none-eabi` target may not support the standard library\n\nFor more information about this error, try `rustc --explain E0463`.\nerror: could not compile `lazy_static` (lib) due to 1 previous error\nwarning: build failed, waiting for other jobs to finish...\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/sp-consensus-beefy-13.0.0/src",
+    "time_to_build": 4334,
+    "time_to_solve": 60
+  }
+]

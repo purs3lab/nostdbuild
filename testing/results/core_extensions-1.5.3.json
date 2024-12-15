@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": "__test",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "__test"
+      ],
+      "code": 0,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\nwarning: unexpected `cfg` condition value: `rust_1_42`\n   --> src_core_extensions/utils.rs:193:11\n    |\n193 |     #[cfg(feature = \"rust_1_42\")]\n    |           ^^^^^^^^^^-----------\n    |                     |\n    |                     help: there is a expected value with a similar name: `\"rust_1_46\"`\n    |\n    = note: expected values for `feature` are: `__test`, `all_items`, `all_items_no_derive`, `alloc`, `bools`, `callable`, `collections`, `const_default`, `const_val`, `core_extensions_proc_macros`, `derive`, `docsrs`, `enable_proc_macro_crate`, `generics_parsing`, `integers`, `item_parsing`, `iterators`, `macro_utils`, `marker_type`, `on_drop`, `option_result`, `phantom`, `rust_1_46`, `rust_1_51`, `rust_1_59`, `rust_latest_stable`, `self_ops`, `serde`, `serde_`, `slices`, `std`, `strings`, `track_caller`, `transparent_newtype`, and `type_asserts` and 3 more\n    = help: consider adding `rust_1_42` as a feature in `Cargo.toml`\n    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n    = note: `#[warn(unexpected_cfgs)]` on by default\n\nwarning: unexpected `cfg` condition value: `rust_1_42`\n   --> src_core_extensions/utils.rs:197:15\n    |\n197 |     #[cfg(not(feature = \"rust_1_42\"))]\n    |               ^^^^^^^^^^-----------\n    |                         |\n    |                         help: there is a expected value with a similar name: `\"rust_1_46\"`\n    |\n    = note: expected values for `feature` are: `__test`, `all_items`, `all_items_no_derive`, `alloc`, `bools`, `callable`, `collections`, `const_default`, `const_val`, `core_extensions_proc_macros`, `derive`, `docsrs`, `enable_proc_macro_crate`, `generics_parsing`, `integers`, `item_parsing`, `iterators`, `macro_utils`, `marker_type`, `on_drop`, `option_result`, `phantom`, `rust_1_46`, `rust_1_51`, `rust_1_59`, `rust_latest_stable`, `self_ops`, `serde`, `serde_`, `slices`, `std`, `strings`, `track_caller`, `transparent_newtype`, and `type_asserts` and 3 more\n    = help: consider adding `rust_1_42` as a feature in `Cargo.toml`\n    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n\nwarning: `core_extensions` (lib) generated 2 warnings\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/core_extensions-1.5.3/src_core_extensions",
+    "time_to_build": 42,
+    "time_to_solve": 378
+  }
+]

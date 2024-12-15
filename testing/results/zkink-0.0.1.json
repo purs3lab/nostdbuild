@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "error: cannot produce cdylib for `zkink v0.0.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/zkink-0.0.1)` as the target `thumbv7m-none-eabi` does not support these crate types\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/zkink-0.0.1",
+    "time_to_build": 140,
+    "time_to_solve": 9
+  }
+]

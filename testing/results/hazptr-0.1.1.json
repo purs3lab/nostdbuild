@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling arrayvec v0.4.12\n   Compiling hazptr v0.1.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/hazptr-0.1.1)\n   Compiling reclaim v0.2.2\nerror[E0433]: failed to resolve: could not find `guarded` in the crate root\n   --> src/lib.rs:157:42\n    |\n157 |         pub type LocalGuard<'a> = crate::guarded::Guard<&'a Local>;\n    |                                          ^^^^^^^ could not find `guarded` in the crate root\n\nwarning: unused import: `alloc::boxed::Box`\n  --> src/hazard/list.rs:56:5\n   |\n56 | use alloc::boxed::Box;\n   |     ^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(unused_imports)]` on by default\n\nwarning: use of deprecated method `core::sync::atomic::AtomicPtr::<T>::compare_and_swap`: Use `compare_exchange` or `compare_exchange_weak` instead\n   --> src/hazard/list.rs:124:50\n    |\n124 |                 let prev = node.hazard.protected.compare_and_swap(FREE, ptr, order);\n    |                                                  ^^^^^^^^^^^^^^^^\n    |\n    = note: `#[warn(deprecated)]` on by default\n\nFor more information about this error, try `rustc --explain E0433`.\nwarning: `hazptr` (lib) generated 2 warnings\nerror: could not compile `hazptr` (lib) due to 1 previous error; 2 warnings emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/hazptr-0.1.1/src",
+    "time_to_build": 1270,
+    "time_to_solve": 62
+  }
+]

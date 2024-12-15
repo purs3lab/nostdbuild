@@ -1,0 +1,25 @@
+[
+  {
+    "built_with_features": "alloc",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "alloc"
+      ],
+      "code": 0,
+      "stderr": "warning: unused imports: `debug`, `error`, `info`, and `trace`\n  --> src/lib.rs:49:22\n   |\n49 | pub(crate) use log::{debug, error, info, trace, warn};\n   |                      ^^^^^  ^^^^^  ^^^^  ^^^^^\n   |\n   = note: `#[warn(unused_imports)]` on by default\n\nwarning: function `cmp` is never used\n   --> src/lib.rs:189:4\n    |\n189 | fn cmp<'a>(name: crate::Data<'a>) -> impl Fn(crate::Data<'_>) -> bool + 'a {\n    |    ^^^\n    |\n    = note: `#[warn(dead_code)]` on by default\n\nwarning: `inject-lib` (lib) generated 2 warnings (run `cargo fix --lib -p inject-lib` to apply 1 suggestion)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std",
+      "alloc"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/inject-lib-0.3.3/src",
+    "time_to_build": 50,
+    "time_to_solve": 131
+  }
+]

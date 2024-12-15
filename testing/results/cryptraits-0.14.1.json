@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling cryptraits v0.14.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/cryptraits-0.14.1)\nerror[E0412]: cannot find type `Vec` in this scope\n  --> src/hash.rs:14:26\n   |\n14 |     fn finalize(self) -> Vec<u8>;\n   |                          ^^^ not found in this scope\n   |\nhelp: consider importing this struct\n   |\n3  + use alloc::vec::Vec;\n   |\n\nerror[E0412]: cannot find type `Vec` in this scope\n  --> src/hmac.rs:23:26\n   |\n23 |     fn finalize(self) -> Vec<u8>;\n   |                          ^^^ not found in this scope\n   |\nhelp: consider importing this struct\n   |\n2  + use alloc::vec::Vec;\n   |\n\nerror[E0412]: cannot find type `Cow` in this scope\n  --> src/key.rs:83:32\n   |\n83 |     fn from_phrase<'a, S: Into<Cow<'a, str>>>(\n   |                                ^^^ not found in this scope\n   |\nhelp: consider importing this enum\n   |\n6  + use alloc::borrow::Cow;\n   |\n\nwarning: unused import: `alloc::boxed::Box`\n --> src/aead.rs:7:5\n  |\n7 | use alloc::boxed::Box;\n  |     ^^^^^^^^^^^^^^^^^\n  |\n  = note: `#[warn(unused_imports)]` on by default\n\nwarning: unused import: `alloc::borrow::Cow`\n --> src/convert.rs:4:5\n  |\n4 | use alloc::borrow::Cow;\n  |     ^^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `alloc::boxed::Box`\n  --> src/convert.rs:10:5\n   |\n10 | use alloc::boxed::Box;\n   |     ^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `alloc::boxed::Box`\n --> src/kdf.rs:4:5\n  |\n4 | use alloc::boxed::Box;\n  |     ^^^^^^^^^^^^^^^^^\n\nwarning: unused import: `alloc::boxed::Box`\n --> src/signature.rs:4:5\n  |\n4 | use alloc::boxed::Box;\n  |     ^^^^^^^^^^^^^^^^^\n\nFor more information about this error, try `rustc --explain E0412`.\nwarning: `cryptraits` (lib) generated 5 warnings\nerror: could not compile `cryptraits` (lib) due to 3 previous errors; 5 warnings emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/cryptraits-0.14.1/src",
+    "time_to_build": 141,
+    "time_to_solve": 23
+  }
+]

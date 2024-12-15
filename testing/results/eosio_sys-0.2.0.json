@@ -1,0 +1,25 @@
+[
+  {
+    "built_with_features": "alloc",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "alloc"
+      ],
+      "code": 101,
+      "stderr": "   Compiling eosio_sys v0.2.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/eosio_sys-0.2.0)\nerror[E0463]: can't find crate for `std`\n --> src/lib.rs:8:1\n  |\n8 | extern crate std;\n  | ^^^^^^^^^^^^^^^^^ can't find crate\n  |\n  = note: the `thumbv7m-none-eabi` target may not support the standard library\n\nerror[E0412]: cannot find type `String` in this scope\n   --> src/lib.rs:109:37\n    |\n109 | pub fn name_to_string(name: u64) -> String {\n    |                                     ^^^^^^ not found in this scope\n\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n --> src/lib.rs:1:32\n  |\n1 | #![cfg_attr(feature = \"alloc\", feature(alloc))]\n  |                                ^^^^^^^^^^^^^^\n\nerror[E0635]: unknown feature `alloc`\n --> src/lib.rs:1:40\n  |\n1 | #![cfg_attr(feature = \"alloc\", feature(alloc))]\n  |                                        ^^^^^\n\nSome errors have detailed explanations: E0412, E0463, E0554, E0635.\nFor more information about an error, try `rustc --explain E0412`.\nerror: could not compile `eosio_sys` (lib) due to 4 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "alloc",
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/eosio_sys-0.2.0/src",
+    "time_to_build": 83,
+    "time_to_solve": 81
+  }
+]

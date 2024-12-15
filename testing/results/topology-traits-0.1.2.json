@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling topology-traits v0.1.2 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/topology-traits-0.1.2)\nerror[E0432]: unresolved import `num_traits::real`\n  --> src/lib.rs:5:17\n   |\n5  | use num_traits::real::Real;\n   |                 ^^^^ could not find `real` in `num_traits`\n   |\nnote: found an item that was configured out\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/num-traits-0.2.19/src/lib.rs:62:9\n   |\n62 | pub mod real;\n   |         ^^^^\nnote: the item is gated here\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/num-traits-0.2.19/src/real.rs:1:1\n   |\n1  | #![cfg(any(feature = \"std\", feature = \"libm\"))]\n   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nFor more information about this error, try `rustc --explain E0432`.\nerror: could not compile `topology-traits` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/topology-traits-0.1.2/src",
+    "time_to_build": 403,
+    "time_to_solve": 11
+  }
+]

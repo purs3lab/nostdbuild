@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling dasp_sample v0.11.0\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/dasp_sample-0.11.0/src/lib.rs:8:35\n  |\n8 | #![cfg_attr(not(feature = \"std\"), feature(core_intrinsics))]\n  |                                   ^^^^^^^^^^^^^^^^^^^^^^^^\n\nFor more information about this error, try `rustc --explain E0554`.\nerror: could not compile `dasp_sample` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/dasp_peak-0.11.0/src",
+    "time_to_build": 294,
+    "time_to_solve": 11
+  }
+]

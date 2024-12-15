@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "    Updating crates.io index\nerror: failed to select a version for the requirement `wgpu = \"^0.18.0\"`\ncandidate versions found which didn't match: 23.0.1, 23.0.0, 22.1.0, ...\nlocation searched: crates.io index\nrequired by package `burn-wgpu v0.12.1`\n    ... which satisfies dependency `burn-wgpu = \"^0.12.1\"` of package `burn-core v0.12.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/burn-core-0.12.1)`\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/burn-core-0.12.1/src",
+    "time_to_build": 1235,
+    "time_to_solve": 554
+  }
+]

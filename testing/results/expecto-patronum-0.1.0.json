@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling expecto-patronum v0.1.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/expecto-patronum-0.1.0)\n   Compiling fastmurmur3 v0.1.2\nerror[E0463]: can't find crate for `std`\n  |\n  = note: the `thumbv7m-none-eabi` target may not support the standard library\n  = note: `std` is required by `fastmurmur3` because it does not declare `#![no_std]`\n\nerror[E0463]: can't find crate for `std`\n --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/fastmurmur3-0.1.2/src/murmur3rs.rs:2:5\n  |\n2 | use std::ops::Shl;\n  |     ^^^ can't find crate\n  |\n  = note: the `thumbv7m-none-eabi` target may not support the standard library\n\nerror: cannot find macro `unreachable` in this scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/fastmurmur3-0.1.2/src/murmur3rs.rs:99:14\n   |\n99 |         _ => unreachable!()\n   |              ^^^^^^^^^^^\n   |\nhelp: consider importing this macro\n   |\n2  + use core::unreachable;\n   |\n\nerror: cannot find attribute `test` in this scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/fastmurmur3-0.1.2/src/fallthrough.rs:60:3\n   |\n60 | #[test]\n   |   ^^^^\n   |\nhelp: consider importing this attribute macro\n   |\n5  + use core::prelude::rust_2024::test;\n   |\n\nerror: cannot find macro `assert_eq` in this scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/fastmurmur3-0.1.2/src/fallthrough.rs:66:16\n   |\n66 |         0 => { assert_eq!(x,0); x = 1; },\n   |                ^^^^^^^^^\n   |\nhelp: consider importing this macro\n   |\n5  + use core::assert_eq;\n   |\n\nerror: cannot find macro `assert_eq` in this scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/fastmurmur3-0.1.2/src/fallthrough.rs:67:16\n   |\n67 |         1 => { assert_eq!(x,1); x = 2; break; },\n   |                ^^^^^^^^^\n   |\nhelp: consider importing this macro\n   |\n5  + use core::assert_eq;\n   |\n\nerror: cannot find macro `panic` in this scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/fastmurmur3-0.1.2/src/fallthrough.rs:68:16\n   |\n68 |         _ => { panic!(\"Should not reach the default case\"); },\n   |                ^^^^^\n   |\nhelp: consider importing this macro\n   |\n5  + use core::panic;\n   |\n\nerror: cannot find macro `assert_eq` in this scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/fastmurmur3-0.1.2/src/fallthrough.rs:70:5\n   |\n70 |     assert_eq!(x, 2);\n   |     ^^^^^^^^^\n   |\nhelp: consider importing this macro\n   |\n5  + use core::assert_eq;\n   |\n\nerror: requires `sized` lang_item\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/fastmurmur3-0.1.2/src/murmur3rs.rs:12:19\n   |\n12 | pub fn hash(data: &[u8]) -> u128 {\n   |                   ^^^^^\n\nerror: requires `sized` lang_item\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/fastmurmur3-0.1.2/src/murmur3rs.rs:27:30\n   |\n27 | pub fn murmur3_x64_128(data: &[u8], salt: u32) -> u128 {\n   |                              ^^^^^\n\nerror: requires `sized` lang_item\n\nFor more information about this error, try `rustc --explain E0463`.\nerror: could not compile `fastmurmur3` (lib) due to 11 previous errors\nwarning: build failed, waiting for other jobs to finish...\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/expecto-patronum-0.1.0/src",
+    "time_to_build": 262,
+    "time_to_solve": 14
+  }
+]

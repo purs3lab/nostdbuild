@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\n   Compiling numpress v1.1.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/numpress-1.1.0)\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n  --> src/lib.rs:14:35\n   |\n14 | #![cfg_attr(not(feature = \"std\"), feature(alloc))]\n   |                                   ^^^^^^^^^^^^^^\n\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n  --> src/lib.rs:15:35\n   |\n15 | #![cfg_attr(not(feature = \"std\"), feature(core_intrinsics))]\n   |                                   ^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: the feature `core_intrinsics` is internal to the compiler or standard library\n  --> src/lib.rs:15:43\n   |\n15 | #![cfg_attr(not(feature = \"std\"), feature(core_intrinsics))]\n   |                                           ^^^^^^^^^^^^^^^\n   |\n   = note: using it is strongly discouraged\n   = note: `#[warn(internal_features)]` on by default\n\nwarning: use of deprecated function `core::mem::uninitialized`: use `mem::MaybeUninit` instead\n   --> src/lib.rs:159:19\n    |\n159 | use sealed::mem::{uninitialized, transmute};\n    |                   ^^^^^^^^^^^^^\n    |\n    = note: `#[warn(deprecated)]` on by default\n\nwarning: use of deprecated function `core::mem::uninitialized`: use `mem::MaybeUninit` instead\n   --> src/lib.rs:196:27\n    |\n196 |     let mut fp: [u8; 8] = uninitialized();\n    |                           ^^^^^^^^^^^^^\n\nwarning: use of deprecated function `core::mem::uninitialized`: use `mem::MaybeUninit` instead\n   --> src/lib.rs:364:30\n    |\n364 |     let mut ints: [i64; 3] = uninitialized();\n    |                              ^^^^^^^^^^^^^\n\nwarning: use of deprecated function `core::mem::uninitialized`: use `mem::MaybeUninit` instead\n   --> src/lib.rs:393:36\n    |\n393 |     let mut half_bytes: [u8; 10] = uninitialized();\n    |                                    ^^^^^^^^^^^^^\n\nwarning: use of deprecated function `core::mem::uninitialized`: use `mem::MaybeUninit` instead\n   --> src/lib.rs:476:30\n    |\n476 |     let mut ints: [i64; 3] = uninitialized();\n    |                              ^^^^^^^^^^^^^\n\nwarning: use of deprecated function `core::mem::uninitialized`: use `mem::MaybeUninit` instead\n   --> src/lib.rs:506:25\n    |\n506 |     let mut buff: u32 = uninitialized();\n    |                         ^^^^^^^^^^^^^\n\nwarning: the feature `alloc` has been stable since 1.36.0 and no longer requires an attribute to enable\n  --> src/lib.rs:14:43\n   |\n14 | #![cfg_attr(not(feature = \"std\"), feature(alloc))]\n   |                                           ^^^^^\n   |\n   = note: `#[warn(stable_features)]` on by default\n\nFor more information about this error, try `rustc --explain E0554`.\nwarning: `numpress` (lib) generated 8 warnings\nerror: could not compile `numpress` (lib) due to 2 previous errors; 8 warnings emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/numpress-1.1.0/src",
+    "time_to_build": 162,
+    "time_to_solve": 50
+  }
+]

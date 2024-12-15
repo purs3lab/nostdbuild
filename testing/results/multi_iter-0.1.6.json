@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling multi_iter v0.1.6 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/multi_iter-0.1.6)\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n --> src/lib.rs:6:5\n  |\n6 | use std::iter::FusedIterator;\n  |     ^^^ use of undeclared crate or module `std`\n\nFor more information about this error, try `rustc --explain E0433`.\nerror: could not compile `multi_iter` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/multi_iter-0.1.6/src",
+    "time_to_build": 151,
+    "time_to_solve": 35
+  }
+]

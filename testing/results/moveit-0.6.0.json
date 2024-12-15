@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling moveit v0.6.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/moveit-0.6.0)\nerror[E0433]: failed to resolve: use of undeclared crate or module `alloc`\n  --> src/new/mod.rs:29:5\n   |\n29 | use alloc::{boxed::Box, rc::Rc, sync::Arc};\n   |     ^^^^^ use of undeclared crate or module `alloc`\n   |\n   = help: add `extern crate alloc` to use the `alloc` crate\n\nerror[E0412]: cannot find type `AtomicI64` in module `core::sync::atomic`\n    --> src/new/impls.rs:92:23\n     |\n92   |     core::sync::atomic::AtomicI64,\n     |                         ^^^^^^^^^ help: a struct with a similar name exists: `AtomicI16`\n     |\n    ::: /Users/graysonnocera/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/sync/atomic.rs:3067:1\n     |\n3067 | / atomic_int! {\n3068 | |     cfg(target_has_atomic = \"16\"),\n3069 | |     cfg(target_has_atomic_equal_alignment = \"16\"),\n3070 | |     stable(feature = \"integer_atomics_stable\", since = \"1.34.0\"),\n...    |\n3082 | |     i16 AtomicI16\n3083 | | }\n     | |_- similarly named struct `AtomicI16` defined here\n\nerror[E0412]: cannot find type `AtomicU64` in module `core::sync::atomic`\n    --> src/new/impls.rs:97:23\n     |\n97   |     core::sync::atomic::AtomicU64,\n     |                         ^^^^^^^^^ help: a struct with a similar name exists: `AtomicU16`\n     |\n    ::: /Users/graysonnocera/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/src/rust/library/core/src/sync/atomic.rs:3085:1\n     |\n3085 | / atomic_int! {\n3086 | |     cfg(target_has_atomic = \"16\"),\n3087 | |     cfg(target_has_atomic_equal_alignment = \"16\"),\n3088 | |     stable(feature = \"integer_atomics_stable\", since = \"1.34.0\"),\n...    |\n3100 | |     u16 AtomicU16\n3101 | | }\n     | |_- similarly named struct `AtomicU16` defined here\n\nSome errors have detailed explanations: E0412, E0433.\nFor more information about an error, try `rustc --explain E0412`.\nerror: could not compile `moveit` (lib) due to 3 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "cxx"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/moveit-0.6.0/src",
+    "time_to_build": 358,
+    "time_to_solve": 88
+  }
+]

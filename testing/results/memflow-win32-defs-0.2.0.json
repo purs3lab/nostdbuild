@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling ahash v0.8.6\n   Compiling bitflags v2.4.1\n   Compiling either v1.9.0\n   Compiling rustversion v1.0.14\n   Compiling no-std-compat v0.4.1\n   Compiling volatile v0.4.6\n   Compiling cglue v0.2.14\n   Compiling dataview v1.0.1\n   Compiling darling v0.20.3\nerror[E0463]: can't find crate for `std`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/either-1.9.0/src/lib.rs:19:1\n   |\n19 | extern crate std;\n   | ^^^^^^^^^^^^^^^^^ can't find crate\n   |\n   = note: the `thumbv7m-none-eabi` target may not support the standard library\n\nFor more information about this error, try `rustc --explain E0463`.\n   Compiling bumpalo v3.14.0\nerror: could not compile `either` (lib) due to 1 previous error\nwarning: build failed, waiting for other jobs to finish...\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/memflow-win32-defs-0.2.0/src",
+    "time_to_build": 952,
+    "time_to_solve": 76
+  }
+]

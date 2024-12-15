@@ -1,0 +1,25 @@
+[
+  {
+    "built_with_features": "spin",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "spin"
+      ],
+      "code": 0,
+      "stderr": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std",
+      "spin"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/mtxgroup-0.1.1/src",
+    "time_to_build": 47,
+    "time_to_solve": 26
+  }
+]

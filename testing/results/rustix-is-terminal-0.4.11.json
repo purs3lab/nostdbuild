@@ -1,0 +1,20 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling libc v0.2.153\n   Compiling rustix v0.38.31\n   Compiling errno v0.3.8\n   Compiling bitflags v2.4.2\nerror[E0583]: file not found for module `sys`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/errno-0.3.8/src/lib.rs:26:1\n   |\n26 | mod sys;\n   | ^^^^^^^^\n   |\n   = help: to create the module `sys`, create file \"/Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/errno-0.3.8/src/sys.rs\" or \"/Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/errno-0.3.8/src/sys/mod.rs\"\n   = note: if there is a `mod sys` elsewhere in the crate already, import it with `use crate::...` instead\n\nerror[E0425]: cannot find function `with_description` in module `sys`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/errno-0.3.8/src/lib.rs:47:14\n   |\n47 |         sys::with_description(*self, |desc| {\n   |              ^^^^^^^^^^^^^^^^ not found in `sys`\n\nerror[E0425]: cannot find function `with_description` in module `sys`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/errno-0.3.8/src/lib.rs:58:14\n   |\n58 |         sys::with_description(*self, |desc| match desc {\n   |              ^^^^^^^^^^^^^^^^ not found in `sys`\n\nerror[E0425]: cannot find value `STRERROR_NAME` in module `sys`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/errno-0.3.8/src/lib.rs:64:22\n   |\n64 |                 sys::STRERROR_NAME,\n   |                      ^^^^^^^^^^^^^ not found in `sys`\n\nerror[E0425]: cannot find function `errno` in module `sys`\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/errno-0.3.8/src/lib.rs:95:10\n   |\n95 |     sys::errno()\n   |          ^^^^^ not found in `sys`\n\nerror[E0425]: cannot find function `set_errno` in module `sys`\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/errno-0.3.8/src/lib.rs:100:10\n    |\n100 |     sys::set_errno(err)\n    |          ^^^^^^^^^ not found in `sys`\n\nSome errors have detailed explanations: E0425, E0583.\nFor more information about an error, try `rustc --explain E0425`.\nerror: could not compile `errno` (lib) due to 6 previous errors\nwarning: build failed, waiting for other jobs to finish...\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/rustix-is-terminal-0.4.11/src",
+    "time_to_build": 334,
+    "time_to_solve": 17
+  }
+]

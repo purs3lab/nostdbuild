@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "error: failed to link or copy `/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/liminal-ark-pnbr-poseidon-paramgen-0.1.0/target/debug/build/proc-macro2-177808bebdca34e0/build_script_build-177808bebdca34e0` to `/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/liminal-ark-pnbr-poseidon-paramgen-0.1.0/target/debug/build/proc-macro2-177808bebdca34e0/build-script-build`\n\nCaused by:\n  No space left on device (os error 28)\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/liminal-ark-pnbr-poseidon-paramgen-0.1.0/src",
+    "time_to_build": 297,
+    "time_to_solve": 70
+  }
+]

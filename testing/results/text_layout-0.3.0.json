@@ -1,0 +1,26 @@
+[
+  {
+    "built_with_features": "libm",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "libm"
+      ],
+      "code": 0,
+      "stderr": "warning: unexpected `cfg` condition value: `fixed`\n --> src/lib.rs:3:32\n  |\n3 | #[cfg(not(any(feature = \"std\", feature = \"fixed\", feature = \"libm\")))]\n  |                                ^^^^^^^^^^^^^^^^^\n  |\n  = note: expected values for `feature` are: `default`, `libm`, and `std`\n  = help: consider adding `fixed` as a feature in `Cargo.toml`\n  = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n  = note: `#[warn(unexpected_cfgs)]` on by default\n\nwarning: `text_layout` (lib) generated 1 warning\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std",
+      "fixed",
+      "libm"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/text_layout-0.3.0/src",
+    "time_to_build": 59,
+    "time_to_solve": 80
+  }
+]

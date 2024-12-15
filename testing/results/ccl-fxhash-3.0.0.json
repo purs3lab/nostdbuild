@@ -1,0 +1,20 @@
+[
+  {
+    "built_with_features": "none",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 0,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\nwarning: anonymous parameters are deprecated and will be removed in the next edition\n  --> lib.rs:70:29\n   |\n70 |     fn hash_word(&mut self, Self);\n   |                             ^^^^ help: try naming the parameter or explicitly ignoring it: `_: Self`\n   |\n   = warning: this is accepted in the current edition (Rust 2015) but is a hard error in Rust 2018!\n   = note: for more information, see issue #41686 <https://github.com/rust-lang/rust/issues/41686>\n   = note: `#[warn(anonymous_parameters)]` on by default\n\nwarning: `ccl-fxhash` (lib) generated 1 warning (run `cargo fix --lib -p ccl-fxhash` to apply 1 suggestion)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/ccl-fxhash-3.0.0",
+    "time_to_build": 183,
+    "time_to_solve": 12
+  }
+]

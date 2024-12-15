@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling zinc64-core v0.8.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/zinc64-core-0.8.0)\nerror[E0432]: unresolved import `alloc::prelude`\n --> src/chip_factory.rs:8:12\n  |\n8 | use alloc::prelude::*;\n  |            ^^^^^^^ could not find `prelude` in `alloc`\n\nerror[E0432]: unresolved import `alloc::prelude`\n --> src/io_port.rs:6:12\n  |\n6 | use alloc::prelude::*;\n  |            ^^^^^^^ could not find `prelude` in `alloc`\n\nerror[E0432]: unresolved import `alloc::prelude`\n --> src/ram.rs:6:12\n  |\n6 | use alloc::prelude::*;\n  |            ^^^^^^^ could not find `prelude` in `alloc`\n\nerror[E0432]: unresolved import `alloc::prelude`\n --> src/rom.rs:6:12\n  |\n6 | use alloc::prelude::*;\n  |            ^^^^^^^ could not find `prelude` in `alloc`\n\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n --> src/lib.rs:6:35\n  |\n6 | #![cfg_attr(not(feature = \"std\"), feature(alloc))]\n  |                                   ^^^^^^^^^^^^^^\n\nwarning: unexpected `cfg` condition value: `cargo-clippy`\n --> src/chip_factory.rs:5:13\n  |\n5 | #![cfg_attr(feature = \"cargo-clippy\", allow(clippy::too_many_arguments))]\n  |             ^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n  = note: expected values for `feature` are: `default` and `std`\n  = help: consider adding `cargo-clippy` as a feature in `Cargo.toml`\n  = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n  = note: `#[warn(unexpected_cfgs)]` on by default\n\nwarning: the feature `alloc` has been stable since 1.36.0 and no longer requires an attribute to enable\n --> src/lib.rs:6:43\n  |\n6 | #![cfg_attr(not(feature = \"std\"), feature(alloc))]\n  |                                           ^^^^^\n  |\n  = note: `#[warn(stable_features)]` on by default\n\nSome errors have detailed explanations: E0432, E0554.\nFor more information about an error, try `rustc --explain E0432`.\nwarning: `zinc64-core` (lib) generated 2 warnings\nerror: could not compile `zinc64-core` (lib) due to 5 previous errors; 2 warnings emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/zinc64-core-0.8.0/src",
+    "time_to_build": 179,
+    "time_to_solve": 42
+  }
+]

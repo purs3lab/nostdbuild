@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\n   Compiling susy-codec v3.5.1\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/susy-codec-3.5.1/src/lib.rs:20:35\n   |\n20 | #![cfg_attr(not(feature = \"std\"), feature(alloc))]\n   |                                   ^^^^^^^^^^^^^^\n\nFor more information about this error, try `rustc --explain E0554`.\nerror: could not compile `susy-codec` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/codec-impl-0.2.0/src",
+    "time_to_build": 12242,
+    "time_to_solve": 7
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling here v1.1.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/here-1.1.1)\nerror: failed to run custom build command for `here v1.1.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/here-1.1.1)`\n\nCaused by:\n  process didn't exit successfully: `/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/here-1.1.1/target/debug/build/here-2f4589bc44f501dd/build-script-build` (exit status: 1)\n  --- stderr\n  Either the 'log' feature or the 'std' feature must be enabled, otherwise this crate will do nothing.\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/here-1.1.1/src",
+    "time_to_build": 277,
+    "time_to_solve": 12
+  }
+]

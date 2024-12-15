@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling ioslice v0.5.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/ioslice-0.5.1)\nerror: cannot find macro `dbg` in this scope\n   --> src/buffer.rs:239:9\n    |\n239 |         dbg!(all.len());\n    |         ^^^\n\nerror: cannot find macro `dbg` in this scope\n   --> src/buffer.rs:240:9\n    |\n240 |         dbg!(self.bytes_filled);\n    |         ^^^\n\nerror: could not compile `ioslice` (lib) due to 2 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/ioslice-0.5.1/src",
+    "time_to_build": 336,
+    "time_to_solve": 134
+  }
+]

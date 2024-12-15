@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling bytes v1.2.0\n   Compiling block-buffer v0.10.2\n   Compiling crypto-common v0.1.6\n   Compiling digest v0.10.3\n   Compiling lsmtree v0.1.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/lsmtree-0.1.1)\nerror[E0599]: no method named `ceil` found for type `f64` in the current scope\n   --> src/proofs.rs:102:77\n    |\n102 |         let mut bit_mask = vec![0u8; ((self.side_nodes.len() as f64) / 8.0).ceil() as usize];\n    |                                                                             ^^^^ method not found in `f64`\n\nerror[E0599]: no method named `ceil` found for type `f64` in the current scope\n   --> src/proofs.rs:144:70\n    |\n144 |         let mut bit_mask = vec![0u8; ((num_side_nodes as f64) / 8.0).ceil() as usize];\n    |                                                                      ^^^^ method not found in `f64`\n\nerror[E0599]: no method named `ceil` found for type `f64` in the current scope\n   --> src/proofs.rs:415:74\n    |\n415 |             self.bitmask.len() != ((self.num_side_nodes as f64 ) / 8f64).ceil() as usize ||\n    |                                                                          ^^^^ method not found in `f64`\n\nFor more information about this error, try `rustc --explain E0599`.\nerror: could not compile `lsmtree` (lib) due to 3 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/lsmtree-0.1.1/src",
+    "time_to_build": 609,
+    "time_to_solve": 107
+  }
+]

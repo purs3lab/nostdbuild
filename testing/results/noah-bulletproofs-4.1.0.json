@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling rand_core v0.6.4\n   Compiling syn v2.0.90\n   Compiling syn v1.0.109\n   Compiling block-buffer v0.10.4\n   Compiling crypto-common v0.1.6\n   Compiling clear_on_drop v0.2.5\n   Compiling digest v0.10.7\n   Compiling sha3 v0.10.8\n   Compiling parity-scale-codec-derive v3.6.12\n   Compiling derive_more-impl v1.0.0\n   Compiling impl-trait-for-tuples v0.2.3\n   Compiling zeroize_derive v1.4.2\n   Compiling scale-info-derive v2.11.6\n   Compiling serde_derive v1.0.215\n   Compiling zeroize v1.8.1\n   Compiling merlin v3.0.0\n   Compiling derive_more v1.0.0\n   Compiling parity-scale-codec v3.6.12\n   Compiling scale-info v2.11.6\n   Compiling serde v1.0.215\n   Compiling noah-curve25519-dalek v4.0.0\n   Compiling noah-bulletproofs v4.1.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/noah-bulletproofs-4.1.0)\nerror[E0412]: cannot find type `R1CSError` in this scope\n   --> src/errors.rs:159:21\n    |\n79  | pub enum MPCError {\n    | ----------------- similarly named enum `MPCError` defined here\n...\n159 | impl fmt::Debug for R1CSError {\n    |                     ^^^^^^^^^ help: an enum with a similar name exists: `MPCError`\n\nerror[E0412]: cannot find type `R1CSError` in this scope\n   --> src/errors.rs:173:23\n    |\n79  | pub enum MPCError {\n    | ----------------- similarly named enum `MPCError` defined here\n...\n173 | impl fmt::Display for R1CSError {\n    |                       ^^^^^^^^^ help: an enum with a similar name exists: `MPCError`\n\nwarning: unused import: `string::String`\n --> src/errors.rs:3:18\n  |\n3 | use alloc::{fmt, string::String, vec::Vec};\n  |                  ^^^^^^^^^^^^^^\n  |\n  = note: `#[warn(unused_imports)]` on by default\n\nerror[E0433]: failed to resolve: use of undeclared type `R1CSError`\n   --> src/errors.rs:162:13\n    |\n162 |             R1CSError::InvalidGeneratorsLength => {\n    |             ^^^^^^^^^\n    |             |\n    |             use of undeclared type `R1CSError`\n    |             help: an enum with a similar name exists: `MPCError`\n\nerror[E0433]: failed to resolve: use of undeclared type `R1CSError`\n   --> src/errors.rs:165:13\n    |\n165 |             R1CSError::FormatError => write!(f, \"Proof data could not be parsed.\"),\n    |             ^^^^^^^^^\n    |             |\n    |             use of undeclared type `R1CSError`\n    |             help: an enum with a similar name exists: `MPCError`\n\nerror[E0433]: failed to resolve: use of undeclared type `R1CSError`\n   --> src/errors.rs:166:13\n    |\n166 |             R1CSError::VerificationError => write!(f, \"R1CSProof did not verify correctly.\"),\n    |             ^^^^^^^^^\n    |             |\n    |             use of undeclared type `R1CSError`\n    |             help: an enum with a similar name exists: `MPCError`\n\nerror[E0433]: failed to resolve: use of undeclared type `R1CSError`\n   --> src/errors.rs:167:13\n    |\n167 |             R1CSError::MissingAssignment => write!(f, \"Variable does not have a value assignment.\"),\n    |             ^^^^^^^^^\n    |             |\n    |             use of undeclared type `R1CSError`\n    |             help: an enum with a similar name exists: `MPCError`\n\nerror[E0433]: failed to resolve: use of undeclared type `R1CSError`\n   --> src/errors.rs:168:13\n    |\n168 |             R1CSError::GadgetError { description } => write!(f, \"Gadget error: {}\", description),\n    |             ^^^^^^^^^\n    |             |\n    |             use of undeclared type `R1CSError`\n    |             help: an enum with a similar name exists: `MPCError`\n\nSome errors have detailed explanations: E0412, E0433.\nFor more information about an error, try `rustc --explain E0412`.\nwarning: `noah-bulletproofs` (lib) generated 1 warning\nerror: could not compile `noah-bulletproofs` (lib) due to 7 previous errors; 1 warning emitted\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/noah-bulletproofs-4.1.0/src",
+    "time_to_build": 5921,
+    "time_to_solve": 220
+  }
+]

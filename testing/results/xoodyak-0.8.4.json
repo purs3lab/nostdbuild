@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling xoodyak v0.8.4 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/xoodyak-0.8.4)\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n --> src/error.rs:1:5\n  |\n1 | use std::fmt::{self, Display};\n  |     ^^^ use of undeclared crate or module `std`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n --> src/xoodoo/mod.rs:1:5\n  |\n1 | use std::convert::TryInto;\n  |     ^^^ use of undeclared crate or module `std`\n\nerror[E0432]: unresolved import `std`\n --> src/error.rs:1:5\n  |\n1 | use std::fmt::{self, Display};\n  |     ^^^ use of undeclared crate or module `std`\n\nerror[E0433]: failed to resolve: use of undeclared crate or module `std`\n  --> src/error.rs:11:6\n   |\n11 | impl std::error::Error for Error {}\n   |      ^^^ use of undeclared crate or module `std`\n   |\nhelp: consider importing this module\n   |\n1  + use core::error;\n   |\nhelp: if you import `error`, refer to it directly\n   |\n11 - impl std::error::Error for Error {}\n11 + impl error::Error for Error {}\n   |\n\nSome errors have detailed explanations: E0432, E0433.\nFor more information about an error, try `rustc --explain E0432`.\nerror: could not compile `xoodyak` (lib) due to 4 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/xoodyak-0.8.4/src",
+    "time_to_build": 320,
+    "time_to_solve": 80
+  }
+]

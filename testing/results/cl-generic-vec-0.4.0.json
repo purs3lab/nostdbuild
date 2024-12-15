@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling cl-generic-vec v0.4.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/cl-generic-vec-0.4.0)\nerror[E0133]: call to unsafe function `GenericVec::<T, &'a mut [MaybeUninit<T>]>::new` is unsafe and requires unsafe function or block\n  --> src/iter/splice.rs:44:30\n   |\n44 |             let mut buffer = crate::SliceVec::new(&mut buffer);\n   |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function\n   |\n   = note: consult the function's documentation for information on how to avoid undefined behavior\n\nFor more information about this error, try `rustc --explain E0133`.\nerror: could not compile `cl-generic-vec` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/cl-generic-vec-0.4.0/src",
+    "time_to_build": 612,
+    "time_to_solve": 160
+  }
+]

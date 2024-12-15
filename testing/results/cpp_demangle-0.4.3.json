@@ -1,0 +1,24 @@
+[
+  {
+    "built_with_features": "alloc",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "alloc"
+      ],
+      "code": 0,
+      "stderr": "warning: method `get_function_arg` is never used\n   --> src/ast.rs:359:8\n    |\n350 | trait ArgScope<'me, 'ctx>: fmt::Debug {\n    |       -------- method in this trait\n...\n359 |     fn get_function_arg(&'me self, index: usize) -> Result<&'ctx Type>;\n    |        ^^^^^^^^^^^^^^^^\n    |\n    = note: `#[warn(dead_code)]` on by default\n\nwarning: `cpp_demangle` (lib) generated 1 warning\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.01s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/cpp_demangle-0.4.3/src",
+    "time_to_build": 52,
+    "time_to_solve": 391
+  }
+]

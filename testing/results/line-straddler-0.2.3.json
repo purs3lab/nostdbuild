@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling line-straddler v0.2.3 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/line-straddler-0.2.3)\nerror: Either the `std` or `libm` feature must be enabled\n   --> src/lib.rs:327:13\n    |\n327 |               compile_error!(\"Either the `std` or `libm` feature must be enabled\");\n    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n...\n334 | /     float_switch!(\n335 | |         a => [a.abs()] [libm::fabsf(a)]\n336 | |     )\n    | |_____- in this macro invocation\n    |\n    = note: this error originates in the macro `float_switch` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nerror[E0308]: mismatched types\n   --> src/lib.rs:326:9\n    |\n326 | /         {\n327 | |             compile_error!(\"Either the `std` or `libm` feature must be enabled\");\n328 | |         }\n    | |_________^ expected `f32`, found `()`\n...\n334 | /     float_switch!(\n335 | |         a => [a.abs()] [libm::fabsf(a)]\n336 | |     )\n    | |_____- in this macro invocation\n    |\n    = note: this error originates in the macro `float_switch` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nFor more information about this error, try `rustc --explain E0308`.\nerror: could not compile `line-straddler` (lib) due to 2 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/line-straddler-0.2.3/src",
+    "time_to_build": 157,
+    "time_to_solve": 23
+  }
+]

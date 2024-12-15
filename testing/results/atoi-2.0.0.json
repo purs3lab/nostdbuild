@@ -1,0 +1,20 @@
+[
+  {
+    "built_with_features": "none",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 0,
+      "stderr": "   Compiling num-traits v0.2.19\n   Compiling atoi v2.0.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/atoi-2.0.0)\nwarning: unexpected `cfg` condition name: `std`\n  --> src/lib.rs:22:17\n   |\n22 | #![cfg_attr(not(std), no_std)]\n   |                 ^^^ help: found config with similar value: `feature = \"std\"`\n   |\n   = help: expected names are: `clippy`, `debug_assertions`, `doc`, `docsrs`, `doctest`, `feature`, `miri`, `overflow_checks`, `panic`, `proc_macro`, `relocation_model`, `rustfmt`, `sanitize`, `sanitizer_cfi_generalize_pointers`, `sanitizer_cfi_normalize_integers`, `target_abi`, `target_arch`, `target_endian`, `target_env`, `target_family`, `target_feature`, `target_has_atomic`, `target_has_atomic_equal_alignment`, `target_has_atomic_load_store`, `target_os`, `target_pointer_width`, `target_thread_local`, `target_vendor`, `test`, `ub_checks`, `unix`, and `windows`\n   = help: consider using a Cargo feature instead\n   = help: or consider adding in `Cargo.toml` the `check-cfg` lint config for the lint:\n            [lints.rust]\n            unexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(std)'] }\n   = help: or consider adding `println!(\"cargo::rustc-check-cfg=cfg(std)\");` to the top of the `build.rs`\n   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration\n   = note: `#[warn(unexpected_cfgs)]` on by default\n\nwarning: `atoi` (lib) generated 1 warning\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.62s\n",
+      "stdout": ""
+    },
+    "features": [],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/atoi-2.0.0/src",
+    "time_to_build": 999,
+    "time_to_solve": 41
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling autocfg v1.4.0\n   Compiling subtle v2.6.1\n   Compiling byte-slice-cast v1.2.2\n   Compiling either v1.13.0\n   Compiling arrayvec v0.7.6\n   Compiling syn v1.0.109\n   Compiling syn v2.0.90\n   Compiling proc-macro-crate v3.2.0\n   Compiling generic-array v0.14.7\n   Compiling paste v1.0.15\n   Compiling itertools v0.10.5\n   Compiling ink_prelude v3.4.0\n   Compiling unicode-xid v0.2.6\n   Compiling cfg-if v1.0.0\n   Compiling impl-serde v0.3.2\n   Compiling ink_allocator v3.4.0\n   Compiling heck v0.4.1\nerror: ink! only supports compilation as `std` or `no_std` + `wasm32-unknown`\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-3.4.0/src/bump.rs:107:13\n    |\n107 | /             compile_error! {\n108 | |                 \"ink! only supports compilation as `std` or `no_std` + `wasm32-unknown`\"\n109 | |             }\n    | |_____________^\n\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-3.4.0/src/lib.rs:22:35\n   |\n22 | #![cfg_attr(not(feature = \"std\"), feature(alloc_error_handler, core_intrinsics))]\n   |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nerror[E0599]: no method named `request_pages` found for mutable reference `&mut InnerAlloc` in the current scope\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ink_allocator-3.4.0/src/bump.rs:125:35\n    |\n125 |             let page_start = self.request_pages(required_pages)?;\n    |                                   ^^^^^^^^^^^^^ method not found in `&mut InnerAlloc`\n\nSome errors have detailed explanations: E0554, E0599.\nFor more information about an error, try `rustc --explain E0554`.\nerror: could not compile `ink_allocator` (lib) due to 3 previous errors\nwarning: build failed, waiting for other jobs to finish...\nrustc-LLVM ERROR: IO failure on output stream: No space left on device\nerror: could not compile `syn` (lib)\nrustc-LLVM ERROR: IO failure on output stream: No space left on device\nerror: could not compile `syn` (lib)\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/pluser-3.0.0",
+    "time_to_build": 5096,
+    "time_to_solve": 2832
+  }
+]

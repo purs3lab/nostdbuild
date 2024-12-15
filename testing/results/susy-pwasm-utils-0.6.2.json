@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "warning: no edition set: defaulting to the 2015 edition while the latest is 2021\n   Compiling byteorder v1.5.0\n   Compiling log v0.4.22\n   Compiling susy-wasm v0.31.3\nerror[E0554]: `#![feature]` may not be used on the stable release channel\n --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/susy-wasm-0.31.3/src/lib.rs:4:35\n  |\n4 | #![cfg_attr(not(feature = \"std\"), feature(alloc))]\n  |                                   ^^^^^^^^^^^^^^\n\nFor more information about this error, try `rustc --explain E0554`.\nerror: could not compile `susy-wasm` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/susy-pwasm-utils-0.6.2/src",
+    "time_to_build": 607,
+    "time_to_solve": 185
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling crunchy v0.2.2\n   Compiling byteorder v1.5.0\n   Compiling rustc-hex v2.1.0\n   Compiling hex v0.4.3\n   Compiling ethers-fixed-hash v0.8.0\n   Compiling ethers-uint-rs v0.9.5\n   Compiling ethers-primitive-types-rs v0.12.1\nerror[E0412]: cannot find type `String` in this scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ethers-primitive-types-rs-0.12.1/src/lib.rs:49:1\n   |\n49 | / construct_fixed_hash! {\n50 | |     /// Fixed-size uninterpreted hash type with 16 bytes (128 bits) size.\n51 | |     #[cfg_attr(feature = \"scale-info\", derive(TypeInfo))]\n52 | |     pub struct H128(16);\n53 | | }\n   | |_^ not found in this scope\n   |\n   = note: this error originates in the macro `construct_fixed_hash` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nerror[E0412]: cannot find type `String` in this scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ethers-primitive-types-rs-0.12.1/src/lib.rs:55:1\n   |\n55 | / construct_fixed_hash! {\n56 | |     /// Fixed-size uninterpreted hash type with 20 bytes (160 bits) size.\n57 | |     #[cfg_attr(feature = \"scale-info\", derive(TypeInfo))]\n58 | |     pub struct H160(20);\n59 | | }\n   | |_^ not found in this scope\n   |\n   = note: this error originates in the macro `construct_fixed_hash` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nerror[E0412]: cannot find type `String` in this scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ethers-primitive-types-rs-0.12.1/src/lib.rs:60:1\n   |\n60 | / construct_fixed_hash! {\n61 | |     /// Fixed-size uninterpreted hash type with 32 bytes (256 bits) size.\n62 | |     #[cfg_attr(feature = \"scale-info\", derive(TypeInfo))]\n63 | |     pub struct H256(32);\n64 | | }\n   | |_^ not found in this scope\n   |\n   = note: this error originates in the macro `construct_fixed_hash` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nerror[E0412]: cannot find type `String` in this scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ethers-primitive-types-rs-0.12.1/src/lib.rs:65:1\n   |\n65 | / construct_fixed_hash! {\n66 | |     /// Fixed-size uninterpreted hash type with 48 bytes (384 bits) size.\n67 | |     #[cfg_attr(feature = \"scale-info\", derive(TypeInfo))]\n68 | |     pub struct H384(48);\n69 | | }\n   | |_^ not found in this scope\n   |\n   = note: this error originates in the macro `construct_fixed_hash` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nerror[E0412]: cannot find type `String` in this scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ethers-primitive-types-rs-0.12.1/src/lib.rs:70:1\n   |\n70 | / construct_fixed_hash! {\n71 | |     /// Fixed-size uninterpreted hash type with 64 bytes (512 bits) size.\n72 | |     #[cfg_attr(feature = \"scale-info\", derive(TypeInfo))]\n73 | |     pub struct H512(64);\n74 | | }\n   | |_^ not found in this scope\n   |\n   = note: this error originates in the macro `construct_fixed_hash` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nerror[E0412]: cannot find type `String` in this scope\n  --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/ethers-primitive-types-rs-0.12.1/src/lib.rs:75:1\n   |\n75 | / construct_fixed_hash! {\n76 | |     /// Fixed-size uninterpreted hash type with 96 bytes (768 bits) size.\n77 | |     #[cfg_attr(feature = \"scale-info\", derive(TypeInfo))]\n78 | |     pub struct H768(96);\n79 | | }\n   | |_^ not found in this scope\n   |\n   = note: this error originates in the macro `construct_fixed_hash` (in Nightly builds, run with -Z macro-backtrace for more info)\n\nFor more information about this error, try `rustc --explain E0412`.\nerror: could not compile `ethers-primitive-types-rs` (lib) due to 12 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/ethers-ethereum-types-0.14.1/src",
+    "time_to_build": 13276,
+    "time_to_solve": 33
+  }
+]

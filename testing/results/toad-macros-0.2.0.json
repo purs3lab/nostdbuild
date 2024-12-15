@@ -1,0 +1,24 @@
+[
+  {
+    "built_with_features": "no_std",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features",
+        "--features",
+        "no_std"
+      ],
+      "code": 101,
+      "stderr": "warning: `proc_macro` is deprecated in favor of `proc-macro` and will not work in the 2024 edition\n(in the `toad_macros` library target)\nerror: Package `toad-macros v0.2.0 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/toad-macros-0.2.0)` does not have the feature `no_std`\n",
+      "stdout": ""
+    },
+    "features": [
+      "no_std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/toad-macros-0.2.0/src",
+    "time_to_build": 93,
+    "time_to_solve": 18
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling hsluv v0.3.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/hsluv-0.3.1)\nerror[E0432]: unresolved import `num_traits::float::Float`\n   --> src/lib.rs:4:5\n    |\n4   | use num_traits::float::Float;\n    |     ^^^^^^^^^^^^^^^^^^^^^^^^ no `Float` in `float`\n    |\nnote: found an item that was configured out\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/num-traits-0.2.19/src/float.rs:932:11\n    |\n932 | pub trait Float: Num + Copy + NumCast + PartialOrd + Neg<Output = Self> {\n    |           ^^^^^\nnote: the item is gated here\n   --> /Users/graysonnocera/.cargo/registry/src/index.crates.io-6f17d22bba15001f/num-traits-0.2.19/src/float.rs:931:1\n    |\n931 | #[cfg(any(feature = \"std\", feature = \"libm\"))]\n    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nFor more information about this error, try `rustc --explain E0432`.\nerror: could not compile `hsluv` (lib) due to 1 previous error\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/hsluv-0.3.1/src",
+    "time_to_build": 433,
+    "time_to_solve": 41
+  }
+]

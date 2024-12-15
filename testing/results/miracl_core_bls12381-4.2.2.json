@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": "none",
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 0,
+      "stderr": "   Compiling miracl_core_bls12381 v4.2.2 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/miracl_core_bls12381-4.2.2)\nwarning: dropping unsupported crate type `cdylib` for target `thumbv7m-none-eabi`\n\nwarning: `miracl_core_bls12381` (lib) generated 1 warning\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.65s\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/miracl_core_bls12381-4.2.2/src",
+    "time_to_build": 1014,
+    "time_to_solve": 824
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling aommap v0.3.1 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/aommap-0.3.1)\nerror[E0433]: failed to resolve: use of undeclared type `Box`\n  --> src/mmap/memory/mutable.rs:14:12\n   |\n14 |       ptr: Box::into_raw(Box::new(BytesMut::with_capacity(size))),\n   |            ^^^ use of undeclared type `Box`\n   |\nhelp: consider importing this struct\n   |\n1  + use alloc::boxed::Box;\n   |\n\nerror[E0433]: failed to resolve: use of undeclared type `Box`\n  --> src/mmap/memory/mutable.rs:14:26\n   |\n14 |       ptr: Box::into_raw(Box::new(BytesMut::with_capacity(size))),\n   |                          ^^^ use of undeclared type `Box`\n   |\nhelp: consider importing this struct\n   |\n1  + use alloc::boxed::Box;\n   |\n\nerror[E0433]: failed to resolve: use of undeclared type `Box`\n   --> src/mmap/memory/mutable.rs:105:14\n    |\n105 |     unsafe { Box::from_raw(self.ptr) };\n    |              ^^^ use of undeclared type `Box`\n    |\nhelp: consider importing this struct\n    |\n1   + use alloc::boxed::Box;\n    |\n\nerror[E0599]: no variant or associated item named `EOF` found for enum `wasm::Error` in the current scope\n  --> src/mmap/memory/mutable.rs:70:25\n   |\n70 |       return Err(Error::EOF);\n   |                         ^^^ variant or associated item not found in `Error`\n   |\n  ::: src/error/wasm.rs:4:1\n   |\n4  | pub enum Error {\n   | -------------- variant or associated item `EOF` not found for this enum\n\nerror[E0599]: no variant or associated item named `EOF` found for enum `wasm::Error` in the current scope\n  --> src/mmap/memory/mutable.rs:86:25\n   |\n86 |       return Err(Error::EOF);\n   |                         ^^^ variant or associated item not found in `Error`\n   |\n  ::: src/error/wasm.rs:4:1\n   |\n4  | pub enum Error {\n   | -------------- variant or associated item `EOF` not found for this enum\n\nSome errors have detailed explanations: E0433, E0599.\nFor more information about an error, try `rustc --explain E0433`.\nerror: could not compile `aommap` (lib) due to 5 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/aommap-0.3.1/src",
+    "time_to_build": 207,
+    "time_to_solve": 34
+  }
+]

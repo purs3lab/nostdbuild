@@ -1,0 +1,22 @@
+[
+  {
+    "built_with_features": null,
+    "command": {
+      "args": [
+        "build",
+        "--target",
+        "thumbv7m-none-eabi",
+        "--no-default-features"
+      ],
+      "code": 101,
+      "stderr": "   Compiling alloc_counter v0.0.4 (/Users/graysonnocera/Downloads/695-Project/dataset/nostd-failed-crates/crates/alloc_counter-0.0.4)\nerror: cannot find macro `thread_local` in this scope\n  --> src/lib.rs:21:1\n   |\n21 | thread_local!(static COUNTERS: Cell<Counters> = Cell::default());\n   | ^^^^^^^^^^^^\n   |\n   = note: `thread_local` is in scope, but it is an attribute: `#[thread_local]`\n\nerror: cannot find macro `thread_local` in this scope\n  --> src/lib.rs:22:1\n   |\n22 | thread_local!(static MODE: Cell<AllocMode> = Cell::new(AllocMode::Count));\n   | ^^^^^^^^^^^^\n   |\n   = note: `thread_local` is in scope, but it is an attribute: `#[thread_local]`\n\nerror[E0425]: cannot find value `MODE` in this scope\n  --> src/lib.rs:56:12\n   |\n56 |         if MODE.with(Cell::get) != AllocMode::Ignore {\n   |            ^^^^ not found in this scope\n\nerror[E0425]: cannot find value `COUNTERS` in this scope\n  --> src/lib.rs:57:13\n   |\n57 |             COUNTERS.with(|x| {\n   |             ^^^^^^^^ not found in this scope\n\nerror[E0425]: cannot find value `MODE` in this scope\n  --> src/lib.rs:68:12\n   |\n68 |         if MODE.with(Cell::get) != AllocMode::Ignore {\n   |            ^^^^ not found in this scope\n\nerror[E0425]: cannot find value `COUNTERS` in this scope\n  --> src/lib.rs:69:13\n   |\n69 |             COUNTERS.with(|x| {\n   |             ^^^^^^^^ not found in this scope\n\nerror[E0425]: cannot find value `MODE` in this scope\n  --> src/lib.rs:80:12\n   |\n80 |         if MODE.with(Cell::get) != AllocMode::Ignore {\n   |            ^^^^ not found in this scope\n\nerror[E0425]: cannot find value `COUNTERS` in this scope\n  --> src/lib.rs:81:13\n   |\n81 |             COUNTERS.with(|x| {\n   |             ^^^^^^^^ not found in this scope\n\nerror[E0425]: cannot find value `MODE` in this scope\n  --> src/lib.rs:96:9\n   |\n96 |         MODE.with(|x| x.set(self.0))\n   |         ^^^^ not found in this scope\n\nerror[E0425]: cannot find value `MODE` in this scope\n   --> src/lib.rs:102:15\n    |\n102 |         Guard(MODE.with(|x| {\n    |               ^^^^ help: a local variable with a similar name exists: `mode`\n\nerror[E0425]: cannot find value `COUNTERS` in this scope\n   --> src/lib.rs:139:24\n    |\n139 |     let (a1, r1, d1) = COUNTERS.with(Cell::get);\n    |                        ^^^^^^^^ not found in this scope\n\nerror[E0425]: cannot find value `COUNTERS` in this scope\n   --> src/lib.rs:141:24\n    |\n141 |     let (a2, r2, d2) = COUNTERS.with(Cell::get);\n    |                        ^^^^^^^^ not found in this scope\n\nFor more information about this error, try `rustc --explain E0425`.\nerror: could not compile `alloc_counter` (lib) due to 12 previous errors\n",
+      "stdout": ""
+    },
+    "features": [
+      "std"
+    ],
+    "project": "../../../Downloads/695-Project/dataset/nostd-failed-crates/crates/alloc_counter-0.0.4/src",
+    "time_to_build": 176,
+    "time_to_solve": 20
+  }
+]
