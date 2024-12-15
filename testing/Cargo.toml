@@ -4,9 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+itertools = "0.13.0"
 proc-macro2 = "1.0.89"
-# rustc_plugin = "0.10.0-nightly-2024-05-20"
+regex = "1.11.1"
+serde_json = "1.0.133"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
+z3 = { git = "https://github.com/prove-rs/z3.rs.git", version="0.12", features = ["bundled"]}
 
 [profile.release]
 panic = 'abort'
