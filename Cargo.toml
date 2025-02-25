@@ -1,0 +1,33 @@
+[package]
+name = "nostd"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nostd"
+path = "src/bin/main.rs"
+
+[dependencies]
+clap = { version = "4.5.26", features = ["derive"] }
+git2 = "0.20.0"
+env_logger = "0.11.6"
+log = "0.4.25"
+crates_io_api = "0.11.0"
+reqwest = "0.12.12"
+anyhow = "1.0.95"
+tar = "0.4.43"
+flate2 = "1.0.35"
+delete = "1.0.1"
+lazy_static = "1.5.0"
+walkdir = "2.5.0"
+semver = "1.0.25"
+cargo_metadata = "0.19.1"
+quote = "1.0.38"
+syn = { version = "2.0.96", features = ["visit", "parsing", "full", "extra-traits"] }
+proc-macro2 = "1.0.93"
+z3 = "0.12.1"
+toml = "0.8.20"
+serde = "1.0.217"
