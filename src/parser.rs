@@ -1,14 +1,16 @@
-use crate::consts::DOWNLOAD_PATH;
-use crate::DEPENDENCIES;
 use log::debug;
 use proc_macro2::TokenStream;
-use quote::ToTokens;
+// use quote::ToTokens;
 use std::collections::HashSet;
 use std::fs;
 use syn::{visit::Visit, Attribute, Meta};
 use walkdir::WalkDir;
 use z3;
 use z3::ast::Bool;
+
+use crate::consts::DOWNLOAD_PATH;
+use crate::DEPENDENCIES;
+// use crate::Dependency;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Logic {
@@ -61,8 +63,9 @@ impl<'a> Visit<'a> for Attributes {
 /// * `crate_name` - The name of the main crate
 /// # Returns
 /// The attributes of the main crate
-pub fn parse_crate(path: &str, crate_name: String) -> Attributes {
-    let files = get_all_rs_files(path);
+pub fn parse_crate(crate_name: String) -> Attributes {
+    let path = format!("{}/{}/", DOWNLOAD_PATH, crate_name.replace(':', "-"));
+    let files = get_all_rs_files(&path);
 
     let mut attributes = Attributes::default();
 
@@ -85,8 +88,7 @@ pub fn parse_deps_crate() -> Vec<Attributes> {
     let mut attributes = Vec::new();
     let deps_lock = DEPENDENCIES.lock().unwrap();
     for dep in deps_lock.iter() {
-        let path = format!("{}/{}/", DOWNLOAD_PATH, dep.replace(':', "-"));
-        attributes.push(parse_crate(&path, dep.clone()));
+        attributes.push(parse_crate(dep.clone()));
     }
     drop(deps_lock);
     attributes

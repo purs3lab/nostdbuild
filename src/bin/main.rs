@@ -3,10 +3,10 @@ use env_logger;
 use log::debug;
 
 use nostd::consts;
-use nostd::consts::DOWNLOAD_PATH;
 use nostd::downloader;
 use nostd::parser;
 use nostd::solver;
+use nostd::CrateInfo;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -25,6 +25,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     env_logger::init();
     let mut worklist: Vec<(String, String)> = Vec::new();
+    let mut crate_info: CrateInfo = CrateInfo::default();
 
     let mut name = match cli.name {
         Some(name) => name,
@@ -55,16 +56,15 @@ fn main() -> anyhow::Result<()> {
         name = downloader::clone_from_crates(&name, None)?;
         debug!("Downloaded crate: {}", name);
     }
-    downloader::init_worklist(&name, &mut worklist)?;
-    downloader::download_all_dependencies(&mut worklist)?;
+    downloader::init_worklist(&name, &mut worklist, &mut crate_info)?;
+    downloader::download_all_dependencies(&mut worklist, &mut crate_info)?;
+
+    debug!("Dependencies: {:?}", crate_info);
 
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
 
-    let main_attributes = parser::parse_crate(
-        &format!("{}/{}/", DOWNLOAD_PATH, name.replace(':', "-")),
-        name.clone(),
-    );
+    let main_attributes = parser::parse_crate(name);
     let (no_std, main_equation, main_parsed_attr) =
         parser::parse_main_attributes(&main_attributes, &ctx);
 
