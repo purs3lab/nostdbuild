@@ -9,7 +9,7 @@ pub mod solver;
 
 lazy_static! {
     // This is a list of all dependencies for a crate.
-    // Convert this to a variable passed between functions instead of a global variable
+    // TODO: Convert this to a variable passed between functions instead of a global variable
     pub static ref DEPENDENCIES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 }
 
@@ -21,6 +21,7 @@ pub enum Dependency {
         version: String,
         package: Option<String>,
         features: Option<Vec<String>>,
+        optional: Option<bool>,
         #[serde(rename = "default-features")]
         default_features: Option<bool>,
     },
@@ -31,6 +32,7 @@ pub struct CrateInfo {
     pub name: String,
     pub version: String,
     pub deps_and_features: Vec<(CrateInfo, Vec<String>)>,
-    pub features: Vec<String>,
+    pub features: Vec<(String, Vec<(String, String)>)>,
     pub default_features: bool,
+    pub optional: bool,
 }

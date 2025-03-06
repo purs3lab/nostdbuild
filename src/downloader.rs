@@ -9,7 +9,7 @@ use semver::VersionReq;
 use std::fs;
 use std::path::Path;
 use tar::Archive;
-use toml;
+use toml::{self, map::Map};
 use walkdir::WalkDir;
 
 use crate::consts::{CRATE_IO, DOWNLOAD_PATH};
@@ -111,19 +111,20 @@ pub fn download_all_dependencies(
         }
         drop(dep_lock);
 
+        let new_version = name_with_version.split(':').last().unwrap_or("latest");
+
         // `clone_from_crates` gives a more accurate version.
         // Update the version in the crate_info with this version.
-        traverse_and_update(
-            &name,
-            &version,
-            &name_with_version.split(':').last().unwrap_or("latest"),
-            crate_info,
-        );
+        traverse_and_update(&name, &version, new_version, crate_info);
+
+        traverse_and_add_local_features(&name, new_version, crate_info)?;
     }
     Ok(())
 }
 
-/// Initialize the worklist with the dependencies of a crate
+/// Initialize the worklist with the dependencies of a crate.
+/// This function also collects information about dependencies and
+/// features that will be used later.
 /// # Arguments
 /// * `name` - The name of the crate to get dependencies for
 /// * `worklist` - The worklist to add the dependencies to
@@ -152,44 +153,47 @@ pub fn init_worklist(
 
     let toml = fs::read_to_string(&filename).context("Failed to read Cargo.toml")?;
     let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
-
-    let dependencies = toml["dependencies"].as_table().unwrap();
+    let dependencies = toml["dependencies"].as_table().cloned().unwrap_or_else(|| {
+        debug!("No dependencies found in Cargo.toml");
+        Map::new()
+    });
+    crate_info.features = read_local_features(toml);
     for (name, value) in dependencies {
-        let mut name_to_use = name.to_string();
-        let mut default_features_to_use: bool = true;
+        let mut local_crate_info = CrateInfo::default();
         let mut features_to_use: Vec<String> = Vec::new();
-        let version_to_use: String;
         let dep: Dependency = value
             .clone()
             .try_into()
             .context("Failed to parse dependency")?;
         match dep {
             Dependency::Simple(version) => {
-                version_to_use = version;
+                local_crate_info.version = version;
             }
             Dependency::Complex {
                 version,
                 package,
                 default_features,
                 features,
+                optional,
+                ..
             } => {
-                default_features_to_use = default_features.unwrap_or(true);
-                name_to_use = package.unwrap_or(name_to_use);
-                version_to_use = version;
                 features_to_use = features.unwrap_or_default();
+                local_crate_info = CrateInfo {
+                    version,
+                    default_features: default_features.unwrap_or(true),
+                    optional: optional.unwrap_or(false),
+                    name: package.unwrap_or(name),
+                    ..local_crate_info
+                };
             }
         }
-        worklist.push((name_to_use.clone(), version_to_use.clone()));
-        crate_info.deps_and_features.push((
-            CrateInfo {
-                name: name_to_use,
-                version: version_to_use,
-                deps_and_features: Vec::new(),
-                features: Vec::new(),
-                default_features: default_features_to_use,
-            },
-            features_to_use,
+        worklist.push((
+            local_crate_info.name.clone(),
+            local_crate_info.version.clone(),
         ));
+        crate_info
+            .deps_and_features
+            .push((local_crate_info, features_to_use));
     }
 
     Ok(())
@@ -210,7 +214,35 @@ pub fn contains_one_rs_file(path: &str) -> bool {
     false
 }
 
-// All private functions below this line
+fn read_local_features(toml: toml::Value) -> Vec<(String, Vec<(String, String)>)> {
+    let features = toml["features"].as_table().cloned().unwrap_or_else(|| {
+        debug!("No features found in Cargo.toml");
+        Map::new()
+    });
+    let features = features
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.to_string(),
+                v.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| {
+                        // TODO: Handle optional dependencies properly
+                        if v.as_str().unwrap().starts_with("dep:") {
+                            return (v.as_str().unwrap()[4..].to_string(), "".to_string());
+                        }
+                        let v = v.as_str().unwrap().split("/");
+                        let left = v.clone().next().unwrap_or("").to_string();
+                        let right = v.clone().last().unwrap_or("").to_string();
+                        (left, right)
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    features
+}
 
 fn create_client() -> Result<SyncClient, anyhow::Error> {
     SyncClient::new(
@@ -220,9 +252,32 @@ fn create_client() -> Result<SyncClient, anyhow::Error> {
     .context("Failed to create client")
 }
 
+fn traverse_and_add_local_features(
+    name: &str,
+    version: &str,
+    crate_info: &mut CrateInfo,
+) -> anyhow::Result<(), anyhow::Error> {
+    if crate_info.name == name && crate_info.version == version {
+        let dir = Path::new(DOWNLOAD_PATH).join(format!("{}-{}", name, version));
+        let filename = format!("{}/Cargo.toml", dir.display());
+        debug!("Reading Cargo.toml from {}", filename);
+        let toml = fs::read_to_string(&filename).context("Failed to read Cargo.toml")?;
+        let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
+        crate_info.features = read_local_features(toml);
+        // Once we find the crate, we don't need to traverse further.
+        return Ok(());
+    }
+    for (dep, _) in &mut crate_info.deps_and_features {
+        traverse_and_add_local_features(name, version, dep)?;
+    }
+    Ok(())
+}
+
 fn traverse_and_update(name: &str, version: &str, new_version: &str, crate_info: &mut CrateInfo) {
     if crate_info.name == name && crate_info.version == version {
         crate_info.version = new_version.to_string();
+        // Once we find the crate, we don't need to traverse further.
+        return;
     }
     for (dep, _) in &mut crate_info.deps_and_features {
         traverse_and_update(name, version, new_version, dep);

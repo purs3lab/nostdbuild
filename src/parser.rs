@@ -32,6 +32,7 @@ pub struct ParsedAttr {
 pub struct Attributes {
     attributes: Vec<Attribute>,
     pub crate_name: String,
+    pub unconditional_no_std: bool,
 }
 
 impl<'a> Visit<'a> for Attributes {
@@ -39,6 +40,9 @@ impl<'a> Visit<'a> for Attributes {
         if let Some(ident) = i.path().get_ident() {
             if ident == "cfg" || ident == "cfg_attr" {
                 self.attributes.push(i.clone());
+            }
+            if ident == "no_std" {
+                self.unconditional_no_std = true;
             }
         }
     }
@@ -57,13 +61,14 @@ impl<'a> Visit<'a> for Attributes {
     }
 }
 
+// TODO: Make it such that initial parsing only checks in lib.rs
 /// Parse the main crate and return the attributes
 /// # Arguments
 /// * `path` - The path to the main crate
 /// * `crate_name` - The name of the main crate
 /// # Returns
 /// The attributes of the main crate
-pub fn parse_crate(crate_name: String) -> Attributes {
+pub fn parse_crate(crate_name: &String) -> Attributes {
     let path = format!("{}/{}/", DOWNLOAD_PATH, crate_name.replace(':', "-"));
     let files = get_all_rs_files(&path);
 
@@ -75,7 +80,7 @@ pub fn parse_crate(crate_name: String) -> Attributes {
         let file = syn::parse_file(&content).unwrap();
         attributes.visit_file(&file);
     }
-    attributes.crate_name = crate_name;
+    attributes.crate_name = crate_name.clone();
     attributes
 }
 
@@ -88,7 +93,7 @@ pub fn parse_deps_crate() -> Vec<Attributes> {
     let mut attributes = Vec::new();
     let deps_lock = DEPENDENCIES.lock().unwrap();
     for dep in deps_lock.iter() {
-        attributes.push(parse_crate(dep.clone()));
+        attributes.push(parse_crate(&dep.clone()));
     }
     drop(deps_lock);
     attributes
@@ -164,7 +169,7 @@ pub fn parse_attributes<'a>(
 /// The filtered equations
 pub fn filter_equations<'a>(
     equations: &Vec<Option<Bool<'a>>>,
-    main_features: &Vec<String>,
+    main_features: &[String],
 ) -> Vec<Bool<'a>> {
     let mut filtered: Vec<Bool<'_>> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -309,7 +314,8 @@ fn get_all_rs_files(path: &str) -> Vec<String> {
     let mut files = Vec::new();
     for entry in WalkDir::new(path) {
         let entry = entry.unwrap();
-        if entry.path().extension().unwrap_or_default() == "rs" {
+        let path_str = entry.path().to_str().unwrap();
+        if entry.path().extension().unwrap_or_default() == "rs" && !path_str.contains("/tests/") {
             files.push(entry.path().to_str().unwrap().to_string());
         }
     }
