@@ -1,9 +1,10 @@
+use anyhow::Context;
 use log::debug;
 use proc_macro2::TokenStream;
 // use quote::ToTokens;
 use std::collections::HashSet;
 use std::fs;
-use syn::{visit::Visit, Attribute, Meta};
+use syn::{visit::Visit, Attribute, ItemExternCrate, Meta};
 use walkdir::WalkDir;
 use z3;
 use z3::ast::Bool;
@@ -35,6 +36,22 @@ pub struct Attributes {
     pub unconditional_no_std: bool,
 }
 
+/// TODO: Integrate this with attributes
+#[derive(Default, Clone, Debug)]
+pub struct ItemExternCrates {
+    itemexterncrates: Vec<ItemExternCrate>,
+}
+
+impl<'a> Visit<'a> for ItemExternCrates {
+    fn visit_item_extern_crate(&mut self, i: &ItemExternCrate) {
+        // We will save all the extern crates that have an
+        // attribute associated with them.
+        if i.attrs.len() != 0 {
+            self.itemexterncrates.push(i.clone());
+        }
+    }
+}
+
 impl<'a> Visit<'a> for Attributes {
     fn visit_attribute(&mut self, i: &Attribute) {
         if let Some(ident) = i.path().get_ident() {
@@ -61,7 +78,30 @@ impl<'a> Visit<'a> for Attributes {
     }
 }
 
-// TODO: Make it such that initial parsing only checks in lib.rs
+/// Parse the extern crates of the main crate
+/// # Arguments
+/// * `crate_name` - The name of the main crate
+/// # Returns
+/// The extern crates of the main crate
+/// that have attributes associated with them.
+pub fn parse_item_extern_crates(crate_name: &String) -> ItemExternCrates {
+    let mut itemexterncrates = ItemExternCrates {
+        itemexterncrates: Vec::new(),
+    };
+
+    visit(&mut itemexterncrates, crate_name).unwrap();
+    itemexterncrates
+}
+
+pub fn if_any_item_extern_std(itemexterncrates: &ItemExternCrates) -> bool {
+    for i in &itemexterncrates.itemexterncrates {
+        if i.ident == "std" {
+            return true;
+        }
+    }
+    false
+}
+
 /// Parse the main crate and return the attributes
 /// # Arguments
 /// * `path` - The path to the main crate
@@ -69,17 +109,9 @@ impl<'a> Visit<'a> for Attributes {
 /// # Returns
 /// The attributes of the main crate
 pub fn parse_crate(crate_name: &String) -> Attributes {
-    let path = format!("{}/{}/", DOWNLOAD_PATH, crate_name.replace(':', "-"));
-    let files = get_all_rs_files(&path);
-
     let mut attributes = Attributes::default();
 
-    for file in files {
-        debug!("Parsing file: {}", file);
-        let content = fs::read_to_string(&file).unwrap();
-        let file = syn::parse_file(&content).unwrap();
-        attributes.visit_file(&file);
-    }
+    visit(&mut attributes, crate_name).unwrap();
     attributes.crate_name = crate_name.clone();
     attributes
 }
@@ -192,6 +224,22 @@ pub fn filter_equations<'a>(
     // Remove duplicates
     filtered.retain(|e: &Bool<'_>| seen.insert(e.to_string()));
     filtered
+}
+
+fn visit<T>(visiter_type: &mut T, crate_name: &String) -> anyhow::Result<()>
+where
+    T: for<'a> Visit<'a>,
+{
+    let path = format!("{}/{}/", DOWNLOAD_PATH, crate_name.replace(':', "-"));
+    let files = get_all_rs_files(&path);
+
+    for filename in files {
+        debug!("Parsing file: {}", filename);
+        let content = fs::read_to_string(&filename).context("Failed to read file")?;
+        let file = syn::parse_file(&content).context("Failed to parse file")?;
+        visiter_type.visit_file(&file);
+    }
+    Ok(())
 }
 
 fn is_any_logic(logic: &String) -> Option<Logic> {

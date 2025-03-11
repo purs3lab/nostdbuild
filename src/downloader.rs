@@ -169,7 +169,7 @@ pub fn init_worklist(
             Dependency::Simple(version) => {
                 local_crate_info.version = version;
             }
-            Dependency::Complex {
+            Dependency::Detailed {
                 version,
                 package,
                 default_features,

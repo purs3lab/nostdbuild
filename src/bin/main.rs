@@ -3,6 +3,7 @@ use env_logger;
 use log::debug;
 
 use nostd::consts;
+use nostd::db;
 use nostd::downloader;
 use nostd::parser;
 use nostd::solver;
@@ -46,6 +47,8 @@ fn main() -> anyhow::Result<()> {
         debug!("No target provided, will use either crates target or all targets");
     }
 
+    let db_data = db::read_db_file()?;
+
     if let Some(url) = cli.url {
         debug!("URL provided: {}", url);
         if let Err(_) = downloader::clone_repo(&url, &name) {
@@ -65,19 +68,12 @@ fn main() -> anyhow::Result<()> {
     let ctx = z3::Context::new(&cfg);
 
     let main_attributes = parser::parse_crate(&name);
-    let mut enable: Vec<String>;
-    let mut disable: Vec<String>;
+    let mut enable: Vec<String> = Vec::new();
+    let mut disable: Vec<String> = Vec::new();
 
-    // If the main crate is an unconditional no_std crate, we can skip solving.
-    // TODO: Use MIR to determine if the crate has any std items by default.
-    // TODO: Also we can use cfg_attr if the crate is by default std even with 
-    // unconditional no_std. If the cfg_attr is also not present, we can
-    // use cargo.toml default features list and turn off one by one
-    // and solving for each one to see if it is no_std.
+    let (no_std, main_equation, main_parsed_attr) =
+        parser::parse_main_attributes(&main_attributes, &ctx);
     if !main_attributes.unconditional_no_std {
-        let (no_std, main_equation, main_parsed_attr) =
-            parser::parse_main_attributes(&main_attributes, &ctx);
-
         if !no_std {
             debug!("No no_std found for the main crate, exiting");
             return Ok(());
@@ -91,9 +87,15 @@ fn main() -> anyhow::Result<()> {
         (enable, disable) = solver::model_to_features(&model);
         println!("Features for main create: {:?} {:?}", enable, disable);
     } else {
-        debug!("Main crate is an unconditional no_std crate, nothing further to do");
-        debug!("Exiting");
-        return Ok(());
+        // Crate should not be both conditional and unconditional no_std
+        assert!(!no_std);
+        debug!("Main crate is an unconditional no_std crate implmentation not yet done");
+        let items = parser::parse_item_extern_crates(&name);
+        if parser::if_any_item_extern_std(&items) {
+            debug!("Leaf level crate reached {}", name);
+        } else {
+            todo!();
+        }
     }
 
     let finals_args = solver::final_feature_list_main(&crate_info, &enable, &disable);
@@ -102,8 +104,8 @@ fn main() -> anyhow::Result<()> {
     let deps_attrs = parser::parse_deps_crate();
     // Solve for each dependency
     for dep in deps_attrs {
+        let (no_std, dep_equation, dep_parsed_attr) = parser::parse_main_attributes(&dep, &ctx);
         if !dep.unconditional_no_std {
-            let (no_std, dep_equation, dep_parsed_attr) = parser::parse_main_attributes(&dep, &ctx);
             if !no_std {
                 debug!(
                     "No no_std found for the crate {}, continuing",
@@ -122,10 +124,18 @@ fn main() -> anyhow::Result<()> {
                 dep.crate_name, enable, disable
             );
         } else {
+            // Crate should not be both conditional and unconditional no_std
+            assert!(!no_std);
             debug!(
-                "Dependency {} is an unconditional no_std crate, skipping",
+                "Dependency {} is an unconditional no_std crate implmentation not yet done",
                 dep.crate_name
             );
+            let items = parser::parse_item_extern_crates(&dep.crate_name);
+            if parser::if_any_item_extern_std(&items) {
+                debug!("Leaf level crate reached {}", dep.crate_name);
+            } else {
+                todo!();
+            }
         }
 
         let dep_args = solver::final_feature_list_dep(
@@ -139,5 +149,7 @@ fn main() -> anyhow::Result<()> {
             dep.crate_name, dep_args
         );
     }
+
+    db::write_db_file(db_data)?;
     Ok(())
 }

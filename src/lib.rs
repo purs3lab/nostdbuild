@@ -1,8 +1,10 @@
+use bincode::{Decode, Encode};
 use lazy_static::lazy_static;
 use serde::Deserialize;
 use std::sync::Mutex;
 
 pub mod consts;
+pub mod db;
 pub mod downloader;
 pub mod parser;
 pub mod solver;
@@ -17,7 +19,7 @@ lazy_static! {
 #[serde(untagged)]
 pub enum Dependency {
     Simple(String),
-    Complex {
+    Detailed {
         version: String,
         package: Option<String>,
         features: Option<Vec<String>>,
@@ -25,6 +27,15 @@ pub enum Dependency {
         #[serde(rename = "default-features")]
         default_features: Option<bool>,
     },
+}
+
+/// We store already resolved features for a crate
+/// to be compiled as no_std in a db file.
+/// This is the structure of the db file.
+#[derive(Debug, Encode, Decode)]
+pub struct DBData {
+    name_with_version: String,
+    features: Vec<String>,
 }
 
 #[derive(Debug, Default)]

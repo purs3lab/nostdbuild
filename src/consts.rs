@@ -1,5 +1,6 @@
 pub const DOWNLOAD_PATH: &str = "/tmp/downloads";
 pub const CRATE_IO: &str = "https://crates.io";
+pub const DB_FILE_NAME: &str = "db.bin";
 
 pub const TARGET_LIST: [&str; 26] = [
     "aarch64-unknown-none",
