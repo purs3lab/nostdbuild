@@ -8,6 +8,7 @@ use nostd::downloader;
 use nostd::parser;
 use nostd::solver;
 use nostd::CrateInfo;
+use nostd::DBData;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -47,7 +48,7 @@ fn main() -> anyhow::Result<()> {
         debug!("No target provided, will use either crates target or all targets");
     }
 
-    let db_data = db::read_db_file()?;
+    let mut db_data = db::read_db_file()?;
 
     if let Some(url) = cli.url {
         debug!("URL provided: {}", url);
@@ -91,7 +92,8 @@ fn main() -> anyhow::Result<()> {
         assert!(!no_std);
         debug!("Main crate is an unconditional no_std crate implmentation not yet done");
         let items = parser::parse_item_extern_crates(&name);
-        if parser::if_any_item_extern_std(&items) {
+        let std_attrs = parser::get_item_extern_std(&items);
+        if std_attrs.is_some() {
             debug!("Leaf level crate reached {}", name);
         } else {
             todo!();
@@ -104,7 +106,9 @@ fn main() -> anyhow::Result<()> {
     let deps_attrs = parser::parse_deps_crate();
     // Solve for each dependency
     for dep in deps_attrs {
-        let (no_std, dep_equation, dep_parsed_attr) = parser::parse_main_attributes(&dep, &ctx);
+        let mut is_leaf = false;
+        let (no_std, mut dep_equation, mut dep_parsed_attr) =
+            parser::parse_main_attributes(&dep, &ctx);
         if !dep.unconditional_no_std {
             if !no_std {
                 debug!(
@@ -113,29 +117,59 @@ fn main() -> anyhow::Result<()> {
                 );
                 continue;
             }
-
-            let (dep_equations, _possible_archs) = parser::parse_attributes(&dep, &ctx);
-            let filtered = parser::filter_equations(&dep_equations, &dep_parsed_attr.features);
-
-            let model = solver::solve(&ctx, &dep_equation, &filtered);
-            (enable, disable) = solver::model_to_features(&model);
-            println!(
-                "Features for crate {}: {:?} {:?}",
-                dep.crate_name, enable, disable
-            );
         } else {
             // Crate should not be both conditional and unconditional no_std
             assert!(!no_std);
             debug!(
-                "Dependency {} is an unconditional no_std crate implmentation not yet done",
+                "Dependency {} is an unconditional no_std crate",
                 dep.crate_name
             );
             let items = parser::parse_item_extern_crates(&dep.crate_name);
-            if parser::if_any_item_extern_std(&items) {
+            let std_attrs = parser::get_item_extern_std(&items);
+            if std_attrs.is_some() {
                 debug!("Leaf level crate reached {}", dep.crate_name);
+                let features = db_data
+                    .iter()
+                    .find(|dbdata| dbdata.name_with_version == dep.crate_name)
+                    .map(|dbdata| dbdata.features.clone());
+                if features.is_some() {
+                    debug!(
+                        "Features to enable and disable for crate {}: {:?}",
+                        dep.crate_name, features
+                    );
+                } else {
+                    debug!("No features to enable for crate {}", dep.crate_name);
+                    (dep_equation, dep_parsed_attr) =
+                        parser::parse_main_attributes_direct(&std_attrs.unwrap(), &ctx);
+                    // We need to negate the equation since we are
+                    // trying to remove std features.
+                    dep_equation = match dep_equation {
+                        Some(eq) => Some(eq.not()),
+                        None => None,
+                    };
+                    debug!("Dep equation: {:?}", dep_equation);
+                    is_leaf = true;
+                }
             } else {
-                todo!();
+                todo!("Implement the recursive no_std check for dependencies");
             }
+        }
+
+        let (dep_equations, _possible_archs) = parser::parse_attributes(&dep, &ctx);
+        let filtered = parser::filter_equations(&dep_equations, &dep_parsed_attr.features);
+
+        let model = solver::solve(&ctx, &dep_equation, &filtered);
+        (enable, disable) = solver::model_to_features(&model);
+        println!(
+            "Features for crate {}: {:?} {:?}",
+            dep.crate_name, enable, disable
+        );
+
+        if is_leaf {
+            db_data.push(DBData {
+                name_with_version: dep.crate_name.clone(),
+                features: (enable.clone(), disable.clone()),
+            });
         }
 
         let dep_args = solver::final_feature_list_dep(

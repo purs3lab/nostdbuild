@@ -34,8 +34,8 @@ pub enum Dependency {
 /// This is the structure of the db file.
 #[derive(Debug, Encode, Decode)]
 pub struct DBData {
-    name_with_version: String,
-    features: Vec<String>,
+    pub name_with_version: String,
+    pub features: (Vec<String>, Vec<String>),
 }
 
 #[derive(Debug, Default)]

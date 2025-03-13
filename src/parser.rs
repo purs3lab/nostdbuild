@@ -93,13 +93,18 @@ pub fn parse_item_extern_crates(crate_name: &String) -> ItemExternCrates {
     itemexterncrates
 }
 
-pub fn if_any_item_extern_std(itemexterncrates: &ItemExternCrates) -> bool {
-    for i in &itemexterncrates.itemexterncrates {
-        if i.ident == "std" {
-            return true;
-        }
-    }
-    false
+/// Get the attribute of the extern crate std
+/// # Arguments
+/// * `itemexterncrates` - The extern crates of the main crate
+/// # Returns
+/// The attribute of the extern crate std
+/// if it exists, otherwise None.
+pub fn get_item_extern_std(itemexterncrates: &ItemExternCrates) -> Option<Attribute> {
+    itemexterncrates
+        .itemexterncrates
+        .iter()
+        .find(|i| i.ident == "std")
+        .map(|i| i.attrs.first().unwrap().clone())
 }
 
 /// Parse the main crate and return the attributes
@@ -150,7 +155,7 @@ pub fn parse_main_attributes<'a>(
     for attr in &attrs.attributes {
         if attr.path().get_ident().unwrap() == "cfg_attr" {
             // println!("{}", attr.to_token_stream());
-            (parsed, equation) = parse_meta_for_cfg_attr(&attr.meta, &ctx);
+            (equation, parsed) = parse_meta_for_cfg_attr(&attr.meta, &ctx);
             if is_no_std(&parsed) {
                 atleast_one_no_std = true;
                 debug!("Found no_std");
@@ -159,6 +164,20 @@ pub fn parse_main_attributes<'a>(
         }
     }
     (atleast_one_no_std, equation, parsed)
+}
+
+/// Just a wrapper around parse_meta_for_cfg_attr.
+/// This is to make the interface consistent with the other functions.
+/// # Arguments
+/// * `attr` - The attribute to parse
+/// * `ctx` - The Z3 context
+/// # Returns
+/// A tuple containing an optional equation and the parsed attributes.
+pub fn parse_main_attributes_direct<'a>(
+    attr: &Attribute,
+    ctx: &'a z3::Context,
+) -> (Option<Bool<'a>>, ParsedAttr) {
+    parse_meta_for_cfg_attr(&attr.meta, &ctx)
 }
 
 /// Parse the attributes of a dependency crate.
@@ -180,7 +199,7 @@ pub fn parse_attributes<'a>(
         let ident = attr.path().get_ident().unwrap();
         if ident == "cfg" {
             // println!("{}", attr.to_token_stream());
-            (parsed, temp_eq) = parse_meta_for_cfg_attr(&attr.meta, &ctx);
+            (temp_eq, parsed) = parse_meta_for_cfg_attr(&attr.meta, &ctx);
             if parsed.features.len() == 1 || parsed.logic.is_empty() {
                 // Attributes like `#[cfg (feature = "serde")]` are not interesting.
                 continue;
@@ -343,14 +362,14 @@ fn parse_token_stream<'a>(
 fn parse_meta_for_cfg_attr<'a>(
     meta: &Meta,
     ctx: &'a z3::Context,
-) -> (ParsedAttr, Option<Bool<'a>>) {
+) -> (Option<Bool<'a>>, ParsedAttr) {
     match meta {
         Meta::List(list) => {
             let tokens = list.tokens.clone();
             let mut parsed = ParsedAttr::default();
             let mut equation = None;
             parse_token_stream(tokens, &mut parsed, ctx, &mut equation, &mut false);
-            (parsed, equation)
+            (equation, parsed)
         }
         _ => {
             unreachable!("cfg_attr and cfg attributes must have a meta list");
