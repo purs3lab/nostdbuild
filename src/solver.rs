@@ -133,7 +133,7 @@ fn disable_in_default(crate_info: &CrateInfo, disable: &[String]) -> bool {
         .iter()
         .find(|(name, _)| name == "default")
         .map_or(false, |(_, features)| {
-            features.iter().any(|feature| disable.contains(&feature.0))
+            features.iter().any(|feature| disable.contains(&feature.1))
         })
 }
 
