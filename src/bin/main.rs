@@ -8,7 +8,6 @@ use nostd::downloader;
 use nostd::parser;
 use nostd::solver;
 use nostd::CrateInfo;
-use nostd::DBData;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -69,120 +68,59 @@ fn main() -> anyhow::Result<()> {
     let ctx = z3::Context::new(&cfg);
 
     let main_attributes = parser::parse_crate(&name);
-    let mut enable: Vec<String> = Vec::new();
-    let mut disable: Vec<String> = Vec::new();
+    let (enable, disable, found, recurse) =
+        parser::process_crate(&ctx, &main_attributes, &name, &mut db_data, true)?;
 
-    let (no_std, main_equation, main_parsed_attr) =
-        parser::parse_main_attributes(&main_attributes, &ctx);
-    if !main_attributes.unconditional_no_std {
-        if !no_std {
-            debug!("No no_std found for the main crate, exiting");
-            return Ok(());
-        }
-
-        let (main_equations, _possible_archs) = parser::parse_attributes(&main_attributes, &ctx);
-        let filtered = parser::filter_equations(&main_equations, &main_parsed_attr.features);
-
-        // This solves for the main crate
-        let model = solver::solve(&ctx, &main_equation, &filtered);
-        (enable, disable) = solver::model_to_features(&model);
-        println!("Features for main create: {:?} {:?}", enable, disable);
-    } else {
-        // Crate should not be both conditional and unconditional no_std
-        assert!(!no_std);
-        debug!("Main crate is an unconditional no_std crate implmentation not yet done");
-        let items = parser::parse_item_extern_crates(&name);
-        let std_attrs = parser::get_item_extern_std(&items);
-        if std_attrs.is_some() {
-            debug!("Leaf level crate reached {}", name);
-        } else {
-            todo!();
-        }
+    if !found {
+        return Err(anyhow::anyhow!("Main crate does not support no_std build"));
     }
 
-    let finals_args = solver::final_feature_list_main(&crate_info, &enable, &disable);
-    debug!("Final arguments for main crate: {:?}", finals_args);
+    let mut main_args = solver::final_feature_list_main(&crate_info, &enable, &disable);
+
+    println!(
+        "Main crate arguments: {:?} with recurse as {}",
+        main_args, recurse
+    );
 
     let deps_attrs = parser::parse_deps_crate();
     // Solve for each dependency
     for dep in deps_attrs {
-        let mut is_leaf = false;
-        let (no_std, mut dep_equation, mut dep_parsed_attr) =
-            parser::parse_main_attributes(&dep, &ctx);
-        if !dep.unconditional_no_std {
-            if !no_std {
-                debug!(
-                    "No no_std found for the crate {}, continuing",
-                    dep.crate_name
-                );
-                continue;
-            }
-        } else {
-            // Crate should not be both conditional and unconditional no_std
-            assert!(!no_std);
+        let (enable, disable, found, _) =
+            parser::process_crate(&ctx, &dep, &dep.crate_name, &mut db_data, false)?;
+
+        if !found {
             debug!(
-                "Dependency {} is an unconditional no_std crate",
+                "Dependency {} does not support no_std build",
                 dep.crate_name
             );
-            let items = parser::parse_item_extern_crates(&dep.crate_name);
-            let std_attrs = parser::get_item_extern_std(&items);
-            if std_attrs.is_some() {
-                debug!("Leaf level crate reached {}", dep.crate_name);
-                let features = db_data
-                    .iter()
-                    .find(|dbdata| dbdata.name_with_version == dep.crate_name)
-                    .map(|dbdata| dbdata.features.clone());
-                if features.is_some() {
-                    debug!(
-                        "Features to enable and disable for crate {}: {:?}",
-                        dep.crate_name, features
-                    );
-                } else {
-                    debug!("No features to enable for crate {}", dep.crate_name);
-                    (dep_equation, dep_parsed_attr) =
-                        parser::parse_main_attributes_direct(&std_attrs.unwrap(), &ctx);
-                    // We need to negate the equation since we are
-                    // trying to remove std features.
-                    dep_equation = match dep_equation {
-                        Some(eq) => Some(eq.not()),
-                        None => None,
-                    };
-                    debug!("Dep equation: {:?}", dep_equation);
-                    is_leaf = true;
-                }
-            } else {
-                todo!("Implement the recursive no_std check for dependencies");
-            }
+            continue;
         }
 
-        let (dep_equations, _possible_archs) = parser::parse_attributes(&dep, &ctx);
-        let filtered = parser::filter_equations(&dep_equations, &dep_parsed_attr.features);
-
-        let model = solver::solve(&ctx, &dep_equation, &filtered);
-        (enable, disable) = solver::model_to_features(&model);
-        println!(
-            "Features for crate {}: {:?} {:?}",
-            dep.crate_name, enable, disable
-        );
-
-        if is_leaf {
-            db_data.push(DBData {
-                name_with_version: dep.crate_name.clone(),
-                features: (enable.clone(), disable.clone()),
-            });
-        }
-
-        let dep_args = solver::final_feature_list_dep(
+        let args = solver::final_feature_list_dep(
             &crate_info,
             &dep.crate_name.split(":").next().unwrap_or(""),
             &enable,
             &disable,
         );
+
         debug!(
             "Final arguments for dependency {}: {:?}",
-            dep.crate_name, dep_args
+            dep.crate_name, args
         );
+
+        if !args.is_empty() {
+            if !main_args.contains(&"--features".to_string()) {
+                main_args.push("--features".to_string());
+            }
+            for arg in args {
+                if !main_args.contains(&arg) {
+                    main_args.push(arg);
+                }
+            }
+        }
     }
+
+    println!("Final args: {:?}", main_args);
 
     db::write_db_file(db_data)?;
     Ok(())

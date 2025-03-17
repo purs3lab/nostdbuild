@@ -10,6 +10,9 @@ use z3;
 use z3::ast::Bool;
 
 use crate::consts::DOWNLOAD_PATH;
+use crate::db;
+use crate::solver;
+use crate::DBData;
 use crate::DEPENDENCIES;
 // use crate::Dependency;
 
@@ -84,7 +87,7 @@ impl<'a> Visit<'a> for Attributes {
 /// # Returns
 /// The extern crates of the main crate
 /// that have attributes associated with them.
-pub fn parse_item_extern_crates(crate_name: &String) -> ItemExternCrates {
+pub fn parse_item_extern_crates(crate_name: &str) -> ItemExternCrates {
     let mut itemexterncrates = ItemExternCrates {
         itemexterncrates: Vec::new(),
     };
@@ -113,11 +116,11 @@ pub fn get_item_extern_std(itemexterncrates: &ItemExternCrates) -> Option<Attrib
 /// * `crate_name` - The name of the main crate
 /// # Returns
 /// The attributes of the main crate
-pub fn parse_crate(crate_name: &String) -> Attributes {
+pub fn parse_crate(crate_name: &str) -> Attributes {
     let mut attributes = Attributes::default();
 
     visit(&mut attributes, crate_name).unwrap();
-    attributes.crate_name = crate_name.clone();
+    attributes.crate_name = crate_name.to_string();
     attributes
 }
 
@@ -134,6 +137,99 @@ pub fn parse_deps_crate() -> Vec<Attributes> {
     }
     drop(deps_lock);
     attributes
+}
+
+/// Main function that does the actual processing of the crate.
+/// It first starts from a `cfg_attr` is found and solves other
+/// `cfg` attributes based on this.
+/// If `cfg_attr` is not found, it will check for an unconditional
+/// `no_std` attribute. If found, it will use the `cfg` attribute
+/// guaring the `no_std` attribute to solve the other `cfg` attributes.
+/// If neither is found, it will return not found.
+/// # Arguments
+/// * `ctx` - The Z3 context
+/// * `attrs` - The attributes of the crate
+/// * `name` - The name of the crate
+/// * `db_data` - The database data
+/// * `is_main` - A boolean indicating whether the crate is the main crate
+/// # Returns
+/// A tuple containing the features to enable, the features to disable,
+/// a boolean indicating whether `no_std` was found, and a boolean indicating
+/// whether to recurse further if it was the main crate.
+pub fn process_crate(
+    ctx: &z3::Context,
+    attrs: &Attributes,
+    name: &str,
+    db_data: &mut Vec<DBData>,
+    is_main: bool,
+) -> anyhow::Result<(Vec<String>, Vec<String>, bool, bool)> {
+    let mut recurse = false;
+    let mut is_leaf = false;
+    let (mut enable, mut disable): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+
+    let (no_std, mut equation, mut parsed_attr) = parse_main_attributes(&attrs, &ctx);
+    if !attrs.unconditional_no_std {
+        if !no_std {
+            debug!("No no_std found for the crate");
+            return Ok((Vec::new(), Vec::new(), false, recurse));
+        }
+    } else {
+        // Crate should not be both conditional and unconditional no_std
+        assert!(!no_std);
+        debug!("Main crate is an unconditional no_std crate");
+        let items = parse_item_extern_crates(name);
+
+        // This case implies that the crate is no_std without any feature requirements.
+        if items.itemexterncrates.len() == 0 {
+            debug!("No extern crates found for the crate");
+            return Ok((Vec::new(), Vec::new(), false, recurse));
+        }
+
+        let std_attrs = get_item_extern_std(&items);
+        if std_attrs.is_some() {
+            debug!("Leaf level crate reached {}", name);
+            let features = db::get_from_db_data(&db_data, name);
+            if features.is_some() {
+                debug!(
+                    "Features to enable and disable for crate {}: {:?}",
+                    name, features
+                );
+                (enable, disable) = features.unwrap().features.clone();
+            } else {
+                debug!("No features to enable for crate {}", name);
+                (equation, parsed_attr) = parse_main_attributes_direct(&std_attrs.unwrap(), &ctx);
+                // We need to negate the equation since we are
+                // trying to remove std features.
+                equation = match equation {
+                    Some(eq) => Some(eq.not()),
+                    None => None,
+                };
+                debug!("Main equation: {:?}", equation);
+                is_leaf = true;
+            }
+        } else {
+            if is_main {
+                // Main crate is special since we are anyway processing the direct
+                // dependencies.
+                recurse = true;
+            } else {
+                todo!();
+            }
+        }
+    }
+    let (equations, _possible_archs) = parse_attributes(&attrs, &ctx);
+    let filtered = filter_equations(&equations, &parsed_attr.features);
+
+    let model = solver::solve(&ctx, &equation, &filtered);
+    if enable.is_empty() && disable.is_empty() {
+        (enable, disable) = solver::model_to_features(&model);
+    }
+
+    if is_leaf {
+        db::add_to_db_data(db_data, name, (&enable, &disable));
+    }
+
+    Ok((enable, disable, true, recurse))
 }
 
 /// Parse the attributes of a the main crate.
@@ -245,7 +341,7 @@ pub fn filter_equations<'a>(
     filtered
 }
 
-fn visit<T>(visiter_type: &mut T, crate_name: &String) -> anyhow::Result<()>
+fn visit<T>(visiter_type: &mut T, crate_name: &str) -> anyhow::Result<()>
 where
     T: for<'a> Visit<'a>,
 {
@@ -291,7 +387,7 @@ fn parse_token_stream<'a>(
     let mut was_target_arch = false;
     let mut current_expr: Option<Bool> = None;
     let mut group_items: Vec<Bool> = Vec::new();
-    let mut curr_logic = Logic::And;
+    let mut curr_logic = Logic::Any;
 
     for token in tokens {
         match token {
@@ -354,6 +450,22 @@ fn parse_token_stream<'a>(
     if let Some(expr) = current_expr {
         *equation = Some(expr.clone());
         group_items.push(expr);
+    } else {
+        if !group_items.is_empty() {
+            match curr_logic {
+                Logic::And => {
+                    let refs: Vec<&Bool> = group_items.iter().collect();
+                    *equation = Some(Bool::and(ctx, refs.as_slice()));
+                }
+                Logic::Or | Logic::Any => {
+                    let refs: Vec<&Bool> = group_items.iter().collect();
+                    *equation = Some(Bool::or(ctx, refs.as_slice()));
+                }
+                Logic::Not => {
+                    *equation = Some(group_items.first().unwrap().not());
+                }
+            }
+        }
     }
 
     group_items

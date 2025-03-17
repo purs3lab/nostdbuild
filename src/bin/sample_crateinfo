@@ -1,0 +1,49 @@
+CrateInfo { 
+    name: "aberth",
+    version: "0.4.1",
+    deps_and_features: 
+        [(CrateInfo { 
+            name: "arrayvec",
+            version: "0.7.6",
+            deps_and_features: [],
+            features: 
+                [("default", [("std", "std")]),
+                 ("std", [])],
+            default_features: false,
+            optional: false },
+        []), 
+        (CrateInfo {
+            name: "num-complex",
+            version: "0.4.6",
+            deps_and_features: [],
+            features: 
+                [("bytecheck", [("bytecheck", "")]),
+                 ("bytemuck", [("bytemuck", "")]),
+                 ("default", [("std", "std")]),
+                 ("libm", [("num-traits", "libm")]),
+                 ("rand", [("rand", "")]),
+                 ("rkyv", [("rkyv", "")]),
+                 ("serde", [("serde", "")]),
+                 ("std", [("num-traits", "std")])],
+            default_features: false,
+            optional: false },
+        []), 
+        (CrateInfo { 
+            name: "num-traits", 
+            version: "0.2.19", 
+            deps_and_features: [], 
+            features: 
+                [("default", [("std", "std")]),
+                 ("i128", []),
+                 ("libm", [("libm", "")]),
+                 ("std", [])],
+            default_features: false,
+            optional: false },
+        [])],
+    features: [
+        ("default", [("std", "std")]),
+        ("libm", [("num-traits", "libm"), ("num-complex", "libm")]),
+        ("std", [("num-traits", "default"), ("num-complex", "default")])],
+    default_features: true,
+    optional: false
+}
