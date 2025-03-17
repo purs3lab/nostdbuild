@@ -14,7 +14,7 @@ use crate::db;
 use crate::solver;
 use crate::DBData;
 use crate::DEPENDENCIES;
-// use crate::Dependency;
+use crate::CrateInfo;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Logic {
@@ -339,6 +339,21 @@ pub fn filter_equations<'a>(
     // Remove duplicates
     filtered.retain(|e: &Bool<'_>| seen.insert(e.to_string()));
     filtered
+}
+
+/// Check if the given dependency is optional
+/// # Arguments
+/// * `crate_info` - The crate info
+/// * `name` - The name of the dependency
+/// # Returns
+/// * `bool` - Whether the dependency is optional
+pub fn is_dep_optional(crate_info: &CrateInfo, name: &str) -> bool {
+    crate_info
+        .deps_and_features
+        .iter()
+        .find(|(dep, _)| dep.name == name)
+        .map(|(dep, _)| dep.optional)
+        .unwrap_or(false)
 }
 
 fn visit<T>(visiter_type: &mut T, crate_name: &str) -> anyhow::Result<()>

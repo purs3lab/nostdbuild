@@ -1,6 +1,5 @@
 use anyhow::Context;
 use crates_io_api::SyncClient;
-use delete::delete_file;
 use flate2::read::GzDecoder;
 use git2::Repository;
 use log::debug;
@@ -39,7 +38,6 @@ pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String,
     let dir = Path::new(DOWNLOAD_PATH);
     let filename = format!("{}.crate", name);
 
-    // Download crate
     let client = create_client()?;
     let (mut download_url, mut ver): (String, String);
     // Try until successful
@@ -63,7 +61,7 @@ pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String,
                 return Ok(format!("{}:{}", name, ver));
             }
             // Delete the crate if it doesn't contain any .rs files
-            delete_file(&crate_path.to_str().unwrap())?;
+            fs::remove_file(&crate_path.to_str().unwrap())?;
         }
 
         match download_crate(&download_url, &filename) {
@@ -77,9 +75,8 @@ pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String,
             }
         };
     }
-    // Extract and cleanup
     extract_crate(&filename, dir)?;
-    delete_file(&filename).context("Failed to delete crate file")?;
+    fs::remove_file(&filename).context("Failed to delete crate file")?;
 
     debug!("Downloaded {} to {}", name, dir.display());
     debug!("Name with version: {}", format!("{}:{}", name, ver));
@@ -146,7 +143,6 @@ pub fn init_worklist(
     crate_info.default_features = true;
     crate_info.features = Vec::new();
 
-    // Check if Cargo.toml exists
     if !Path::new(&filename).exists() {
         return Err(anyhow::anyhow!("Cargo.toml not found"));
     }
@@ -289,7 +285,6 @@ fn get_download_url(
     name: &str,
     version: &Option<&String>,
 ) -> Result<(String, String), anyhow::Error> {
-    // Fetch crate data from crates.io
     let crate_data = client.get_crate(name)?;
 
     let resolved_version = match version {
@@ -327,7 +322,6 @@ fn get_download_url(
 fn download_crate(url: &str, filename: &str) -> Result<(), anyhow::Error> {
     debug!("Downloading crate from {}", url);
     let response = blocking::get(url)?;
-    // let response = blocking::get(url).context("Failed to download crate")?;
     let bytes = response.bytes().context("Failed to read response")?;
 
     fs::write(filename, bytes).context("Failed to write crate file")

@@ -53,6 +53,16 @@ pub fn model_to_features(model: &Option<z3::Model>) -> (Vec<String>, Vec<String>
     )
 }
 
+/// Given the crate info, the name of the dependency,
+/// the list of features to enable and disable,
+/// return the final feature list to pass to cargo for the dependency.
+/// # Arguments
+/// * `crate_info` - The crate info
+/// * `name` - The name of the dependency
+/// * `enable` - The list of features to enable
+/// * `disable` - The list of features to disable
+/// # Returns
+/// * `Vec<String>` - The final feature list for the dependency
 pub fn final_feature_list_dep(
     crate_info: &CrateInfo,
     name: &str,

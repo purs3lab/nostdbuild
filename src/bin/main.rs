@@ -83,8 +83,17 @@ fn main() -> anyhow::Result<()> {
     );
 
     let deps_attrs = parser::parse_deps_crate();
+    let mut skipped = Vec::new();
     // Solve for each dependency
+    // TODO: Handle optional dependencies
+    // TODO: Handle recursing into dependencies based on unconditional no_std support
     for dep in deps_attrs {
+        if parser::is_dep_optional(&crate_info, &dep.crate_name.split(":").next().unwrap_or("")) {
+            debug!("Dependency {} is optional, skipping", dep.crate_name);
+            skipped.push(dep);
+            continue;
+        }
+
         let (enable, disable, found, _) =
             parser::process_crate(&ctx, &dep, &dep.crate_name, &mut db_data, false)?;
 
