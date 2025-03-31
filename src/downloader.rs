@@ -115,8 +115,31 @@ pub fn download_all_dependencies(
         traverse_and_update(&name, &version, new_version, crate_info);
 
         traverse_and_add_local_features(&name, new_version, crate_info)?;
+        let dep_names = read_dep_from_n_level(&name, new_version)?;
+        traverse_and_add_dep_names(&name, &version, crate_info, &dep_names)?;
     }
     Ok(())
+}
+
+fn read_dep_from_n_level(name: &str, version: &str) -> Result<Vec<String>, anyhow::Error> {
+    let dir = Path::new(DOWNLOAD_PATH).join(format!("{}-{}", name, version));
+    let filename = format!("{}/Cargo.toml", dir.display());
+    let mut dep_names = Vec::new();
+    if !Path::new(&filename).exists() {
+        debug!("Cargo.toml not found for {}", name);
+        return Err(anyhow::anyhow!("Cargo.toml not found"));
+    }
+    let toml = fs::read_to_string(&filename).context("Failed to read Cargo.toml")?;
+    let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
+    let deps = toml["dependencies"].as_table().cloned().unwrap_or_else(|| {
+        debug!("No dependencies found in Cargo.toml");
+        Map::new()
+    });
+    for (name, _) in deps {
+        dep_names.push(name.to_string());
+    }
+
+    return Ok(dep_names);
 }
 
 /// Initialize the worklist with the dependencies of a crate.
@@ -211,6 +234,13 @@ pub fn contains_one_rs_file(path: &str) -> bool {
 }
 
 fn read_local_features(toml: toml::Value) -> Vec<(String, Vec<(String, String)>)> {
+    if !toml
+        .as_table()
+        .map_or(false, |table| table.contains_key("features"))
+    {
+        debug!("No features found in Cargo.toml");
+        return Vec::new();
+    }
     let features = toml["features"].as_table().cloned().unwrap_or_else(|| {
         debug!("No features found in Cargo.toml");
         Map::new()
@@ -246,6 +276,30 @@ fn create_client() -> Result<SyncClient, anyhow::Error> {
         std::time::Duration::from_secs(1),
     )
     .context("Failed to create client")
+}
+
+fn traverse_and_add_dep_names(
+    name: &str,
+    version: &str,
+    crate_info: &mut CrateInfo,
+    dep_names: &Vec<String>,
+) -> anyhow::Result<(), anyhow::Error> {
+    if crate_info.name == name && crate_info.version == version {
+        let deps_and_features = &mut crate_info.deps_and_features;
+        for dep_name in dep_names {
+            let info = CrateInfo {
+                name: dep_name.clone(),
+                ..CrateInfo::default()
+            };
+            deps_and_features.push((info, Vec::new()));
+        }
+        return Ok(());
+    }
+
+    for (dep, _) in &mut crate_info.deps_and_features {
+        traverse_and_add_dep_names(name, version, dep, dep_names)?;
+    }
+    Ok(())
 }
 
 fn traverse_and_add_local_features(

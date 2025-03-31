@@ -68,8 +68,14 @@ fn main() -> anyhow::Result<()> {
     let ctx = z3::Context::new(&cfg);
 
     let main_attributes = parser::parse_crate(&name);
-    let (enable, disable, found, recurse) =
-        parser::process_crate(&ctx, &main_attributes, &name, &mut db_data, true)?;
+    let (enable, disable, found, recurse) = parser::process_crate(
+        &ctx,
+        &main_attributes,
+        &name,
+        &mut db_data,
+        &crate_info,
+        true,
+    )?;
 
     if !found {
         return Err(anyhow::anyhow!("Main crate does not support no_std build"));
@@ -94,8 +100,14 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        let (enable, disable, found, _) =
-            parser::process_crate(&ctx, &dep, &dep.crate_name, &mut db_data, false)?;
+        let (enable, disable, found, _) = parser::process_crate(
+            &ctx,
+            &dep,
+            &dep.crate_name,
+            &mut db_data,
+            &crate_info,
+            false,
+        )?;
 
         if !found {
             debug!(

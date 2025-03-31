@@ -12,9 +12,9 @@ use z3::ast::Bool;
 use crate::consts::DOWNLOAD_PATH;
 use crate::db;
 use crate::solver;
+use crate::CrateInfo;
 use crate::DBData;
 use crate::DEPENDENCIES;
-use crate::CrateInfo;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Logic {
@@ -159,8 +159,9 @@ pub fn parse_deps_crate() -> Vec<Attributes> {
 pub fn process_crate(
     ctx: &z3::Context,
     attrs: &Attributes,
-    name: &str,
+    name_with_version: &str,
     db_data: &mut Vec<DBData>,
+    crate_info: &CrateInfo,
     is_main: bool,
 ) -> anyhow::Result<(Vec<String>, Vec<String>, bool, bool)> {
     let mut recurse = false;
@@ -177,7 +178,7 @@ pub fn process_crate(
         // Crate should not be both conditional and unconditional no_std
         assert!(!no_std);
         debug!("Main crate is an unconditional no_std crate");
-        let items = parse_item_extern_crates(name);
+        let items = parse_item_extern_crates(name_with_version);
 
         // This case implies that the crate is no_std without any feature requirements.
         if items.itemexterncrates.len() == 0 {
@@ -187,16 +188,16 @@ pub fn process_crate(
 
         let std_attrs = get_item_extern_std(&items);
         if std_attrs.is_some() {
-            debug!("Leaf level crate reached {}", name);
-            let features = db::get_from_db_data(&db_data, name);
+            debug!("Leaf level crate reached {}", name_with_version);
+            let features = db::get_from_db_data(&db_data, name_with_version);
             if features.is_some() {
                 debug!(
                     "Features to enable and disable for crate {}: {:?}",
-                    name, features
+                    name_with_version, features
                 );
                 (enable, disable) = features.unwrap().features.clone();
             } else {
-                debug!("No features to enable for crate {}", name);
+                debug!("No features to enable for crate {}", name_with_version);
                 (equation, parsed_attr) = parse_main_attributes_direct(&std_attrs.unwrap(), &ctx);
                 // We need to negate the equation since we are
                 // trying to remove std features.
@@ -213,7 +214,16 @@ pub fn process_crate(
                 // dependencies.
                 recurse = true;
             } else {
-                todo!();
+                let (name, version) = name_with_version.split_once(':').unwrap();
+                if let Some(dep_and_features) = get_deps_and_features(name, version, crate_info) {
+                    let names: Vec<String> = dep_and_features
+                        .iter()
+                        .map(|(dep, _)| dep.name.clone().replace('-', "_"))
+                        .collect();
+                    let attr = get_item_extern_dep(&items, &names);
+                    // TODO: We have to check if this dependency actually contains extern crate std.
+                    println!("Attr: {:?}", attr);
+                }
             }
         }
     }
@@ -226,7 +236,7 @@ pub fn process_crate(
     }
 
     if is_leaf {
-        db::add_to_db_data(db_data, name, (&enable, &disable));
+        db::add_to_db_data(db_data, name_with_version, (&enable, &disable));
     }
 
     Ok((enable, disable, true, recurse))
@@ -354,6 +364,31 @@ pub fn is_dep_optional(crate_info: &CrateInfo, name: &str) -> bool {
         .find(|(dep, _)| dep.name == name)
         .map(|(dep, _)| dep.optional)
         .unwrap_or(false)
+}
+
+fn get_item_extern_dep(itemexterncrates: &ItemExternCrates, names: &[String]) -> Option<Attribute> {
+    for i in itemexterncrates.itemexterncrates.iter() {
+        if names.contains(&i.ident.to_string()) {
+            return i.attrs.first().cloned();
+        }
+    }
+    None
+}
+
+fn get_deps_and_features<'a>(
+    name: &str,
+    version: &str,
+    crate_info: &'a CrateInfo,
+) -> Option<&'a Vec<(CrateInfo, Vec<String>)>> {
+    if crate_info.name == name && crate_info.version == version {
+        return Some(&crate_info.deps_and_features);
+    }
+    for (dep, _) in &crate_info.deps_and_features {
+        if let Some(res) = get_deps_and_features(name, version, &dep) {
+            return Some(res);
+        }
+    }
+    None
 }
 
 fn visit<T>(visiter_type: &mut T, crate_name: &str) -> anyhow::Result<()>
