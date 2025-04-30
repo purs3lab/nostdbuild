@@ -236,6 +236,7 @@ pub fn process_crate(
                         .map(|(dep, _)| (dep.name.clone().replace('-', "_"), dep.version.clone()))
                         .collect();
                     let externs = get_item_extern_dep(&items, &names_and_versions);
+                    // TODO: This and the above case can be put in a function instead
                     parse_top_level_externs(
                         ctx,
                         db_data,
