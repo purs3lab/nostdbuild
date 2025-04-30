@@ -11,6 +11,7 @@ use z3::ast::Bool;
 
 use crate::consts::DOWNLOAD_PATH;
 use crate::db;
+use crate::downloader;
 use crate::solver;
 use crate::CrateInfo;
 use crate::DBData;
@@ -92,7 +93,12 @@ pub fn parse_item_extern_crates(crate_name: &str) -> ItemExternCrates {
         itemexterncrates: Vec::new(),
     };
 
-    visit(&mut itemexterncrates, crate_name).unwrap();
+    if let Err(err) = visit(&mut itemexterncrates, crate_name) {
+        debug!(
+            "Failed to parse crate {} with error:{}. Will continue...",
+            crate_name, err
+        );
+    }
     itemexterncrates
 }
 
@@ -119,7 +125,12 @@ pub fn get_item_extern_std(itemexterncrates: &ItemExternCrates) -> Option<Attrib
 pub fn parse_crate(crate_name: &str) -> Attributes {
     let mut attributes = Attributes::default();
 
-    visit(&mut attributes, crate_name).unwrap();
+    if let Err(err) = visit(&mut attributes, crate_name) {
+        debug!(
+            "Failed to parse crate {} with error:{}. Will continue...",
+            crate_name, err
+        );
+    }
     attributes.crate_name = crate_name.to_string();
     attributes
 }
@@ -177,7 +188,10 @@ pub fn process_crate(
     } else {
         // Crate should not be both conditional and unconditional no_std
         assert!(!no_std);
-        debug!("Main crate is an unconditional no_std crate");
+        debug!(
+            "crate {} is an unconditional no_std crate",
+            name_with_version
+        );
         let items = parse_item_extern_crates(name_with_version);
 
         // This case implies that the crate is no_std without any feature requirements.
@@ -214,16 +228,26 @@ pub fn process_crate(
                 // dependencies.
                 recurse = true;
             } else {
+                debug!("Leaf level crate reached {}", name_with_version);
                 let (name, version) = name_with_version.split_once(':').unwrap();
                 if let Some(dep_and_features) = get_deps_and_features(name, version, crate_info) {
-                    let names: Vec<String> = dep_and_features
+                    let names_and_versions: Vec<(String, String)> = dep_and_features
                         .iter()
-                        .map(|(dep, _)| dep.name.clone().replace('-', "_"))
+                        .map(|(dep, _)| (dep.name.clone().replace('-', "_"), dep.version.clone()))
                         .collect();
-                    let attr = get_item_extern_dep(&items, &names);
-                    // TODO: We have to check if this dependency actually contains extern crate std.
-                    println!("Attr: {:?}", attr);
+                    let externs = get_item_extern_dep(&items, &names_and_versions);
+                    parse_top_level_externs(
+                        ctx,
+                        db_data,
+                        &mut enable,
+                        &mut disable,
+                        &mut parsed_attr,
+                        &mut equation,
+                        &externs,
+                        &names_and_versions,
+                    )?;
                 }
+                debug!("main equation: {:?}", equation);
             }
         }
     }
@@ -366,13 +390,127 @@ pub fn is_dep_optional(crate_info: &CrateInfo, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn get_item_extern_dep(itemexterncrates: &ItemExternCrates, names: &[String]) -> Option<Attribute> {
-    for i in itemexterncrates.itemexterncrates.iter() {
-        if names.contains(&i.ident.to_string()) {
-            return i.attrs.first().cloned();
+// TODO: The equation returned should be the top level crates guard and not the
+// dependency crates guard.
+fn parse_top_level_externs<'a>(
+    ctx: &'a z3::Context,
+    db_data: &mut Vec<DBData>,
+    enable: &mut Vec<String>,
+    disable: &mut Vec<String>,
+    parsed_attr: &mut ParsedAttr,
+    eq: &mut Option<Bool<'a>>,
+    externs: &[ItemExternCrate],
+    names_and_versions: &[(String, String)],
+) -> Result<(), anyhow::Error> {
+    let mut worklist = Vec::new();
+    for ex in externs.iter() {
+        let attr = ex.attrs.first().unwrap();
+        let (equation, _) = parse_main_attributes_direct(attr, ctx);
+        // If there is no attribute guarding the extern crate,
+        // then we can't control it.
+        if equation.is_none() {
+            println!("No equation found for the extern crate");
+            continue;
+        }
+        let dep_name = ex.ident.to_string();
+        let version = names_and_versions
+            .iter()
+            .find(|(name, _)| name == dep_name.as_str())
+            .map(|(_, version)| version);
+        let name_with_version = downloader::clone_from_crates(&dep_name, version)
+            .map_err(|e| anyhow::anyhow!("Failed to clone from crates.io: {}", e))?;
+        println!("Name with version cloned: {}", name_with_version);
+        let items = parse_item_extern_crates(&name_with_version);
+        if items.itemexterncrates.len() == 0 {
+            println!("No extern crates found for the crate");
+            continue;
+        }
+        let std_attrs = get_item_extern_std(&items);
+        if std_attrs.is_some() {
+            println!("Leaf level crate reached {}", name_with_version);
+            let features = db::get_from_db_data(&db_data, &name_with_version);
+            if features.is_some() {
+                println!(
+                    "Features to enable and disable for crate {}: {:?}",
+                    name_with_version, features
+                );
+                (*enable, *disable) = features.unwrap().features.clone();
+            } else {
+                println!("No features to enable for crate {}", name_with_version);
+                (*eq, *parsed_attr) = parse_main_attributes_direct(&std_attrs.unwrap(), ctx);
+                // We need to negate the equation since we are
+                // trying to remove std features.
+                *eq = match equation {
+                    Some(eq) => Some(eq.not()),
+                    None => None,
+                };
+                println!("Main equation: {:?}", eq);
+            }
+            return Ok(());
+        } else {
+            worklist.push(name_with_version);
         }
     }
-    None
+    if worklist.is_empty() {
+        println!("No worklist found");
+        return Ok(());
+    }
+    println!("Worklist: {:?}", worklist);
+    parse_n_level_externs(
+        ctx,
+        db_data,
+        enable,
+        disable,
+        parsed_attr,
+        eq,
+        &mut worklist,
+    )?;
+    Ok(())
+}
+
+fn parse_n_level_externs<'a>(
+    ctx: &'a z3::Context,
+    db_data: &mut Vec<DBData>,
+    enable: &mut Vec<String>,
+    disable: &mut Vec<String>,
+    parsed_attr: &mut ParsedAttr,
+    eq: &mut Option<Bool<'a>>,
+    worklist: &mut Vec<String>,
+) -> Result<(), anyhow::Error> {
+    for name_with_version in worklist.iter() {
+        let new_name_with_version = downloader::clone_from_crates(name_with_version, None)
+            .map_err(|e| anyhow::anyhow!("Failed to clone from crates.io: {}", e))?;
+        debug!("Name with version cloned: {}", new_name_with_version);
+        let items = parse_item_extern_crates(&new_name_with_version);
+        parse_top_level_externs(
+            ctx,
+            db_data,
+            enable,
+            disable,
+            parsed_attr,
+            eq,
+            &items.itemexterncrates,
+            &[(new_name_with_version.clone(), new_name_with_version)],
+        )?;
+    }
+    Ok(())
+}
+
+fn get_item_extern_dep(
+    itemexterncrates: &ItemExternCrates,
+    names: &[(String, String)],
+) -> Vec<ItemExternCrate> {
+    let mut attrs = Vec::new();
+    for i in itemexterncrates.itemexterncrates.iter() {
+        debug!("Checking ident: {}", i.ident);
+        names.iter().for_each(|(name, _)| {
+            if i.ident == *name {
+                debug!("Found ident: {}", i.ident);
+                attrs.push(i.clone());
+            }
+        });
+    }
+    attrs
 }
 
 fn get_deps_and_features<'a>(
@@ -534,7 +672,8 @@ fn parse_meta_for_cfg_attr<'a>(
             (equation, parsed)
         }
         _ => {
-            unreachable!("cfg_attr and cfg attributes must have a meta list");
+            debug!("Meta is not a list");
+            (None, ParsedAttr::default())
         }
     }
 }

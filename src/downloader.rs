@@ -8,7 +8,7 @@ use semver::VersionReq;
 use std::fs;
 use std::path::Path;
 use tar::Archive;
-use toml::{self, map::Map};
+use toml::{self, map::Map, Value};
 use walkdir::WalkDir;
 
 use crate::consts::{CRATE_IO, DOWNLOAD_PATH};
@@ -116,12 +116,15 @@ pub fn download_all_dependencies(
 
         traverse_and_add_local_features(&name, new_version, crate_info)?;
         let dep_names = read_dep_from_n_level(&name, new_version)?;
-        traverse_and_add_dep_names(&name, &version, crate_info, &dep_names)?;
+        traverse_and_add_dep_names(&name, &new_version, crate_info, &dep_names)?;
     }
     Ok(())
 }
 
-fn read_dep_from_n_level(name: &str, version: &str) -> Result<Vec<String>, anyhow::Error> {
+fn read_dep_from_n_level(
+    name: &str,
+    version: &str,
+) -> Result<Vec<(String, String)>, anyhow::Error> {
     let dir = Path::new(DOWNLOAD_PATH).join(format!("{}-{}", name, version));
     let filename = format!("{}/Cargo.toml", dir.display());
     let mut dep_names = Vec::new();
@@ -131,12 +134,25 @@ fn read_dep_from_n_level(name: &str, version: &str) -> Result<Vec<String>, anyho
     }
     let toml = fs::read_to_string(&filename).context("Failed to read Cargo.toml")?;
     let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
-    let deps = toml["dependencies"].as_table().cloned().unwrap_or_else(|| {
-        debug!("No dependencies found in Cargo.toml");
-        Map::new()
-    });
-    for (name, _) in deps {
-        dep_names.push(name.to_string());
+
+    let deps = toml
+        .get("dependencies")
+        .and_then(Value::as_table)
+        .cloned()
+        .unwrap_or_else(|| {
+            debug!("No dependencies found in Cargo.toml");
+            Map::new()
+        });
+    for (name, value) in deps {
+        let dep: Dependency = value
+            .clone()
+            .try_into()
+            .context("Failed to parse dependency")?;
+        let version = match dep {
+            Dependency::Simple(version) => version,
+            Dependency::Detailed { version, .. } => version,
+        };
+        dep_names.push((name.to_string(), version));
     }
 
     return Ok(dep_names);
@@ -282,13 +298,14 @@ fn traverse_and_add_dep_names(
     name: &str,
     version: &str,
     crate_info: &mut CrateInfo,
-    dep_names: &Vec<String>,
+    dep_names: &Vec<(String, String)>,
 ) -> anyhow::Result<(), anyhow::Error> {
     if crate_info.name == name && crate_info.version == version {
         let deps_and_features = &mut crate_info.deps_and_features;
         for dep_name in dep_names {
             let info = CrateInfo {
-                name: dep_name.clone(),
+                name: dep_name.0.clone(),
+                version: dep_name.1.clone(),
                 ..CrateInfo::default()
             };
             deps_and_features.push((info, Vec::new()));
