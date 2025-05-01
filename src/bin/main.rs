@@ -36,17 +36,22 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    if let Some(target) = cli.target {
-        if !consts::is_valid_target(&target) {
-            return Err(anyhow::anyhow!(
-                "Invalid target `{}`. Choose one of {:?}",
-                target,
-                consts::TARGET_LIST
-            ));
+    let target = match cli.target {
+        Some(target) => {
+            if !consts::is_valid_target(&target) {
+                return Err(anyhow::anyhow!(
+                    "Invalid target `{}`. Choose one of {:?}",
+                    target,
+                    consts::TARGET_LIST
+                ));
+            }
+            target
         }
-    } else {
-        debug!("No target provided, will use either crates target or all targets");
-    }
+        None => {
+            debug!("No target provided, will use either crates target or all targets");
+            "".to_string()
+        }
+    };
 
     let mut db_data = db::read_db_file()?;
 
@@ -143,7 +148,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     println!("Final args: {:?}", main_args);
-    compiler::try_compile(&name, &main_args, &possible_archs)?;
+    compiler::try_compile(&name, &target, &main_args, &possible_archs)?;
     db::write_db_file(db_data)?;
     Ok(())
 }

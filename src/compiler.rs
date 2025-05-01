@@ -1,28 +1,36 @@
 use crate::consts::DOWNLOAD_PATH;
 use anyhow::Context;
-use std::path::Path;
 use log::debug;
+use std::path::Path;
 
 use crate::consts;
 
 pub fn try_compile(
     name_with_version: &str,
+    clitarget: &str,
     enable: &[String],
     possible_archs: &[String],
 ) -> anyhow::Result<()> {
+    if !clitarget.is_empty() {
+        try_compile_for_target(name_with_version, clitarget, enable)?;
+        return Ok(());
+    }
+
     if possible_archs.is_empty() {
         for target in consts::TARGET_LIST.iter() {
             try_compile_for_target(name_with_version, target, enable)?;
         }
     } else {
-        todo!("Get the possible targets using the arch specified");
-        for target in possible_archs.iter() {
-            if consts::is_valid_target(target) {
-                try_compile_for_target(name_with_version, target, enable)?;
+        for arch in possible_archs.iter() {
+            let targets = consts::get_target_names_from_arch(arch);
+            if !targets.is_empty() {
+                for target in targets.iter() {
+                    try_compile_for_target(name_with_version, target, enable)?;
+                }
             } else {
                 return Err(anyhow::anyhow!(
-                    "Invalid target `{}`. Choose one of {:?}",
-                    target,
+                    "Invalid arch `{}`. Choose target from one of {:?}",
+                    arch,
                     consts::TARGET_LIST
                 ));
             }
