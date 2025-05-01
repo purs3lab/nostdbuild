@@ -3,6 +3,7 @@ use lazy_static::lazy_static;
 use serde::Deserialize;
 use std::sync::Mutex;
 
+pub mod compiler;
 pub mod consts;
 pub mod db;
 pub mod downloader;

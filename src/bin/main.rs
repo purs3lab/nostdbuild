@@ -2,6 +2,7 @@ use clap::Parser;
 use env_logger;
 use log::debug;
 
+use nostd::compiler;
 use nostd::consts;
 use nostd::db;
 use nostd::downloader;
@@ -68,7 +69,7 @@ fn main() -> anyhow::Result<()> {
     let ctx = z3::Context::new(&cfg);
 
     let main_attributes = parser::parse_crate(&name);
-    let (enable, disable, found, recurse) = parser::process_crate(
+    let (enable, disable, found, recurse, possible_archs) = parser::process_crate(
         &ctx,
         &main_attributes,
         &name,
@@ -100,7 +101,7 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        let (enable, disable, found, _) = parser::process_crate(
+        let (enable, disable, found, _, possible) = parser::process_crate(
             &ctx,
             &dep,
             &dep.crate_name,
@@ -142,7 +143,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     println!("Final args: {:?}", main_args);
-
+    compiler::try_compile(&name, &main_args, &possible_archs)?;
     db::write_db_file(db_data)?;
     Ok(())
 }

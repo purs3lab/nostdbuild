@@ -174,7 +174,7 @@ pub fn process_crate(
     db_data: &mut Vec<DBData>,
     crate_info: &CrateInfo,
     is_main: bool,
-) -> anyhow::Result<(Vec<String>, Vec<String>, bool, bool)> {
+) -> anyhow::Result<(Vec<String>, Vec<String>, bool, bool, Vec<String>)> {
     let mut recurse = false;
     let mut is_leaf = false;
     let (mut enable, mut disable): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
@@ -183,7 +183,7 @@ pub fn process_crate(
     if !attrs.unconditional_no_std {
         if !no_std {
             debug!("No no_std found for the crate");
-            return Ok((Vec::new(), Vec::new(), false, recurse));
+            return Ok((Vec::new(), Vec::new(), false, recurse, Vec::new()));
         }
     } else {
         // Crate should not be both conditional and unconditional no_std
@@ -197,7 +197,7 @@ pub fn process_crate(
         // This case implies that the crate is no_std without any feature requirements.
         if items.itemexterncrates.len() == 0 {
             debug!("No extern crates found for the crate");
-            return Ok((Vec::new(), Vec::new(), false, recurse));
+            return Ok((Vec::new(), Vec::new(), false, recurse, Vec::new()));
         }
         let std_attrs = get_item_extern_std(&items);
         if std_attrs.is_some() {
@@ -244,7 +244,7 @@ pub fn process_crate(
                         }
                         Err(e) => {
                             debug!("Failed to parse extern crates: {}", e);
-                            return Ok((Vec::new(), Vec::new(), false, recurse));
+                            return Ok((Vec::new(), Vec::new(), false, recurse, Vec::new()));
                         }
                     }
                 }
@@ -252,7 +252,7 @@ pub fn process_crate(
             }
         }
     }
-    let (equations, _possible_archs) = parse_attributes(&attrs, &ctx);
+    let (equations, possible_archs) = parse_attributes(&attrs, &ctx);
     let filtered = filter_equations(&equations, &parsed_attr.features);
 
     let model = solver::solve(&ctx, &equation, &filtered);
@@ -264,7 +264,7 @@ pub fn process_crate(
         db::add_to_db_data(db_data, name_with_version, (&enable, &disable));
     }
 
-    Ok((enable, disable, true, recurse))
+    Ok((enable, disable, true, recurse, possible_archs))
 }
 
 /// Parse the attributes of a the main crate.
