@@ -199,7 +199,6 @@ pub fn process_crate(
             debug!("No extern crates found for the crate");
             return Ok((Vec::new(), Vec::new(), false, recurse));
         }
-
         let std_attrs = get_item_extern_std(&items);
         if std_attrs.is_some() {
             debug!("Leaf level crate reached {}", name_with_version);
@@ -233,20 +232,21 @@ pub fn process_crate(
                 if let Some(dep_and_features) = get_deps_and_features(name, version, crate_info) {
                     let names_and_versions: Vec<(String, String)> = dep_and_features
                         .iter()
-                        .map(|(dep, _)| (dep.name.clone().replace('-', "_"), dep.version.clone()))
+                        .map(|(dep, _)| (dep.name.clone(), dep.version.clone()))
                         .collect();
                     let externs = get_item_extern_dep(&items, &names_and_versions);
-                    // TODO: This and the above case can be put in a function instead
-                    parse_top_level_externs(
-                        ctx,
-                        db_data,
-                        &mut enable,
-                        &mut disable,
-                        &mut parsed_attr,
-                        &mut equation,
-                        &externs,
-                        &names_and_versions,
-                    )?;
+                    match parse_top_level_externs(&ctx, &names_and_versions, &externs) {
+                        Ok((eq, attr)) => {
+                            if eq.is_some() {
+                                equation = Some(eq.unwrap().not());
+                                parsed_attr = attr;
+                            }
+                        }
+                        Err(e) => {
+                            debug!("Failed to parse extern crates: {}", e);
+                            return Ok((Vec::new(), Vec::new(), false, recurse));
+                        }
+                    }
                 }
                 debug!("main equation: {:?}", equation);
             }
@@ -391,127 +391,107 @@ pub fn is_dep_optional(crate_info: &CrateInfo, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-// TODO: The equation returned should be the top level crates guard and not the
-// dependency crates guard.
 fn parse_top_level_externs<'a>(
     ctx: &'a z3::Context,
-    db_data: &mut Vec<DBData>,
-    enable: &mut Vec<String>,
-    disable: &mut Vec<String>,
-    parsed_attr: &mut ParsedAttr,
-    eq: &mut Option<Bool<'a>>,
-    externs: &[ItemExternCrate],
     names_and_versions: &[(String, String)],
-) -> Result<(), anyhow::Error> {
+    externs: &Vec<ItemExternCrate>,
+) -> Result<(Option<Bool<'a>>, ParsedAttr), anyhow::Error> {
     let mut worklist = Vec::new();
-    for ex in externs.iter() {
-        let attr = ex.attrs.first().unwrap();
-        let (equation, _) = parse_main_attributes_direct(attr, ctx);
+    for ex in externs {
+        let (equation, parsed_attr) = parse_main_attributes_direct(ex.attrs.first().unwrap(), ctx);
         // If there is no attribute guarding the extern crate,
         // then we can't control it.
         if equation.is_none() {
-            println!("No equation found for the extern crate");
             continue;
         }
-        let dep_name = ex.ident.to_string();
         let version = names_and_versions
             .iter()
-            .find(|(name, _)| name == dep_name.as_str())
+            .find(|(name, _)| name == &ex.ident.to_string())
             .map(|(_, version)| version);
-        let name_with_version = downloader::clone_from_crates(&dep_name, version)
-            .map_err(|e| anyhow::anyhow!("Failed to clone from crates.io: {}", e))?;
-        println!("Name with version cloned: {}", name_with_version);
+        if version.is_none() {
+            continue;
+        }
+        let name_with_version = downloader::clone_from_crates(&ex.ident.to_string(), version)?;
         let items = parse_item_extern_crates(&name_with_version);
         if items.itemexterncrates.len() == 0 {
-            println!("No extern crates found for the crate");
             continue;
         }
         let std_attrs = get_item_extern_std(&items);
         if std_attrs.is_some() {
-            println!("Leaf level crate reached {}", name_with_version);
-            let features = db::get_from_db_data(&db_data, &name_with_version);
-            if features.is_some() {
-                println!(
-                    "Features to enable and disable for crate {}: {:?}",
-                    name_with_version, features
-                );
-                (*enable, *disable) = features.unwrap().features.clone();
-            } else {
-                println!("No features to enable for crate {}", name_with_version);
-                (*eq, *parsed_attr) = parse_main_attributes_direct(&std_attrs.unwrap(), ctx);
-                // We need to negate the equation since we are
-                // trying to remove std features.
-                *eq = match equation {
-                    Some(eq) => Some(eq.not()),
-                    None => None,
-                };
-                println!("Main equation: {:?}", eq);
-            }
-            return Ok(());
-        } else {
-            worklist.push(name_with_version);
+            return Ok((equation, parsed_attr));
         }
+        worklist.push((name_with_version, equation, parsed_attr));
     }
-    if worklist.is_empty() {
-        println!("No worklist found");
-        return Ok(());
-    }
-    println!("Worklist: {:?}", worklist);
-    parse_n_level_externs(
-        ctx,
-        db_data,
-        enable,
-        disable,
-        parsed_attr,
-        eq,
-        &mut worklist,
-    )?;
-    Ok(())
+    Ok(parse_n_level_externs_entry(&mut worklist))
 }
 
-fn parse_n_level_externs<'a>(
-    ctx: &'a z3::Context,
-    db_data: &mut Vec<DBData>,
-    enable: &mut Vec<String>,
-    disable: &mut Vec<String>,
-    parsed_attr: &mut ParsedAttr,
-    eq: &mut Option<Bool<'a>>,
-    worklist: &mut Vec<String>,
-) -> Result<(), anyhow::Error> {
-    for name_with_version in worklist.iter() {
-        let new_name_with_version = downloader::clone_from_crates(name_with_version, None)
-            .map_err(|e| anyhow::anyhow!("Failed to clone from crates.io: {}", e))?;
-        debug!("Name with version cloned: {}", new_name_with_version);
-        let items = parse_item_extern_crates(&new_name_with_version);
-        parse_top_level_externs(
-            ctx,
-            db_data,
-            enable,
-            disable,
-            parsed_attr,
-            eq,
-            &items.itemexterncrates,
-            &[(new_name_with_version.clone(), new_name_with_version)],
-        )?;
+fn parse_n_level_externs_entry<'a>(
+    worklist: &mut Vec<(String, Option<Bool<'a>>, ParsedAttr)>,
+) -> (Option<Bool<'a>>, ParsedAttr) {
+    let mut worklists = Vec::new();
+    worklist.iter().for_each(|(name_with_version, _, _)| {
+        worklists.push((name_with_version.clone(), Vec::<String>::new()));
+    });
+    loop {
+        if worklists.iter().all(|(_, remaining)| remaining.is_empty()) {
+            return (None, ParsedAttr::default());
+        }
+        for (name_with_version, equation, parsed_attr) in worklist.iter() {
+            let local_worklist = worklists
+                .iter_mut()
+                .find(|(name, _)| name == name_with_version)
+                .unwrap();
+            if parse_n_level_externs(&mut local_worklist.1) {
+                return (equation.clone(), parsed_attr.clone());
+            }
+        }
     }
-    Ok(())
+}
+
+fn parse_n_level_externs<'a>(worklist: &mut Vec<String>) -> bool {
+    let mut local_worklist = Vec::new();
+    for name_with_version in worklist.drain(..) {
+        let (name, version) = name_with_version.split_once(':').unwrap();
+        let new_name_with_version =
+            downloader::clone_from_crates(name, Some(&version.to_string())).unwrap();
+        let names_and_versions = downloader::read_dep_names_and_versions(name, version).unwrap();
+        let unfiltered = parse_item_extern_crates(&new_name_with_version);
+        let std_attrs = get_item_extern_std(&unfiltered);
+        if std_attrs.is_some() {
+            return true;
+        }
+        let externs = get_item_extern_dep(&unfiltered, &names_and_versions);
+        externs.iter().for_each(|ex| {
+            let version = names_and_versions
+                .iter()
+                .find(|(name, _)| name == &ex.ident.to_string())
+                .map(|(_, version)| version);
+            local_worklist.push(format!(
+                "{}:{}",
+                ex.ident.to_string(),
+                version.unwrap_or(&"latest".to_string())
+            ));
+        });
+    }
+    worklist.extend(local_worklist);
+    false
 }
 
 fn get_item_extern_dep(
     itemexterncrates: &ItemExternCrates,
     names: &[(String, String)],
 ) -> Vec<ItemExternCrate> {
-    let mut attrs = Vec::new();
+    let mut externs = Vec::new();
     for i in itemexterncrates.itemexterncrates.iter() {
         debug!("Checking ident: {}", i.ident);
         names.iter().for_each(|(name, _)| {
-            if i.ident == *name {
+            if i.ident == *name.replace("-", "_") {
                 debug!("Found ident: {}", i.ident);
-                attrs.push(i.clone());
+                externs.push(i.clone());
             }
         });
     }
-    attrs
+    externs
 }
 
 fn get_deps_and_features<'a>(

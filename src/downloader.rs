@@ -115,13 +115,20 @@ pub fn download_all_dependencies(
         traverse_and_update(&name, &version, new_version, crate_info);
 
         traverse_and_add_local_features(&name, new_version, crate_info)?;
-        let dep_names = read_dep_from_n_level(&name, new_version)?;
+        let dep_names = read_dep_names_and_versions(&name, new_version)?;
         traverse_and_add_dep_names(&name, &new_version, crate_info, &dep_names)?;
     }
     Ok(())
 }
 
-fn read_dep_from_n_level(
+/// Read the dependencies and their versions from the Cargo.toml file
+/// # Arguments
+/// * `name` - The name of the crate
+/// * `version` - The version of the crate
+/// # Returns
+/// * `Result` - A vector of tuples containing the name and version of each dependency
+/// * `Error` - An error if the file could not be read or parsed
+pub fn read_dep_names_and_versions(
     name: &str,
     version: &str,
 ) -> Result<Vec<(String, String)>, anyhow::Error> {

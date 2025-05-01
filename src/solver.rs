@@ -10,7 +10,8 @@ use crate::CrateInfo;
 /// * `main_equation` - The main equation to solve for
 /// * `filtered` - The list of filtered equations
 /// # Returns
-/// * `SatResult` - The result of the solving
+/// * `Option<z3::Model>` - The model if the equation is satisfiable
+/// * `None` - If the equation is not satisfiable
 pub fn solve<'a>(
     ctx: &'a z3::Context,
     main_equation: &Option<Bool>,
