@@ -2,20 +2,12 @@ use anyhow::Context;
 use log::debug;
 use proc_macro2::TokenStream;
 // use quote::ToTokens;
-use std::collections::HashSet;
-use std::fs;
+use std::{collections::HashSet, fs};
 use syn::{visit::Visit, Attribute, ItemExternCrate, Meta};
 use walkdir::WalkDir;
-use z3;
-use z3::ast::Bool;
+use z3::{self, ast::Bool};
 
-use crate::consts::DOWNLOAD_PATH;
-use crate::db;
-use crate::downloader;
-use crate::solver;
-use crate::CrateInfo;
-use crate::DBData;
-use crate::DEPENDENCIES;
+use crate::{consts::DOWNLOAD_PATH, db, downloader, solver, CrateInfo, DBData, DEPENDENCIES};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Logic {

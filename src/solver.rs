@@ -1,5 +1,4 @@
-use z3;
-use z3::ast::Bool;
+use z3::{self, ast::Bool};
 
 use crate::CrateInfo;
 

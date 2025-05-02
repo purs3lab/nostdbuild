@@ -1,6 +1,6 @@
 use bincode::{Decode, Encode};
 use lazy_static::lazy_static;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
 pub mod compiler;
@@ -28,6 +28,22 @@ pub enum Dependency {
         #[serde(rename = "default-features")]
         default_features: Option<bool>,
     },
+}
+
+#[derive(Debug, Serialize)]
+pub enum Status {
+    Success,
+    Failed,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Results {
+    pub name: String,
+    pub version: String,
+    pub target: String,
+    pub args: Vec<String>,
+    pub status: Status,
+    pub error: Option<String>,
 }
 
 /// We store already resolved features for a crate

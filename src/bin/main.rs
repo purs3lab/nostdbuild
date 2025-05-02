@@ -2,13 +2,7 @@ use clap::Parser;
 use env_logger;
 use log::debug;
 
-use nostd::compiler;
-use nostd::consts;
-use nostd::db;
-use nostd::downloader;
-use nostd::parser;
-use nostd::solver;
-use nostd::CrateInfo;
+use nostd::{compiler, consts, db, downloader, parser, solver, CrateInfo};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -54,6 +48,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let mut db_data = db::read_db_file()?;
+    let mut results = Vec::new();
 
     if let Some(url) = cli.url {
         debug!("URL provided: {}", url);
@@ -148,7 +143,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     println!("Final args: {:?}", main_args);
-    compiler::try_compile(&name, &target, &main_args, &possible_archs)?;
+    compiler::try_compile(&name, &target, &main_args, &possible_archs, &mut results)?;
     db::write_db_file(db_data)?;
+    db::write_final_json(&name, &results);
     Ok(())
 }

@@ -29,5 +29,6 @@ syn = { version = "2.0.96", features = ["visit", "parsing", "full", "extra-trait
 proc-macro2 = "1.0.93"
 z3 = "0.12.1"
 toml = "0.8.20"
-serde = "1.0.217"
+serde = "1.0.219"
+serde_json = "1.0.140"
 bincode = "=2.0.0"

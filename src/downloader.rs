@@ -5,16 +5,15 @@ use git2::Repository;
 use log::debug;
 use reqwest::blocking;
 use semver::VersionReq;
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 use tar::Archive;
 use toml::{self, map::Map, Value};
 use walkdir::WalkDir;
 
-use crate::consts::{CRATE_IO, DOWNLOAD_PATH};
-use crate::CrateInfo;
-use crate::Dependency;
-use crate::DEPENDENCIES;
+use crate::{
+    consts::{CRATE_IO, DOWNLOAD_PATH},
+    CrateInfo, Dependency, DEPENDENCIES,
+};
 
 /// Clone a git repository to the specified location
 ///

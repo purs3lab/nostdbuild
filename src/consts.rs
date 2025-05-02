@@ -1,6 +1,8 @@
-pub const DOWNLOAD_PATH: &str = "/tmp/downloads";
+pub const DOWNLOAD_PATH: &str = "/evaldisk/sourag/downloads";
 pub const CRATE_IO: &str = "https://crates.io";
 pub const DB_FILE_NAME: &str = "db.bin";
+pub const RESULTS_JSON_PREFIX: &str = "/evaldisk/sourag/results/";
+pub const RESULTS_JSON_SUFFIX: &str = "_args.json";
 
 pub const TARGET_LIST: [&str; 26] = [
     "aarch64-unknown-none",
