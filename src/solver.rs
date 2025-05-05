@@ -120,11 +120,36 @@ pub fn final_feature_list_main(
     if disable_in_default(crate_info, disable) {
         args.push("--no-default-features".to_string());
     }
-    if !enable.is_empty() {
+    let enable_from_default = get_feautes_not_disable(crate_info, disable);
+    // TODO: We might need to handle cases where this list might conflict 
+    // with dependency being compiled as no_std
+    if !enable_from_default.is_empty() {
         args.push("--features".to_string());
+        args.push(enable_from_default.join(","));
+    }
+    if !enable.is_empty() {
+        if !args.contains(&"--features".to_string()) {
+            args.push("--features".to_string());
+        }
         args.push(enable.join(","));
     }
     args
+}
+
+fn get_feautes_not_disable(crate_info: &CrateInfo, disable: &[String]) -> Vec<String> {
+    let mut feats: Vec<String> = Vec::new();
+    crate_info
+        .features
+        .iter()
+        .find(|(name, _)| name == "default")
+        .map(|(_, features)| {
+            features.iter().for_each(|feature| {
+                if !disable.contains(&feature.1) {
+                    feats.push(feature.1.clone());
+                }
+            });
+        });
+    feats
 }
 
 fn disable_in_default(crate_info: &CrateInfo, disable: &[String]) -> bool {

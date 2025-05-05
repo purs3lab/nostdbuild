@@ -1,8 +1,12 @@
 use anyhow::Context;
 use bincode::config;
 use log::debug;
-use std::{io::Read, fs::{self, File}, path::Path};
 use serde_json;
+use std::{
+    fs::{self, File},
+    io::Read,
+    path::Path,
+};
 
 use crate::{
     consts::{DB_FILE_NAME, RESULTS_JSON_PREFIX, RESULTS_JSON_SUFFIX},
