@@ -69,7 +69,7 @@ fn main() -> anyhow::Result<()> {
     let ctx = z3::Context::new(&cfg);
 
     let main_attributes = parser::parse_crate(&name);
-    let (enable, disable, found, recurse, possible_archs) = parser::process_crate(
+    let (enable, disable, found, recurse, mut possible_archs) = parser::process_crate(
         &ctx,
         &main_attributes,
         &name,
@@ -109,6 +109,7 @@ fn main() -> anyhow::Result<()> {
             &crate_info,
             false,
         )?;
+        possible_archs.extend(possible);
 
         if !found {
             debug!(

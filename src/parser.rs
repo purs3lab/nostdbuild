@@ -316,13 +316,16 @@ pub fn parse_attributes<'a>(
     ctx: &'a z3::Context,
 ) -> (Vec<Option<Bool<'a>>>, Vec<String>) {
     let mut equation: Vec<Option<Bool>> = Vec::new();
+    let mut possible_target_archs: Vec<String> = Vec::new();
     let mut temp_eq: Option<Bool>;
-    let mut parsed: ParsedAttr = ParsedAttr::default();
+    let mut parsed: ParsedAttr;
     for attr in &attrs.attributes {
         let ident = attr.path().get_ident().unwrap();
         if ident == "cfg" {
-            // println!("{}", attr.to_token_stream());
             (temp_eq, parsed) = parse_meta_for_cfg_attr(&attr.meta, &ctx);
+            possible_target_archs
+                .extend(parsed.possible_target_archs.clone());
+            // TODO: Should this check be removed?
             if parsed.features.len() == 1 || parsed.logic.is_empty() {
                 // Attributes like `#[cfg (feature = "serde")]` are not interesting.
                 continue;
@@ -331,7 +334,7 @@ pub fn parse_attributes<'a>(
         }
     }
 
-    (equation, parsed.possible_target_archs)
+    (equation, possible_target_archs)
 }
 
 /// Filter the equations based on the main features.
