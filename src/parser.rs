@@ -323,8 +323,7 @@ pub fn parse_attributes<'a>(
         let ident = attr.path().get_ident().unwrap();
         if ident == "cfg" {
             (temp_eq, parsed) = parse_meta_for_cfg_attr(&attr.meta, &ctx);
-            possible_target_archs
-                .extend(parsed.possible_target_archs.clone());
+            possible_target_archs.extend(parsed.possible_target_archs.clone());
             // TODO: Should this check be removed?
             if parsed.features.len() == 1 || parsed.logic.is_empty() {
                 // Attributes like `#[cfg (feature = "serde")]` are not interesting.

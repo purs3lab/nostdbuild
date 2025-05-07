@@ -194,10 +194,16 @@ pub fn init_worklist(
 
     let toml = fs::read_to_string(&filename).context("Failed to read Cargo.toml")?;
     let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
-    let dependencies = toml["dependencies"].as_table().cloned().unwrap_or_else(|| {
-        debug!("No dependencies found in Cargo.toml");
-        Map::new()
-    });
+    let mut dependencies = Map::new();
+    if toml
+        .as_table()
+        .map_or(false, |table| table.contains_key("dependencies"))
+    {
+        dependencies = toml["dependencies"].as_table().cloned().unwrap_or_else(|| {
+            debug!("No dependencies found in Cargo.toml");
+            Map::new()
+        });
+    }
     crate_info.features = read_local_features(toml);
     for (name, value) in dependencies {
         let mut local_crate_info = CrateInfo::default();

@@ -59,9 +59,9 @@ fn try_compile_for_target(
         args.extend_from_slice(enable);
     }
     debug!("Running cargo with args: {:?}", args);
-    let status = std::process::Command::new("cargo")
+    let output = std::process::Command::new("cargo")
         .args(&args)
-        .status()
+        .output()
         .context("Failed to run cargo")?;
 
     let (name, version) = name_with_version.split_once(':').unwrap_or(("", ""));
@@ -70,21 +70,28 @@ fn try_compile_for_target(
         version: version.to_string(),
         target: target.to_string(),
         args: args.clone(),
-        status: if status.success() {
+        status: if output.status.success() {
             Status::Success
         } else {
             Status::Failed
         },
-        error: if status.success() {
+        error: if output.status.success() {
             None
         } else {
             Some(format!(
-                "Cargo failed with status code: {}",
-                status.code().unwrap_or(-1)
+                "Cargo failed with status code: {} and message: {}",
+                output.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&output.stderr)
             ))
         },
     };
     results.push(result);
+    std::process::Command::new("cargo")
+        .arg("clean")
+        .arg("--manifest-path")
+        .arg(dir.join("Cargo.toml").to_str().unwrap())
+        .status()
+        .context("Failed to run cargo clean")?;
 
     // if !status.success() {
     //    return Err(anyhow::anyhow!(
