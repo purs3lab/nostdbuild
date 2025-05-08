@@ -110,6 +110,8 @@ fn main() -> anyhow::Result<()> {
             false,
         )?;
         possible_archs.extend(possible);
+        possible_archs.sort();
+        possible_archs.dedup();
 
         if !found {
             debug!(

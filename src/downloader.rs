@@ -215,6 +215,7 @@ pub fn init_worklist(
         match dep {
             Dependency::Simple(version) => {
                 local_crate_info.version = version;
+                local_crate_info.name = name.clone();
             }
             Dependency::Detailed {
                 version,
