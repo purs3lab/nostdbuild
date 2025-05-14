@@ -121,7 +121,7 @@ pub fn final_feature_list_main(
         args.push("--no-default-features".to_string());
     }
     let enable_from_default = get_feautes_not_disable(crate_info, disable);
-    // TODO: We might need to handle cases where this list might conflict 
+    // TODO: We might need to handle cases where this list might conflict
     // with dependency being compiled as no_std
     if !enable_from_default.is_empty() {
         args.push("--features".to_string());

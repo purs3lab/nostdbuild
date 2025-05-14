@@ -15,6 +15,9 @@ struct Cli {
 
     #[arg(long)]
     target: Option<String>,
+
+    #[arg(long)]
+    dry_run: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -80,6 +83,11 @@ fn main() -> anyhow::Result<()> {
 
     if !found {
         return Err(anyhow::anyhow!("Main crate does not support no_std build"));
+    } else {
+        if cli.dry_run {
+            println!("Dry run enabled, exiting now!");
+            return Ok(());
+        }
     }
 
     let mut main_args = solver::final_feature_list_main(&crate_info, &enable, &disable);
