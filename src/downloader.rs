@@ -48,6 +48,9 @@ pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String,
                 if e.to_string().contains("could not be found") {
                     return Err(anyhow::anyhow!("Crate not found"));
                 }
+                if e.to_string().contains("Known: ") {
+                    return Err(anyhow::anyhow!("Version not found"));
+                }
                 debug!("Retrying download");
                 continue;
             }
@@ -377,14 +380,14 @@ fn get_download_url(
             if *version == "latest" {
                 crate_data.versions[0].num.clone()
             } else {
-                let ver = VersionReq::parse(&version).context("Failed to parse version")?;
+                let ver = VersionReq::parse(&version).context("Known: Failed to parse version")?;
                 let resolved_versions = crate_data
                     .versions
                     .iter()
                     .filter(|v| ver.matches(&semver::Version::parse(&v.num).unwrap()))
                     .collect::<Vec<_>>();
                 if resolved_versions.is_empty() {
-                    return Err(anyhow::anyhow!("No matching version found"));
+                    return Err(anyhow::anyhow!("Known: No matching version found"));
                 }
                 resolved_versions.first().unwrap().num.clone()
             }
