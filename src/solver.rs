@@ -117,17 +117,13 @@ pub fn final_feature_list_main(
     disable: &[String],
 ) -> Vec<String> {
     let mut args = Vec::new();
+    let mut enable_from_default = Vec::new();
     if disable_in_default(crate_info, disable) {
         args.push("--no-default-features".to_string());
-    }
-    let enable_from_default = get_feautes_not_disable(crate_info, disable);
-    // TODO: We might need to handle cases where this list might conflict
-    // with dependency being compiled as no_std
-    if !enable_from_default.is_empty() {
-        args.push("--features".to_string());
-        args.push(enable_from_default.join(","));
+        enable_from_default = get_feautes_not_disable(crate_info, disable);
     }
     if !enable.is_empty() {
+        enable_from_default.extend(enable.iter().cloned());
         if !args.contains(&"--features".to_string()) {
             args.push("--features".to_string());
         }
@@ -217,7 +213,6 @@ fn find_possible_equations<'a>(
         let result = solver.check();
         if result == z3::SatResult::Sat {
             possible.push(eq.clone());
-            continue;
         }
         solver.reset();
     }

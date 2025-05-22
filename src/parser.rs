@@ -286,6 +286,9 @@ pub fn parse_main_attributes<'a>(
             }
         }
     }
+    if !atleast_one_no_std {
+        equation = None;
+    }
     (atleast_one_no_std, equation, parsed)
 }
 
