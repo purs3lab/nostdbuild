@@ -448,9 +448,11 @@ fn parse_n_level_externs_entry<'a>(
 fn parse_n_level_externs<'a>(worklist: &mut Vec<String>) -> bool {
     let mut local_worklist = Vec::new();
     for name_with_version in worklist.drain(..) {
-        let (name, version) = name_with_version.split_once(':').unwrap();
+        let (mut name, version) = name_with_version.split_once(':').unwrap();
         let new_name_with_version =
             downloader::clone_from_crates(name, Some(&version.to_string())).unwrap();
+        name = new_name_with_version.split_once(':')
+            .map_or(name, |(n, _)| n);
         let names_and_versions = downloader::read_dep_names_and_versions(name, version).unwrap();
         let unfiltered = parse_item_extern_crates(&new_name_with_version);
         let std_attrs = get_item_extern_std(&unfiltered);

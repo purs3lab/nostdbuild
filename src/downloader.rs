@@ -38,11 +38,11 @@ pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String,
     let filename = format!("{}.crate", name);
 
     let client = create_client()?;
-    let (mut download_url, mut ver): (String, String);
+    let (mut download_url, mut ver, mut newname): (String, String, String);
     // Try until successful
     loop {
-        (download_url, ver) = match get_download_url(&client, name, &version) {
-            Ok((url, ver)) => (url, ver),
+        (download_url, ver, newname) = match get_download_url(&client, name, &version) {
+            Ok((url, ver, newname)) => (url, ver, newname),
             Err(e) => {
                 debug!("Failed to get download URL: {}", e);
                 if e.to_string().contains("could not be found") {
@@ -55,12 +55,13 @@ pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String,
                 continue;
             }
         };
+        debug!("Download URL: {}", download_url);
 
-        let crate_path = dir.join(format!("{}-{}", name, ver));
+        let crate_path = dir.join(format!("{}-{}", newname, ver));
         if Path::new(&crate_path).exists() {
             if contains_one_rs_file(&crate_path.to_str().unwrap()) {
-                debug!("Crate already downloaded");
-                return Ok(format!("{}:{}", name, ver));
+                debug!("Crate with name {} already downloaded", newname);
+                return Ok(format!("{}:{}", newname, ver));
             }
             // Delete the crate if it doesn't contain any .rs files
             fs::remove_file(&crate_path.to_str().unwrap())?;
@@ -80,9 +81,9 @@ pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String,
     extract_crate(&filename, dir)?;
     fs::remove_file(&filename).context("Failed to delete crate file")?;
 
-    debug!("Downloaded {} to {}", name, dir.display());
-    debug!("Name with version: {}", format!("{}:{}", name, ver));
-    Ok(format!("{}:{}", name, ver))
+    debug!("Downloaded {} to {}", newname, dir.display());
+    debug!("Name with version: {}", format!("{}:{}", newname, ver));
+    Ok(format!("{}:{}", newname, ver))
 }
 
 /// Download all dependencies for a crate
@@ -99,7 +100,7 @@ pub fn download_all_dependencies(
     debug!("Initial worklist length: {}", worklist.len());
     while !worklist.is_empty() {
         debug!("Worklist length: {}", worklist.len());
-        let (name, version) = worklist.pop().unwrap();
+        let (mut name, version) = worklist.pop().unwrap();
         debug!("Downloading {} with version {}", name, version);
         let name_with_version = match clone_from_crates(&name, Some(&version)) {
             Ok(name_with_version) => name_with_version,
@@ -108,6 +109,8 @@ pub fn download_all_dependencies(
                 continue;
             }
         };
+        let old_name = name.clone();
+        name = name_with_version.split_once(':').map_or(name, |(n, _)| n.to_string());
 
         let mut dep_lock = DEPENDENCIES.lock().unwrap();
         if !dep_lock.contains(&name_with_version) {
@@ -116,6 +119,13 @@ pub fn download_all_dependencies(
         drop(dep_lock);
 
         let new_version = name_with_version.split(':').last().unwrap_or("latest");
+
+        // Some crates have _ in their name when in the dependency list,
+        // but the actual crate name has - instead.
+        if name != old_name {
+            debug!("Updating name from {} to {}", old_name, name);
+            update_name(&old_name, &name, crate_info);
+        }
 
         // `clone_from_crates` gives a more accurate version.
         // Update the version in the crate_info with this version.
@@ -372,11 +382,25 @@ fn traverse_and_update(name: &str, version: &str, new_version: &str, crate_info:
     }
 }
 
+fn update_name(
+    old_name: &str,
+    new_name: &str,
+    crate_info: &mut CrateInfo,
+) {
+    if crate_info.name == old_name {
+        crate_info.name = new_name.to_string();
+        return;
+    }
+    for (dep, _) in &mut crate_info.deps_and_features {
+        update_name(old_name, new_name, dep);
+    }
+}
+
 fn get_download_url(
     client: &SyncClient,
     name: &str,
     version: &Option<&String>,
-) -> Result<(String, String), anyhow::Error> {
+) -> Result<(String, String, String), anyhow::Error> {
     let crate_data = client.get_crate(name)?;
 
     let resolved_version = match version {
@@ -408,7 +432,7 @@ fn get_download_url(
         .clone();
     let download_url: String = format!("{}{}", CRATE_IO, dl_path);
 
-    Ok((download_url, resolved_version))
+    Ok((download_url, resolved_version, crate_data.crate_data.name.clone()))
 }
 
 fn download_crate(url: &str, filename: &str) -> Result<(), anyhow::Error> {
