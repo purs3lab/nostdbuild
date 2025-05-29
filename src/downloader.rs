@@ -101,8 +101,13 @@ pub fn download_all_dependencies(
         debug!("Worklist length: {}", worklist.len());
         let (name, version) = worklist.pop().unwrap();
         debug!("Downloading {} with version {}", name, version);
-        let name_with_version = clone_from_crates(&name, Some(&version))
-            .map_err(|e| anyhow::anyhow!("Failed to download crate: {}", e))?;
+        let name_with_version = match clone_from_crates(&name, Some(&version)) {
+            Ok(name_with_version) => name_with_version,
+            Err(e) => {
+                debug!("Failed to download crate: {}", e);
+                continue;
+            }
+        };
 
         let mut dep_lock = DEPENDENCIES.lock().unwrap();
         if !dep_lock.contains(&name_with_version) {
