@@ -103,6 +103,8 @@ fn main() -> anyhow::Result<()> {
     // TODO: Handle optional dependencies
     // TODO: Handle recursing into dependencies based on unconditional no_std support
     // TODO: Some dependencies are from git instead of crates.io. Handle those cases (check tool_error_or_crate_issue file).
+    // TODO: Remove workspace table from the Cargo.toml file if it exists
+    // TODO: [lints]\nworkspace = true should also be removed from the Cargo.toml file if it exists
     for dep in deps_attrs {
         if parser::is_dep_optional(&crate_info, &dep.crate_name.split(":").next().unwrap_or("")) {
             debug!("Dependency {} is optional, skipping", dep.crate_name);
