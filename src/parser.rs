@@ -2,6 +2,7 @@ use anyhow::Context;
 use log::debug;
 use proc_macro2::TokenStream;
 // use quote::ToTokens;
+use std::path::Path;
 use std::{collections::HashSet, fs};
 use syn::{visit::Visit, Attribute, ItemExternCrate, Meta};
 use walkdir::WalkDir;
@@ -22,6 +23,7 @@ pub struct ParsedAttr {
     constants: Vec<String>,
     pub features: Vec<String>,
     pub possible_target_archs: Vec<String>,
+    pub filepath: Option<String>,
     logic: Vec<Logic>,
 }
 
@@ -38,6 +40,11 @@ pub struct ItemExternCrates {
     itemexterncrates: Vec<ItemExternCrate>,
 }
 
+#[derive(Default, Clone, Debug)]
+pub struct ItemExternCratesAll {
+    itemexterncrates: Vec<ItemExternCrate>,
+}
+
 impl<'a> Visit<'a> for ItemExternCrates {
     fn visit_item_extern_crate(&mut self, i: &ItemExternCrate) {
         // We will save all the extern crates that have an
@@ -45,6 +52,12 @@ impl<'a> Visit<'a> for ItemExternCrates {
         if i.attrs.len() != 0 {
             self.itemexterncrates.push(i.clone());
         }
+    }
+}
+
+impl<'a> Visit<'a> for ItemExternCratesAll {
+    fn visit_item_extern_crate(&mut self, i: &ItemExternCrate) {
+        self.itemexterncrates.push(i.clone());
     }
 }
 
@@ -92,6 +105,46 @@ pub fn parse_item_extern_crates(crate_name: &str) -> ItemExternCrates {
         );
     }
     itemexterncrates
+}
+
+/// Parse the extern crates of a crate
+/// This will parse all the files separately
+/// and return the extern crates that does not have
+/// any attributes associated with them.
+/// # Arguments
+/// * `crate_name` - The name of the crate
+/// # Returns
+/// A vector containing the names of the files
+/// that have unguarded `extern crate std`.
+pub fn parse_item_extern_crates_for_files(crate_name: &str) -> Vec<String> {
+    let path = format!("{}/{}", DOWNLOAD_PATH, crate_name.replace(':', "-"));
+    let files = get_all_rs_files(&path);
+    let mut files_ungaurded = Vec::new();
+    for file in files {
+        let mut itemexterncrates = ItemExternCratesAll {
+            itemexterncrates: Vec::new(),
+        };
+
+        let filename = file.replace(DOWNLOAD_PATH, "");
+        if let Err(err) = visit(&mut itemexterncrates, &filename) {
+            debug!(
+                "Failed to parse file {} with error:{}. Will continue...",
+                file, err
+            );
+        }
+
+        for itemexterns in itemexterncrates.itemexterncrates {
+            if itemexterns.attrs.len() == 0 && itemexterns.ident == "std" {
+                debug!("Found unguarded extern crate std in file: {}", file);
+                let basename = Path::new(&filename)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                files_ungaurded.push(basename.to_string());
+            }
+        }
+    }
+    files_ungaurded
 }
 
 /// Get the attribute of the extern crate std
@@ -191,6 +244,7 @@ pub fn process_crate(
             debug!("No extern crates found for the crate");
             return Ok((Vec::new(), Vec::new(), false, recurse, Vec::new()));
         }
+        // TODO: Check if we need to handle cases where there are multiple extern crate stds
         let std_attrs = get_item_extern_std(&items);
         if std_attrs.is_some() {
             debug!("Leaf level crate reached {}", name_with_version);
@@ -247,6 +301,31 @@ pub fn process_crate(
     let (equations, possible_archs) = parse_attributes(&attrs, &ctx);
     let filtered = filter_equations(&equations, &parsed_attr.features);
 
+    // This part addes equations if there are attributes that conditionally include
+    // files which might contain unguarded `extern crate std`.
+    let files_and_equations = get_files_in_attributes(&attrs, &ctx);
+    debug!("Files in attributes: {:?}", files_and_equations);
+    let files_unguared = parse_item_extern_crates_for_files(name_with_version);
+    debug!(
+        "Files with unguarded extern crate std: {:?}",
+        files_unguared
+    );
+
+    for (file, eq) in files_and_equations {
+        if files_unguared.contains(&file) {
+            debug!("File {} contains unguarded extern crate std", file);
+            if let Some(e) = eq {
+                let neg = e.not();
+                if let Some(existing_eq) = &mut equation {
+                    *existing_eq = Bool::and(ctx, &[existing_eq, &neg]);
+                } else {
+                    equation = Some(neg);
+                }
+            }
+        }
+    }
+
+    // Finally, we solve the equations
     let model = solver::solve(&ctx, &equation, &filtered);
     if enable.is_empty() && disable.is_empty() {
         (enable, disable) = solver::model_to_features(&model);
@@ -451,7 +530,8 @@ fn parse_n_level_externs<'a>(worklist: &mut Vec<String>) -> bool {
         let (mut name, version) = name_with_version.split_once(':').unwrap();
         let new_name_with_version =
             downloader::clone_from_crates(name, Some(&version.to_string())).unwrap();
-        name = new_name_with_version.split_once(':')
+        name = new_name_with_version
+            .split_once(':')
             .map_or(name, |(n, _)| n);
         let names_and_versions = downloader::read_dep_names_and_versions(name, version).unwrap();
         let unfiltered = parse_item_extern_crates(&new_name_with_version);
@@ -509,11 +589,27 @@ fn get_deps_and_features<'a>(
     None
 }
 
+fn get_files_in_attributes<'a>(
+    attrs: &Attributes,
+    ctx: &'a z3::Context,
+) -> Vec<(String, Option<Bool<'a>>)> {
+    let mut files_and_equations = Vec::new();
+    for attr in &attrs.attributes {
+        if attr.path().get_ident().unwrap() == "cfg_attr" {
+            let (eq, parsed_attr) = parse_main_attributes_direct(attr, ctx);
+            if let Some(filepath) = parsed_attr.filepath {
+                files_and_equations.push((filepath, eq));
+            }
+        }
+    }
+    files_and_equations
+}
+
 fn visit<T>(visiter_type: &mut T, crate_name: &str) -> anyhow::Result<()>
 where
     T: for<'a> Visit<'a>,
 {
-    let path = format!("{}/{}/", DOWNLOAD_PATH, crate_name.replace(':', "-"));
+    let path = format!("{}/{}", DOWNLOAD_PATH, crate_name.replace(':', "-"));
     let files = get_all_rs_files(&path);
 
     for filename in files {
@@ -552,6 +648,7 @@ fn parse_token_stream<'a>(
     in_any: &mut bool,
 ) -> Vec<Bool<'a>> {
     let mut was_feature = false;
+    let mut was_filepath = false;
     let mut was_target_arch = false;
     let mut current_expr: Option<Bool> = None;
     let mut group_items: Vec<Bool> = Vec::new();
@@ -590,6 +687,8 @@ fn parse_token_stream<'a>(
                     was_feature = true;
                 } else if ident_str == "target_arch" {
                     was_target_arch = true;
+                } else if ident_str == "path" {
+                    was_filepath = true;
                 } else if let Some(logic) = is_any_logic(&ident_str) {
                     parsed.logic.push(logic.clone());
                     curr_logic = logic;
@@ -609,6 +708,10 @@ fn parse_token_stream<'a>(
                     let target_arch_str = l.to_string()[1..l.to_string().len() - 1].to_string();
                     parsed.possible_target_archs.push(target_arch_str);
                     was_target_arch = false;
+                } else if was_filepath {
+                    let filepath_str = l.to_string()[1..l.to_string().len() - 1].to_string();
+                    parsed.filepath = Some(filepath_str);
+                    was_filepath = false;
                 }
             }
             _ => {}
@@ -659,6 +762,11 @@ fn parse_meta_for_cfg_attr<'a>(
 }
 
 fn get_all_rs_files(path: &str) -> Vec<String> {
+    let path_obj = Path::new(path);
+    if path_obj.is_file() && path_obj.extension().unwrap_or_default() == "rs" {
+        return vec![path.to_string()];
+    }
+
     let mut files = Vec::new();
     for entry in WalkDir::new(path) {
         let entry = entry.unwrap();

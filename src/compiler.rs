@@ -85,6 +85,7 @@ fn try_compile_for_target(
             ))
         },
     };
+    debug!("Cargo build {:?} for target: {}", &result.status, target);
     results.push(result);
     std::process::Command::new("cargo")
         .arg("clean")
@@ -92,13 +93,5 @@ fn try_compile_for_target(
         .arg(dir.join("Cargo.toml").to_str().unwrap())
         .status()
         .context("Failed to run cargo clean")?;
-
-    // if !status.success() {
-    //    return Err(anyhow::anyhow!(
-    //        "Cargo failed with status code: {}",
-    //        status.code().unwrap_or(-1)
-    //     ));
-    // }
-    debug!("Cargo build succeeded for target: {}", target);
     Ok(())
 }

@@ -110,7 +110,9 @@ pub fn download_all_dependencies(
             }
         };
         let old_name = name.clone();
-        name = name_with_version.split_once(':').map_or(name, |(n, _)| n.to_string());
+        name = name_with_version
+            .split_once(':')
+            .map_or(name, |(n, _)| n.to_string());
 
         let mut dep_lock = DEPENDENCIES.lock().unwrap();
         if !dep_lock.contains(&name_with_version) {
@@ -382,11 +384,7 @@ fn traverse_and_update(name: &str, version: &str, new_version: &str, crate_info:
     }
 }
 
-fn update_name(
-    old_name: &str,
-    new_name: &str,
-    crate_info: &mut CrateInfo,
-) {
+fn update_name(old_name: &str, new_name: &str, crate_info: &mut CrateInfo) {
     if crate_info.name == old_name {
         crate_info.name = new_name.to_string();
         return;
@@ -432,7 +430,11 @@ fn get_download_url(
         .clone();
     let download_url: String = format!("{}{}", CRATE_IO, dl_path);
 
-    Ok((download_url, resolved_version, crate_data.crate_data.name.clone()))
+    Ok((
+        download_url,
+        resolved_version,
+        crate_data.crate_data.name.clone(),
+    ))
 }
 
 fn download_crate(url: &str, filename: &str) -> Result<(), anyhow::Error> {
