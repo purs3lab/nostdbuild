@@ -488,6 +488,33 @@ pub fn determine_cargo_toml(dir: &PathBuf) -> String {
     )
 }
 
+/// Remove a table from the Cargo.toml file.
+/// # Arguments
+/// * `key` - The key of the table to remove
+/// * `toml` - The TOML value to modify
+/// * `filename` - The path to the Cargo.toml file
+/// # Returns
+/// A Result indicating success or failure.
+pub fn remove_table_from_toml(
+    key: &str,
+    toml: &mut toml::Value,
+    filename: &str,
+) -> Result<(), anyhow::Error> {
+    if let Some(table) = toml.as_table_mut() {
+        if table.contains_key(key) {
+            debug!("{} found in Cargo.toml, removing it", key);
+            table.remove(key);
+            fs::write(
+                &filename,
+                toml::to_string(&toml).context("Failed to write Cargo.toml")?,
+            )
+            .context("Failed to write Cargo.toml")?;
+            debug!("Removed {} from Cargo.toml", key);
+        }
+    }
+    Ok(())
+}
+
 fn parse_top_level_externs<'a>(
     ctx: &'a z3::Context,
     names_and_versions: &[(String, String)],

@@ -215,18 +215,8 @@ pub fn init_worklist(
             Map::new()
         });
 
-    if let Some(table) = toml.as_table_mut() {
-        if table.contains_key("workspace") {
-            debug!("Workspace found in Cargo.toml, removing it");
-            table.remove("workspace");
-            fs::write(
-                &filename,
-                toml::to_string(&toml).context("Failed to write Cargo.toml")?,
-            )
-            .context("Failed to write Cargo.toml")?;
-            debug!("Removed workspace from Cargo.toml");
-        }
-    }
+    parser::remove_table_from_toml("workspace", &mut toml, &filename)?;
+    parser::remove_table_from_toml("lints", &mut toml, &filename)?;
 
     crate_info.features = read_local_features(toml);
     for (name, value) in dependencies {
