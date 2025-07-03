@@ -12,7 +12,7 @@ use walkdir::WalkDir;
 
 use crate::{
     consts::{CRATE_IO, DOWNLOAD_PATH},
-    CrateInfo, Dependency, DEPENDENCIES,
+    parser, CrateInfo, Dependency, DEPENDENCIES,
 };
 
 /// Clone a git repository to the specified location
@@ -152,7 +152,7 @@ pub fn read_dep_names_and_versions(
     version: &str,
 ) -> Result<Vec<(String, String)>, anyhow::Error> {
     let dir = Path::new(DOWNLOAD_PATH).join(format!("{}-{}", name, version));
-    let filename = format!("{}/Cargo.toml", dir.display());
+    let filename = parser::determine_cargo_toml(&dir);
     let mut dep_names = Vec::new();
     if !Path::new(&filename).exists() {
         debug!("Cargo.toml not found for {}", name);
@@ -198,7 +198,7 @@ pub fn init_worklist(
     crate_info: &mut CrateInfo,
 ) -> Result<(), anyhow::Error> {
     let dir = Path::new(DOWNLOAD_PATH).join(name.replace(':', "-"));
-    let filename = format!("{}/Cargo.toml", dir.display());
+    let filename = parser::determine_cargo_toml(&dir);
     debug!("Reading Cargo.toml from {}", filename);
 
     let (name, version) = name.split_once(':').unwrap();
@@ -359,7 +359,7 @@ fn traverse_and_add_local_features(
 ) -> anyhow::Result<(), anyhow::Error> {
     if crate_info.name == name && crate_info.version == version {
         let dir = Path::new(DOWNLOAD_PATH).join(format!("{}-{}", name, version));
-        let filename = format!("{}/Cargo.toml", dir.display());
+        let filename = parser::determine_cargo_toml(&dir);
         debug!("Reading Cargo.toml from {}", filename);
         let toml = fs::read_to_string(&filename).context("Failed to read Cargo.toml")?;
         let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;

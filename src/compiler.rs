@@ -3,7 +3,7 @@ use anyhow::Context;
 use log::debug;
 use std::path::Path;
 
-use crate::{consts, Results, Status};
+use crate::{consts, parser, Results, Status};
 
 pub fn try_compile(
     name_with_version: &str,
@@ -53,7 +53,7 @@ fn try_compile_for_target(
         "--target".to_string(),
         target.to_string(),
         "--manifest-path".to_string(),
-        dir.join("Cargo.toml").to_str().unwrap().to_string(),
+        parser::determine_cargo_toml(&dir),
     ];
     if !enable.is_empty() {
         args.extend_from_slice(enable);
@@ -90,7 +90,7 @@ fn try_compile_for_target(
     std::process::Command::new("cargo")
         .arg("clean")
         .arg("--manifest-path")
-        .arg(dir.join("Cargo.toml").to_str().unwrap())
+        .arg(parser::determine_cargo_toml(&dir))
         .status()
         .context("Failed to run cargo clean")?;
     Ok(())

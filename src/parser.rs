@@ -2,7 +2,7 @@ use anyhow::Context;
 use log::debug;
 use proc_macro2::TokenStream;
 // use quote::ToTokens;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{collections::HashSet, fs};
 use syn::{visit::Visit, Attribute, ItemExternCrate, Meta};
 use walkdir::WalkDir;
@@ -465,6 +465,27 @@ pub fn is_dep_optional(crate_info: &CrateInfo, name: &str) -> bool {
         .find(|(dep, _)| dep.name == name)
         .map(|(dep, _)| dep.optional)
         .unwrap_or(false)
+}
+
+/// Determine the path to the Cargo.toml file in the given directory.
+/// It checks for both `Cargo.toml` and `cargo.toml` (lowercase).
+/// # Arguments
+/// * `dir` - The directory to check for the Cargo.toml file
+/// # Returns
+/// The path to the Cargo.toml file if it exists, otherwise panics.
+pub fn determine_cargo_toml(dir: &PathBuf) -> String {
+    let path = format!("{}/Cargo.toml", dir.display());
+    if Path::new(&path).exists() {
+        return path;
+    }
+    let path = format!("{}/cargo.toml", dir.display());
+    if Path::new(&path).exists() {
+        return path;
+    }
+    unreachable!(
+        "No Cargo.toml found in the directory: {}. This should not happen.",
+        dir.display()
+    )
 }
 
 fn parse_top_level_externs<'a>(
