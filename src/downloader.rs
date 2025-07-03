@@ -154,10 +154,6 @@ pub fn read_dep_names_and_versions(
     let dir = Path::new(DOWNLOAD_PATH).join(format!("{}-{}", name, version));
     let filename = parser::determine_cargo_toml(&dir);
     let mut dep_names = Vec::new();
-    if !Path::new(&filename).exists() {
-        debug!("Cargo.toml not found for {}", name);
-        return Err(anyhow::anyhow!("Cargo.toml not found"));
-    }
     let toml = fs::read_to_string(&filename).context("Failed to read Cargo.toml")?;
     let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
 
@@ -208,22 +204,30 @@ pub fn init_worklist(
     crate_info.default_features = true;
     crate_info.features = Vec::new();
 
-    if !Path::new(&filename).exists() {
-        return Err(anyhow::anyhow!("Cargo.toml not found"));
-    }
-
     let toml = fs::read_to_string(&filename).context("Failed to read Cargo.toml")?;
-    let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
-    let mut dependencies = Map::new();
-    if toml
-        .as_table()
-        .map_or(false, |table| table.contains_key("dependencies"))
-    {
-        dependencies = toml["dependencies"].as_table().cloned().unwrap_or_else(|| {
+    let mut toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
+    let dependencies = toml
+        .get("dependencies")
+        .and_then(|val| val.as_table())
+        .cloned()
+        .unwrap_or_else(|| {
             debug!("No dependencies found in Cargo.toml");
             Map::new()
         });
+
+    if let Some(table) = toml.as_table_mut() {
+        if table.contains_key("workspace") {
+            debug!("Workspace found in Cargo.toml, removing it");
+            table.remove("workspace");
+            fs::write(
+                &filename,
+                toml::to_string(&toml).context("Failed to write Cargo.toml")?,
+            )
+            .context("Failed to write Cargo.toml")?;
+            debug!("Removed workspace from Cargo.toml");
+        }
     }
+
     crate_info.features = read_local_features(toml);
     for (name, value) in dependencies {
         let mut local_crate_info = CrateInfo::default();
