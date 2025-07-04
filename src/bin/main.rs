@@ -102,6 +102,7 @@ fn main() -> anyhow::Result<()> {
     // Solve for each dependency
     // TODO: Handle optional dependencies
     // TODO: Some dependencies are from git instead of crates.io. Handle those cases (check tool_error_or_crate_issue file).
+    // TODO: If a feature is not there in the cargo.toml, add it and then do the build.
     for dep in deps_attrs {
         if parser::is_dep_optional(&crate_info, &dep.crate_name.split(":").next().unwrap_or("")) {
             debug!("Dependency {} is optional, skipping", dep.crate_name);

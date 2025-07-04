@@ -20,6 +20,10 @@ lazy_static! {
 #[serde(untagged)]
 pub enum Dependency {
     Simple(String),
+    // We use this to match weird patterns.
+    Special {
+        optional: Option<bool>,
+    },
     Detailed {
         version: String,
         package: Option<String>,

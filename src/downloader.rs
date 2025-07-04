@@ -172,6 +172,7 @@ pub fn read_dep_names_and_versions(
             .context("Failed to parse dependency")?;
         let version = match dep {
             Dependency::Simple(version) => version,
+            Dependency::Special { optional: _ } => "latest".to_string(),
             Dependency::Detailed { version, .. } => version,
         };
         dep_names.push((name.to_string(), version));
@@ -222,6 +223,7 @@ pub fn init_worklist(
     for (name, value) in dependencies {
         let mut local_crate_info = CrateInfo::default();
         let mut features_to_use: Vec<String> = Vec::new();
+        local_crate_info.name = name.clone();
         let dep: Dependency = value
             .clone()
             .try_into()
@@ -229,8 +231,11 @@ pub fn init_worklist(
         match dep {
             Dependency::Simple(version) => {
                 local_crate_info.version = version;
-                local_crate_info.name = name.clone();
-            }
+            },
+            Dependency::Special { optional } => {
+                local_crate_info.optional = optional.unwrap_or(false);
+                local_crate_info.version = "latest".to_string();
+            },
             Dependency::Detailed {
                 version,
                 package,
