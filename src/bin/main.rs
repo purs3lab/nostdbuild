@@ -148,15 +148,17 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    if !main_args.contains(&"--features".to_string()) {
-        main_args.push("--features".to_string());
-    } else {
-        // If we already have --features, we need to add a comma to separate features
-        main_args.push(",".to_string());
+    if !deps_args.is_empty() {
+        if !main_args.contains(&"--features".to_string()) {
+            main_args.push("--features".to_string());
+        } else {
+            // If we already have --features, we need to add a comma to separate features
+            main_args.push(",".to_string());
+        }
+        deps_args.sort();
+        deps_args.dedup();
+        main_args.push(deps_args.join(","));
     }
-    deps_args.sort();
-    deps_args.dedup();
-    main_args.push(deps_args.join(","));
 
     println!("Final args: {:?}", main_args);
     compiler::try_compile(&name, &target, &main_args, &possible_archs, &mut results)?;

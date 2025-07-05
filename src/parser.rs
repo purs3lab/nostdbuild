@@ -231,12 +231,16 @@ pub fn process_crate(
             return Ok((Vec::new(), Vec::new(), false, recurse, Vec::new()));
         }
     } else {
-        // Crate should not be both conditional and unconditional no_std
-        assert!(!no_std);
         debug!(
             "crate {} is an unconditional no_std crate",
             name_with_version
         );
+        // If the crate is both conditional and unconditional no_std,
+        // we will treat it as unconditional.
+        if !no_std {
+            debug!("WARNING: Crate {} is both unconditional and conditional no_std, will consider on unconditional.", name_with_version);
+        }
+
         let items = parse_item_extern_crates(name_with_version);
 
         // This case implies that the crate is no_std without any feature requirements.
@@ -301,7 +305,7 @@ pub fn process_crate(
     let (equations, possible_archs) = parse_attributes(&attrs, &ctx);
     let filtered = filter_equations(&equations, &parsed_attr.features);
 
-    // This part addes equations if there are attributes that conditionally include
+    // This part adds equations if there are attributes that conditionally include
     // files which might contain unguarded `extern crate std`.
     let files_and_equations = get_files_in_attributes(&attrs, &ctx);
     debug!("Files in attributes: {:?}", files_and_equations);
@@ -710,6 +714,9 @@ fn parse_token_stream<'a>(
                     parse_token_stream(g.stream(), parsed, ctx, &mut group_expr, in_any);
 
                 let refs: Vec<&Bool> = local_group_items.iter().collect();
+                if refs.is_empty() {
+                    continue;
+                }
                 let local_expr = match curr_logic {
                     Logic::And => Some(Bool::and(ctx, refs.as_slice())),
                     Logic::Or | Logic::Any => Some(Bool::or(ctx, refs.as_slice())),
