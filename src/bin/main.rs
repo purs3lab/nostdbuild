@@ -103,6 +103,7 @@ fn main() -> anyhow::Result<()> {
     // TODO: Handle optional dependencies
     // TODO: Some dependencies are from git instead of crates.io. Handle those cases (check tool_error_or_crate_issue file).
     // TODO: If a feature is not there in the cargo.toml, add it and then do the build.
+    let mut deps_args = Vec::new();
     for dep in deps_attrs {
         if parser::is_dep_optional(&crate_info, &dep.crate_name.split(":").next().unwrap_or("")) {
             debug!("Dependency {} is optional, skipping", dep.crate_name);
@@ -143,16 +144,19 @@ fn main() -> anyhow::Result<()> {
         );
 
         if !args.is_empty() {
-            if !main_args.contains(&"--features".to_string()) {
-                main_args.push("--features".to_string());
-            }
-            for arg in args {
-                if !main_args.contains(&arg) {
-                    main_args.push(arg);
-                }
-            }
+            deps_args.extend(args);
         }
     }
+
+    if !main_args.contains(&"--features".to_string()) {
+        main_args.push("--features".to_string());
+    } else {
+        // If we already have --features, we need to add a comma to separate features
+        main_args.push(",".to_string());
+    }
+    deps_args.sort();
+    deps_args.dedup();
+    main_args.push(deps_args.join(","));
 
     println!("Final args: {:?}", main_args);
     compiler::try_compile(&name, &target, &main_args, &possible_archs, &mut results)?;
