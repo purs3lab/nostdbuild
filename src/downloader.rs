@@ -231,11 +231,11 @@ pub fn init_worklist(
         match dep {
             Dependency::Simple(version) => {
                 local_crate_info.version = version;
-            },
+            }
             Dependency::Special { optional } => {
                 local_crate_info.optional = optional.unwrap_or(false);
                 local_crate_info.version = "latest".to_string();
-            },
+            }
             Dependency::Detailed {
                 version,
                 package,
