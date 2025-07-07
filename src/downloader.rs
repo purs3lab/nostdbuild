@@ -191,6 +191,7 @@ pub fn read_dep_names_and_versions(
 /// * `Result` - An empty `Result` if successful, an `Error` otherwise
 pub fn init_worklist(
     name: &str,
+    crate_name_rename: &mut Vec<(String, String)>,
     worklist: &mut Vec<(String, String)>,
     crate_info: &mut CrateInfo,
 ) -> Result<(), anyhow::Error> {
@@ -249,7 +250,7 @@ pub fn init_worklist(
                     version,
                     default_features: default_features.unwrap_or(true),
                     optional: optional.unwrap_or(false),
-                    name: package.unwrap_or(name),
+                    name: package.unwrap_or(name.clone()),
                     ..local_crate_info
                 };
             }
@@ -258,6 +259,7 @@ pub fn init_worklist(
             local_crate_info.name.clone(),
             local_crate_info.version.clone(),
         ));
+        crate_name_rename.push((name, local_crate_info.name.clone()));
         crate_info
             .deps_and_features
             .push((local_crate_info, features_to_use));

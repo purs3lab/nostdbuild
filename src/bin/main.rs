@@ -24,6 +24,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     env_logger::init();
     let mut worklist: Vec<(String, String)> = Vec::new();
+    let mut crate_name_rename: Vec<(String, String)> = Vec::new();
     let mut crate_info: CrateInfo = CrateInfo::default();
 
     let mut name = match cli.name {
@@ -63,7 +64,12 @@ fn main() -> anyhow::Result<()> {
         name = downloader::clone_from_crates(&name, None)?;
         debug!("Downloaded crate: {}", name);
     }
-    downloader::init_worklist(&name, &mut worklist, &mut crate_info)?;
+    downloader::init_worklist(
+        &name,
+        &mut worklist,
+        &mut crate_name_rename,
+        &mut crate_info,
+    )?;
     downloader::download_all_dependencies(&mut worklist, &mut crate_info)?;
 
     debug!("Dependencies: {:?}", crate_info);
@@ -143,7 +149,7 @@ fn main() -> anyhow::Result<()> {
             update_default_config
         );
 
-        parser::update_main_crate_default_list(&name, &dep.crate_name);
+        parser::update_main_crate_default_list(&name, &dep.crate_name, &crate_name_rename);
 
         debug!(
             "Final arguments for dependency {}: {:?}",

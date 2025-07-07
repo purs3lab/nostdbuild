@@ -528,12 +528,21 @@ pub fn remove_table_from_toml(
 /// * `dep` - The name of the dependency to add to the main crate's default features
 /// # Returns
 /// None
-pub fn update_main_crate_default_list(main: &str, dep: &str) {
+pub fn update_main_crate_default_list(
+    main: &str,
+    dep: &str,
+    crate_name_rename: &[(String, String)],
+) {
     let main_dir = PathBuf::from(DOWNLOAD_PATH).join(main.replace(':', "-"));
     let main_cargo_toml = determine_cargo_toml(&main_dir);
     let dep_dir = PathBuf::from(DOWNLOAD_PATH).join(dep.replace(':', "-"));
     let dep_cargo_toml = determine_cargo_toml(&dep_dir);
-    let dep_name = dep.split(':').next().unwrap();
+    let dep_name_original = dep.split(':').next().unwrap().to_string();
+    let dep_name = crate_name_rename
+        .iter()
+        .find(|(name, _)| name == &dep_name_original)
+        .map(|(_, renamed)| renamed)
+        .unwrap_or_else(|| &dep_name_original);
 
     debug!(
         "Updating main crate default features list: {} with dependency: {}",
