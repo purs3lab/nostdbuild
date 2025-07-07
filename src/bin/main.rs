@@ -131,12 +131,19 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        let args = solver::final_feature_list_dep(
+        let (args, update_default_config) = solver::final_feature_list_dep(
             &crate_info,
             &dep.crate_name.split(":").next().unwrap_or(""),
             &enable,
             &disable,
         );
+
+        debug!(
+            "Dependency requires default config update: {}",
+            update_default_config
+        );
+
+        parser::update_main_crate_default_list(&name, &dep.crate_name);
 
         debug!(
             "Final arguments for dependency {}: {:?}",

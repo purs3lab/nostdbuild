@@ -62,13 +62,16 @@ pub fn model_to_features(model: &Option<z3::Model>) -> (Vec<String>, Vec<String>
 /// * `enable` - The list of features to enable
 /// * `disable` - The list of features to disable
 /// # Returns
-/// * `Vec<String>` - The final feature list for the dependency
+/// * `(Vec<String>, bool)` - The final feature list for the
+/// dependencyand a boolean indicating if the default
+/// features list of main crate should be updated
 pub fn final_feature_list_dep(
     crate_info: &CrateInfo,
     name: &str,
     enable: &[String],
     disable: &[String],
-) -> Vec<String> {
+) -> (Vec<String>, bool) {
+    let mut update_default_config = false;
     let dep_crate_info = crate_info
         .deps_and_features
         .iter()
@@ -78,12 +81,8 @@ pub fn final_feature_list_dep(
             panic!("Dependency {} not found in the list of dependencies", name);
         });
 
-    if disable_in_default(dep_crate_info, disable) {
-        // If depencency requires disabling default features
-        // but the main crate does not have default_features
-        // set to false, then we can't enable no_std for
-        // the dependency.
-        assert!(!dep_crate_info.default_features);
+    if disable_in_default(dep_crate_info, disable) && dep_crate_info.default_features {
+        update_default_config = true;
     }
 
     let main_available_features = &crate_info.features;
@@ -100,7 +99,7 @@ pub fn final_feature_list_dep(
                 .map(|(main_feat, _)| main_feat.clone())
         })
         .collect();
-    features_to_enable
+    (features_to_enable, update_default_config)
 }
 
 /// Given the crate info, the list of features to enable and disable,

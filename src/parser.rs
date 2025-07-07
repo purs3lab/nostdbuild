@@ -519,6 +519,107 @@ pub fn remove_table_from_toml(
     Ok(())
 }
 
+/// Update the main crate's default features list
+/// by adding the default features of the given dependency.
+/// This function will also set the dependency to not have
+/// default features set in the main crate's Cargo.toml.
+/// # Arguments
+/// * `main` - The name of the main crate
+/// * `dep` - The name of the dependency to add to the main crate's default features
+/// # Returns
+/// None
+pub fn update_main_crate_default_list(main: &str, dep: &str) {
+    let main_dir = PathBuf::from(DOWNLOAD_PATH).join(main.replace(':', "-"));
+    let main_cargo_toml = determine_cargo_toml(&main_dir);
+    let dep_dir = PathBuf::from(DOWNLOAD_PATH).join(dep.replace(':', "-"));
+    let dep_cargo_toml = determine_cargo_toml(&dep_dir);
+    let dep_name = dep.split(':').next().unwrap();
+
+    debug!(
+        "Updating main crate default features list: {} with dependency: {}",
+        main_cargo_toml, dep_cargo_toml
+    );
+
+    let mut main_toml: toml::Value =
+        toml::from_str(&fs::read_to_string(&main_cargo_toml).unwrap()).unwrap();
+    let mut dep_toml: toml::Value =
+        toml::from_str(&fs::read_to_string(&dep_cargo_toml).unwrap()).unwrap();
+
+    let main_dependencies = main_toml
+        .get_mut("dependencies")
+        .and_then(|v| v.as_table_mut())
+        .expect("Failed to get dependencies table from main Cargo.toml");
+
+    if let Some(value) = main_dependencies.get_mut(dep_name) {
+        match value {
+            toml::Value::Table(table) => {
+                table.insert("default-features".to_string(), toml::Value::Boolean(false));
+            }
+            _ => {
+                debug!(
+                    "Dependency {} in main Cargo.toml is not a table, skipping default-features update",
+                    dep_name
+                );
+            }
+        }
+    }
+
+    let dep_features = dep_toml
+        .get_mut("features")
+        .and_then(|v| v.as_table_mut())
+        .expect("Failed to get features table from dependency Cargo.toml");
+
+    let dep_default_features = dep_features
+        .get("default")
+        .and_then(|v| v.as_array())
+        .map(|v| {
+            v.iter()
+                .filter_map(|f| f.as_str().map(|s| format!("{}/{}", dep_name, s)))
+                .collect()
+        })
+        .unwrap_or_else(|| Vec::new());
+
+    let main_features = main_toml
+        .get_mut("features")
+        .and_then(|v| v.as_table_mut())
+        .expect("Failed to get features table from main Cargo.toml");
+
+    if let Some(default_features) = main_features.get_mut("default") {
+        match default_features {
+            toml::Value::Array(arr) => {
+                for feature in dep_default_features {
+                    if !arr.contains(&toml::Value::String(feature.clone())) {
+                        debug!("Adding {} to main crate default features", feature);
+                        arr.push(toml::Value::String(feature));
+                    }
+                }
+            }
+            _ => {
+                debug!("Default features in main Cargo.toml is not an array, skipping update");
+            }
+        }
+    } else {
+        main_features.insert(
+            "default".to_string(),
+            toml::Value::Array(
+                dep_default_features
+                    .into_iter()
+                    .map(toml::Value::String)
+                    .collect(),
+            ),
+        );
+        debug!("Added default features to main crate features");
+    }
+
+    fs::write(
+        &main_cargo_toml,
+        toml::to_string(&main_toml)
+            .context("Failed convert Value to string")
+            .unwrap(),
+    )
+    .unwrap();
+}
+
 fn parse_top_level_externs<'a>(
     ctx: &'a z3::Context,
     names_and_versions: &[(String, String)],
