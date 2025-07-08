@@ -2,8 +2,11 @@ use anyhow::Context;
 use log::debug;
 use proc_macro2::TokenStream;
 // use quote::ToTokens;
-use std::path::{Path, PathBuf};
-use std::{collections::HashSet, fs};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+};
 use syn::{visit::Visit, Attribute, ItemExternCrate, Meta};
 use walkdir::WalkDir;
 use z3::{self, ast::Bool};
@@ -98,7 +101,7 @@ pub fn parse_item_extern_crates(crate_name: &str) -> ItemExternCrates {
         itemexterncrates: Vec::new(),
     };
 
-    if let Err(err) = visit(&mut itemexterncrates, crate_name) {
+    if let Err(err) = visit(&mut itemexterncrates, crate_name, true) {
         debug!(
             "Failed to parse crate {} with error:{}. Will continue...",
             crate_name, err
@@ -118,7 +121,7 @@ pub fn parse_item_extern_crates(crate_name: &str) -> ItemExternCrates {
 /// that have unguarded `extern crate std`.
 pub fn parse_item_extern_crates_for_files(crate_name: &str) -> Vec<String> {
     let path = format!("{}/{}", DOWNLOAD_PATH, crate_name.replace(':', "-"));
-    let files = get_all_rs_files(&path);
+    let files = get_all_rs_files(&path, true);
     let mut files_ungaurded = Vec::new();
     for file in files {
         let mut itemexterncrates = ItemExternCratesAll {
@@ -126,7 +129,7 @@ pub fn parse_item_extern_crates_for_files(crate_name: &str) -> Vec<String> {
         };
 
         let filename = file.replace(DOWNLOAD_PATH, "");
-        if let Err(err) = visit(&mut itemexterncrates, &filename) {
+        if let Err(err) = visit(&mut itemexterncrates, &filename, true) {
             debug!(
                 "Failed to parse file {} with error:{}. Will continue...",
                 file, err
@@ -170,10 +173,10 @@ pub fn get_item_extern_std(itemexterncrates: &ItemExternCrates) -> Option<Attrib
 /// * `crate_name` - The name of the main crate
 /// # Returns
 /// The attributes of the main crate
-pub fn parse_crate(crate_name: &str) -> Attributes {
+pub fn parse_crate(crate_name: &str, recurse: bool) -> Attributes {
     let mut attributes = Attributes::default();
 
-    if let Err(err) = visit(&mut attributes, crate_name) {
+    if let Err(err) = visit(&mut attributes, crate_name, recurse) {
         debug!(
             "Failed to parse crate {} with error:{}. Will continue...",
             crate_name, err
@@ -181,6 +184,22 @@ pub fn parse_crate(crate_name: &str) -> Attributes {
     }
     attributes.crate_name = crate_name.to_string();
     attributes
+}
+
+/// Check if the crate has a no_std attribute.
+/// # Arguments
+/// * `name` - The name of the crate
+/// * `ctx` - The Z3 context
+/// # Returns
+/// A boolean indicating whether the crate has a no_std attribute.
+pub fn check_for_no_std(name: &str, ctx: &z3::Context) -> bool {
+    let base_attrs = parse_crate(name, false);
+
+    if !parse_main_attributes(&base_attrs, ctx).0 && !base_attrs.unconditional_no_std {
+        debug!("No no_std found for the crate {}", name);
+        return false;
+    }
+    true
 }
 
 /// Parse the dependencies of the main crate
@@ -192,7 +211,7 @@ pub fn parse_deps_crate() -> Vec<Attributes> {
     let mut attributes = Vec::new();
     let deps_lock = DEPENDENCIES.lock().unwrap();
     for dep in deps_lock.iter() {
-        attributes.push(parse_crate(&dep.clone()));
+        attributes.push(parse_crate(&dep.clone(), true));
     }
     drop(deps_lock);
     attributes
@@ -222,7 +241,7 @@ pub fn process_crate(
     db_data: &mut Vec<DBData>,
     crate_info: &CrateInfo,
     is_main: bool,
-) -> anyhow::Result<(Vec<String>, Vec<String>, bool, bool, Vec<String>)> {
+) -> anyhow::Result<(Vec<String>, Vec<String>, bool, Vec<String>)> {
     let mut recurse = false;
     let mut is_leaf = false;
     let (mut enable, mut disable): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
@@ -231,7 +250,7 @@ pub fn process_crate(
     if !attrs.unconditional_no_std {
         if !no_std {
             debug!("No no_std found for the crate");
-            return Ok((Vec::new(), Vec::new(), false, recurse, Vec::new()));
+            return Ok((Vec::new(), Vec::new(), recurse, Vec::new()));
         }
     } else {
         debug!(
@@ -249,7 +268,7 @@ pub fn process_crate(
         // This case implies that the crate is no_std without any feature requirements.
         if items.itemexterncrates.len() == 0 {
             debug!("No extern crates found for the crate");
-            return Ok((Vec::new(), Vec::new(), true, recurse, Vec::new()));
+            return Ok((Vec::new(), Vec::new(), recurse, Vec::new()));
         }
         // TODO: Check if we need to handle cases where there are multiple extern crate stds
         let std_attrs = get_item_extern_std(&items);
@@ -297,7 +316,7 @@ pub fn process_crate(
                         }
                         Err(e) => {
                             debug!("Failed to parse extern crates: {}", e);
-                            return Ok((Vec::new(), Vec::new(), false, recurse, Vec::new()));
+                            return Ok((Vec::new(), Vec::new(), recurse, Vec::new()));
                         }
                     }
                 }
@@ -342,7 +361,7 @@ pub fn process_crate(
         db::add_to_db_data(db_data, name_with_version, (&enable, &disable));
     }
 
-    Ok((enable, disable, true, recurse, possible_archs))
+    Ok((enable, disable, recurse, possible_archs))
 }
 
 /// Parse the attributes of a the main crate.
@@ -770,12 +789,12 @@ fn get_files_in_attributes<'a>(
     files_and_equations
 }
 
-fn visit<T>(visiter_type: &mut T, crate_name: &str) -> anyhow::Result<()>
+fn visit<T>(visiter_type: &mut T, crate_name: &str, recurse: bool) -> anyhow::Result<()>
 where
     T: for<'a> Visit<'a>,
 {
     let path = format!("{}/{}", DOWNLOAD_PATH, crate_name.replace(':', "-"));
-    let files = get_all_rs_files(&path);
+    let files = get_all_rs_files(&path, recurse);
 
     for filename in files {
         debug!("Parsing file: {}", filename);
@@ -929,19 +948,28 @@ fn parse_meta_for_cfg_attr<'a>(
     }
 }
 
-fn get_all_rs_files(path: &str) -> Vec<String> {
+fn get_all_rs_files(path: &str, recurse: bool) -> Vec<String> {
     let path_obj = Path::new(path);
     if path_obj.is_file() && path_obj.extension().unwrap_or_default() == "rs" {
         return vec![path.to_string()];
     }
 
     let mut files = Vec::new();
-    for entry in WalkDir::new(path) {
-        let entry = entry.unwrap();
-        let path_str = entry.path().to_str().unwrap();
-        if entry.path().extension().unwrap_or_default() == "rs" && !path_str.contains("/tests/") {
-            files.push(entry.path().to_str().unwrap().to_string());
+
+    if recurse {
+        for entry in WalkDir::new(path) {
+            push_to_files_vec(&entry.unwrap().path(), &mut files);
+        }
+    } else {
+        for entry in fs::read_dir(format!("{}/src", path)).unwrap() {
+            push_to_files_vec(&entry.unwrap().path(), &mut files);
         }
     }
     files
+}
+
+fn push_to_files_vec(path: &Path, files: &mut Vec<String>) {
+    if path.extension().unwrap_or_default() == "rs" && !path.to_str().unwrap().contains("/tests/") {
+        files.push(path.to_str().unwrap().to_string());
+    }
 }

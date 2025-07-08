@@ -76,9 +76,14 @@ fn main() -> anyhow::Result<()> {
 
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
+    let found = parser::check_for_no_std(&name, &ctx);
 
-    let main_attributes = parser::parse_crate(&name);
-    let (enable, disable, found, recurse, mut possible_archs) = parser::process_crate(
+    if !found {
+        return Err(anyhow::anyhow!("Main crate does not support no_std build"));
+    } 
+
+    let main_attributes = parser::parse_crate(&name, true);
+    let (enable, disable, recurse, mut possible_archs) = parser::process_crate(
         &ctx,
         &main_attributes,
         &name,
@@ -87,13 +92,9 @@ fn main() -> anyhow::Result<()> {
         true,
     )?;
 
-    if !found {
-        return Err(anyhow::anyhow!("Main crate does not support no_std build"));
-    } else {
-        if cli.dry_run {
-            println!("Dry run enabled, exiting now!");
-            return Ok(());
-        }
+    if cli.dry_run {
+        println!("Dry run enabled, exiting now!");
+        return Ok(());
     }
 
     let mut main_args = solver::final_feature_list_main(&crate_info, &enable, &disable);
@@ -117,7 +118,10 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        let (enable, disable, found, _, possible) = parser::process_crate(
+        let found = parser::check_for_no_std(&dep.crate_name, &ctx);
+        assert_eq!(found, true, "Dependency {} does not support no_std build", dep.crate_name);
+
+        let (enable, disable, _, possible) = parser::process_crate(
             &ctx,
             &dep,
             &dep.crate_name,
@@ -128,14 +132,6 @@ fn main() -> anyhow::Result<()> {
         possible_archs.extend(possible);
         possible_archs.sort();
         possible_archs.dedup();
-
-        if !found {
-            debug!(
-                "Dependency {} does not support no_std build",
-                dep.crate_name
-            );
-            continue;
-        }
 
         let (args, update_default_config) = solver::final_feature_list_dep(
             &crate_info,
@@ -148,11 +144,11 @@ fn main() -> anyhow::Result<()> {
             "Dependency requires default config update: {}",
             update_default_config
         );
-        
+
         if update_default_config {
             parser::update_main_crate_default_list(&name, &dep.crate_name, &crate_name_rename);
         }
-        
+
         debug!(
             "Final arguments for dependency {}: {:?}",
             dep.crate_name, args
