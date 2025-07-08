@@ -66,8 +66,8 @@ fn main() -> anyhow::Result<()> {
     }
     downloader::init_worklist(
         &name,
-        &mut worklist,
         &mut crate_name_rename,
+        &mut worklist,
         &mut crate_info,
     )?;
     downloader::download_all_dependencies(&mut worklist, &mut crate_info)?;
@@ -148,9 +148,11 @@ fn main() -> anyhow::Result<()> {
             "Dependency requires default config update: {}",
             update_default_config
         );
-
-        parser::update_main_crate_default_list(&name, &dep.crate_name, &crate_name_rename);
-
+        
+        if update_default_config {
+            parser::update_main_crate_default_list(&name, &dep.crate_name, &crate_name_rename);
+        }
+        
         debug!(
             "Final arguments for dependency {}: {:?}",
             dep.crate_name, args

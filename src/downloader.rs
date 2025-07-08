@@ -186,7 +186,9 @@ pub fn read_dep_names_and_versions(
 /// features that will be used later.
 /// # Arguments
 /// * `name` - The name of the crate to get dependencies for
+/// * `crate_name_rename` - A mutable vector to store the renamed crate names
 /// * `worklist` - The worklist to add the dependencies to
+/// * `crate_info` - Detailed information about the crate, including its dependencies and features.
 /// # Returns
 /// * `Result` - An empty `Result` if successful, an `Error` otherwise
 pub fn init_worklist(
@@ -219,6 +221,7 @@ pub fn init_worklist(
 
     parser::remove_table_from_toml("workspace", &mut toml, &filename)?;
     parser::remove_table_from_toml("lints", &mut toml, &filename)?;
+    parser::remove_table_from_toml("dev-dependencies", &mut toml, &filename)?;
 
     crate_info.features = read_local_features(toml);
     for (name, value) in dependencies {

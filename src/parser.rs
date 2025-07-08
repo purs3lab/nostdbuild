@@ -134,6 +134,8 @@ pub fn parse_item_extern_crates_for_files(crate_name: &str) -> Vec<String> {
         }
 
         for itemexterns in itemexterncrates.itemexterncrates {
+            // TODO: Don't just checked for the length. Checked for existence of cfg attributes.
+            // Can have single function for this as well as the TODO for `get_item_extern_std`.
             if itemexterns.attrs.len() == 0 && itemexterns.ident == "std" {
                 debug!("Found unguarded extern crate std in file: {}", file);
                 let basename = Path::new(&filename)
@@ -153,6 +155,7 @@ pub fn parse_item_extern_crates_for_files(crate_name: &str) -> Vec<String> {
 /// # Returns
 /// The attribute of the extern crate std
 /// if it exists, otherwise None.
+/// TODO: Update this to return the cfg attribute associated with the extern.
 pub fn get_item_extern_std(itemexterncrates: &ItemExternCrates) -> Option<Attribute> {
     itemexterncrates
         .itemexterncrates
@@ -246,7 +249,7 @@ pub fn process_crate(
         // This case implies that the crate is no_std without any feature requirements.
         if items.itemexterncrates.len() == 0 {
             debug!("No extern crates found for the crate");
-            return Ok((Vec::new(), Vec::new(), false, recurse, Vec::new()));
+            return Ok((Vec::new(), Vec::new(), true, recurse, Vec::new()));
         }
         // TODO: Check if we need to handle cases where there are multiple extern crate stds
         let std_attrs = get_item_extern_std(&items);
