@@ -80,7 +80,7 @@ fn main() -> anyhow::Result<()> {
 
     if !found {
         return Err(anyhow::anyhow!("Main crate does not support no_std build"));
-    } 
+    }
 
     let main_attributes = parser::parse_crate(&name, true);
     let (enable, disable, recurse, mut possible_archs) = parser::process_crate(
@@ -119,7 +119,11 @@ fn main() -> anyhow::Result<()> {
         }
 
         let found = parser::check_for_no_std(&dep.crate_name, &ctx);
-        assert_eq!(found, true, "Dependency {} does not support no_std build", dep.crate_name);
+        assert!(
+            found,
+            "Dependency {} does not support no_std build",
+            dep.crate_name
+        );
 
         let (enable, disable, _, possible) = parser::process_crate(
             &ctx,

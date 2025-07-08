@@ -136,35 +136,45 @@ pub fn parse_item_extern_crates_for_files(crate_name: &str) -> Vec<String> {
             );
         }
 
-        for itemexterns in itemexterncrates.itemexterncrates {
-            // TODO: Don't just checked for the length. Checked for existence of cfg attributes.
-            // Can have single function for this as well as the TODO for `get_item_extern_std`.
-            if itemexterns.attrs.len() == 0 && itemexterns.ident == "std" {
-                debug!("Found unguarded extern crate std in file: {}", file);
-                let basename = Path::new(&filename)
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("");
-                files_ungaurded.push(basename.to_string());
-            }
+        let extern_std_without_cfg = itemexterncrates
+            .itemexterncrates
+            .iter()
+            .filter(|i| i.ident == "std")
+            .any(|i| {
+                !i.attrs
+                    .iter()
+                    .any(|a| a.path().get_ident().map_or(false, |ident| ident == "cfg"))
+            });
+        if extern_std_without_cfg {
+            debug!("Found unguarded extern crate std in file: {}", file);
+            let basename = Path::new(&filename)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            files_ungaurded.push(basename.to_string());
         }
     }
     files_ungaurded
 }
 
 /// Get the attribute of the extern crate std
+/// We only return the cfg attribute associated with the first
+/// extern crate std. This is because we assume that even if there
+/// are multiple extern crate stds, they will have the same
+/// cfg attribute.
 /// # Arguments
 /// * `itemexterncrates` - The extern crates of the main crate
 /// # Returns
 /// The attribute of the extern crate std
 /// if it exists, otherwise None.
-/// TODO: Update this to return the cfg attribute associated with the extern.
 pub fn get_item_extern_std(itemexterncrates: &ItemExternCrates) -> Option<Attribute> {
     itemexterncrates
         .itemexterncrates
         .iter()
-        .find(|i| i.ident == "std")
-        .map(|i| i.attrs.first().unwrap().clone())
+        .filter(|i| i.ident == "std")
+        .flat_map(|i| i.attrs.iter())
+        .find(|a| a.path().get_ident().map_or(false, |ident| ident == "cfg"))
+        .cloned()
 }
 
 /// Parse the main crate and return the attributes

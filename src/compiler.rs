@@ -58,7 +58,7 @@ fn try_compile_for_target(
     if !enable.is_empty() {
         args.extend_from_slice(enable);
     }
-    
+
     debug!("Running cargo with args: {}", args.join(" "));
     let output = std::process::Command::new("cargo")
         .args(&args)
