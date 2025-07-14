@@ -287,17 +287,15 @@ pub fn contains_one_rs_file(path: &str) -> bool {
 }
 
 fn read_local_features(toml: toml::Value) -> Vec<(String, Vec<(String, String)>)> {
-    if !toml
-        .as_table()
-        .map_or(false, |table| table.contains_key("features"))
-    {
-        debug!("No features found in Cargo.toml");
-        return Vec::new();
-    }
-    let features = toml["features"].as_table().cloned().unwrap_or_else(|| {
-        debug!("No features found in Cargo.toml");
-        Map::new()
-    });
+    let features = toml
+        .get("features")
+        .and_then(Value::as_table)
+        .cloned()
+        .unwrap_or_else(|| {
+            debug!("No features found in Cargo.toml");
+            Map::new()
+        });
+
     let features = features
         .iter()
         .map(|(k, v)| {
@@ -307,9 +305,8 @@ fn read_local_features(toml: toml::Value) -> Vec<(String, Vec<(String, String)>)
                     .unwrap()
                     .iter()
                     .map(|v| {
-                        // TODO: Handle optional dependencies properly
                         if v.as_str().unwrap().starts_with("dep:") {
-                            return (v.as_str().unwrap()[4..].to_string(), "".to_string());
+                            return (v.as_str().unwrap()[4..].to_string(), "dep:".to_string());
                         }
                         let v = v.as_str().unwrap().split("/");
                         let left = v.clone().next().unwrap_or("").to_string();

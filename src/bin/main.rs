@@ -83,7 +83,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let main_attributes = parser::parse_crate(&name, true);
-    let (enable, disable, recurse, mut possible_archs) = parser::process_crate(
+    let (enable, disable, recurse, _) = parser::process_crate(
         &ctx,
         &main_attributes,
         &name,
@@ -97,89 +97,76 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let (disable_default, main_feature_string) = solver::final_feature_list_main(&crate_info, &enable, &disable);
+    let (disable_default, main_features) =
+        solver::final_feature_list_main(&crate_info, &enable, &disable);
+
+    let dep_and_feats = parser::features_for_optional_deps(&crate_info);
 
     println!(
         "Main crate arguments: {:?} with recurse as {}",
-        main_feature_string, recurse
+        main_features, recurse
     );
 
     let deps_attrs = parser::parse_deps_crate();
     let mut skipped = Vec::new();
     // Solve for each dependency
-    // TODO: Handle optional dependencies
     // TODO: Some dependencies are from git instead of crates.io. Handle those cases (check tool_error_or_crate_issue file).
     // TODO: If a feature is not there in the cargo.toml, add it and then do the build.
     let mut deps_args = Vec::new();
     for dep in deps_attrs {
-        if parser::is_dep_optional(&crate_info, &dep.crate_name.split(":").next().unwrap_or("")) {
+        if parser::should_skip_dep(&dep.crate_name, &crate_info, &dep_and_feats, &main_features) {
             debug!("Dependency {} is optional, skipping", dep.crate_name);
             skipped.push(dep);
             continue;
         }
-
-        let found = parser::check_for_no_std(&dep.crate_name, &ctx);
-        assert!(
-            found,
-            "Dependency {} does not support no_std build",
-            dep.crate_name
-        );
-
-        let (enable, disable, _, possible) = parser::process_crate(
+        parser::process_dep_crate(
             &ctx,
             &dep,
-            &dep.crate_name,
+            &name,
             &mut db_data,
             &crate_info,
-            false,
+            &mut deps_args,
+            &crate_name_rename,
         )?;
-        possible_archs.extend(possible);
-        possible_archs.sort();
-        possible_archs.dedup();
+    }
 
-        let (args, update_default_config) = solver::final_feature_list_dep(
-            &crate_info,
-            &dep.crate_name.split(":").next().unwrap_or(""),
-            &enable,
-            &disable,
-        );
-
-        debug!(
-            "Dependency requires default config update: {}",
-            update_default_config
-        );
-
-        if update_default_config {
-            parser::update_main_crate_default_list(&name, &dep.crate_name, &crate_name_rename);
-        }
-
-        debug!(
-            "Final arguments for dependency {}: {:?}",
-            dep.crate_name, args
-        );
-
-        if !args.is_empty() {
-            deps_args.extend(args);
+    let mut dep_args_skipped = Vec::new();
+    for dep in skipped {
+        if !parser::should_skip_dep(&dep.crate_name, &crate_info, &dep_and_feats, &deps_args) {
+            debug!(
+                "Dependency {} which was skipped previously is now required",
+                dep.crate_name
+            );
+            parser::process_dep_crate(
+                &ctx,
+                &dep,
+                &name,
+                &mut db_data,
+                &crate_info,
+                &mut dep_args_skipped,
+                &crate_name_rename,
+            )?;
         }
     }
 
     let mut final_args = Vec::new();
     let mut combined_features = Vec::new();
+    let main_feature_string = main_features.join(",");
 
     if !deps_args.is_empty() {
-        if let Some(main_string) = &main_feature_string {
-            deps_args.retain(|x| !main_string.contains(x));
+        if !main_feature_string.is_empty() {
+            deps_args.retain(|x| !main_feature_string.contains(x));
         }
         deps_args.sort();
         deps_args.dedup();
     }
 
     if disable_default {
-        final_args.push("--no-default-features".to_string());    
+        final_args.push("--no-default-features".to_string());
     }
 
-    if let Some(main_string) = main_feature_string {
-        combined_features.push(main_string);
+    if !main_feature_string.is_empty() {
+        combined_features.push(main_feature_string);
     }
     if !deps_args.is_empty() {
         combined_features.push(deps_args.join(","));
@@ -190,7 +177,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     println!("Final args: {:?}", final_args);
-    // possible_archs.clear();
+    // This is temporary, we will remove it later
+    let possible_archs = Vec::new();
     compiler::try_compile(&name, &target, &final_args, &possible_archs, &mut results)?;
     db::write_db_file(db_data)?;
     db::write_final_json(&name, &results);

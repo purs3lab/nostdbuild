@@ -37,7 +37,6 @@ pub struct Attributes {
     pub unconditional_no_std: bool,
 }
 
-/// TODO: Integrate this with attributes
 #[derive(Default, Clone, Debug)]
 pub struct ItemExternCrates {
     itemexterncrates: Vec<ItemExternCrate>,
@@ -280,7 +279,6 @@ pub fn process_crate(
             debug!("No extern crates found for the crate");
             return Ok((Vec::new(), Vec::new(), recurse, Vec::new()));
         }
-        // TODO: Check if we need to handle cases where there are multiple extern crate stds
         let std_attrs = get_item_extern_std(&items);
         if std_attrs.is_some() {
             debug!("Leaf level crate reached {}", name_with_version);
@@ -372,6 +370,66 @@ pub fn process_crate(
     }
 
     Ok((enable, disable, recurse, possible_archs))
+}
+
+/// Process the dependency crate.
+/// This function will call `process_crate` for the dependency crate.
+/// But this does some additional checks and updates the main crate's
+/// toml file if required.
+/// # Arguments
+/// * `ctx` - The Z3 context
+/// * `dep` - The attributes of the dependency crate
+/// * `main_name` - The name of the main crate
+/// * `db_data` - The database data
+/// * `crate_info` - The crate info
+/// * `deps_args` - Output: The featurs for this dependency
+/// * `crate_name_rename` - A list of names and their renames of crate names
+/// # Returns
+/// A Result indicating success or failure.
+pub fn process_dep_crate(
+    ctx: &z3::Context,
+    dep: &Attributes,
+    main_name: &str,
+    db_data: &mut Vec<DBData>,
+    crate_info: &CrateInfo,
+    deps_args: &mut Vec<String>,
+    crate_name_rename: &[(String, String)],
+) -> Result<(), anyhow::Error> {
+    let found = check_for_no_std(&dep.crate_name, ctx);
+    assert!(
+        found,
+        "Dependency {} does not support no_std build",
+        dep.crate_name
+    );
+
+    let (enable, disable, _, _) =
+        process_crate(ctx, dep, &dep.crate_name, db_data, crate_info, false)?;
+
+    let (args, update_default_config) = solver::final_feature_list_dep(
+        crate_info,
+        &dep.crate_name.split(":").next().unwrap_or(""),
+        &enable,
+        &disable,
+    );
+
+    debug!(
+        "Dependency requires default config update: {}",
+        update_default_config
+    );
+
+    if update_default_config {
+        update_main_crate_default_list(&main_name, &dep.crate_name, &crate_name_rename);
+    }
+
+    debug!(
+        "Final arguments for dependency {}: {:?}",
+        dep.crate_name, args
+    );
+
+    if !args.is_empty() {
+        deps_args.extend(args);
+    }
+    Ok(())
 }
 
 /// Parse the attributes of a the main crate.
@@ -488,21 +546,6 @@ pub fn filter_equations<'a>(
     filtered
 }
 
-/// Check if the given dependency is optional
-/// # Arguments
-/// * `crate_info` - The crate info
-/// * `name` - The name of the dependency
-/// # Returns
-/// * `bool` - Whether the dependency is optional
-pub fn is_dep_optional(crate_info: &CrateInfo, name: &str) -> bool {
-    crate_info
-        .deps_and_features
-        .iter()
-        .find(|(dep, _)| dep.name == name)
-        .map(|(dep, _)| dep.optional)
-        .unwrap_or(false)
-}
-
 /// Determine the path to the Cargo.toml file in the given directory.
 /// It checks for both `Cargo.toml` and `cargo.toml` (lowercase).
 /// # Arguments
@@ -560,11 +603,7 @@ pub fn remove_table_from_toml(
 /// * `dep` - The name of the dependency to add to the main crate's default features
 /// # Returns
 /// None
-pub fn update_main_crate_default_list(
-    main: &str,
-    dep: &str,
-    crate_name_rename: &[(String, String)],
-) {
+fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(String, String)]) {
     let main_dir = PathBuf::from(DOWNLOAD_PATH).join(main.replace(':', "-"));
     let main_cargo_toml = determine_cargo_toml(&main_dir);
     let dep_dir = PathBuf::from(DOWNLOAD_PATH).join(dep.replace(':', "-"));
@@ -659,6 +698,96 @@ pub fn update_main_crate_default_list(
             .unwrap(),
     )
     .unwrap();
+}
+
+/// Given a `CrateInfo`, this function finds all optional dependencies
+/// and their features that are required to enable them.
+/// It returns a vector of tuples where each tuple contains the dependency name
+/// and the feature name.
+/// # Arguments
+/// * `crate_info` - The `CrateInfo` containing dependencies and features.
+/// # Returns
+/// A vector of tuples, each containing the dependency name and the feature name.
+pub fn features_for_optional_deps(crate_info: &CrateInfo) -> Vec<(String, String)> {
+    let deps_and_feats = &crate_info.deps_and_features;
+    let main_feats = &crate_info.features;
+
+    let optional_deps: Vec<String> = deps_and_feats
+        .iter()
+        .filter(|(dep, _)| dep.optional)
+        .map(|(dep, _)| dep.name.clone())
+        .collect();
+
+    let mut direct_feat_match: Vec<(String, String)> = optional_deps
+        .iter()
+        .filter(|dep| main_feats.iter().any(|(feat, _)| feat == *dep))
+        .map(|dep| (dep.clone(), dep.clone()))
+        .collect();
+
+    let indirect_feat_match: Vec<(String, String)> = optional_deps
+        .iter()
+        .filter_map(|dep| {
+            main_feats.iter().find_map(|(feat_name, dep_feats)| {
+                dep_feats
+                    .iter()
+                    .find(|f| f.0 == dep.as_str() && f.1 == "dep:")
+                    .map(|_| (dep.clone(), feat_name.clone()))
+            })
+        })
+        .collect();
+
+    direct_feat_match.extend(indirect_feat_match);
+    direct_feat_match
+}
+
+/// Determine if a dependency should be skipped.
+/// This function checks if a dependency is enabled by a feature
+/// of the main crate even if it is optional. If yes, it returns false,
+/// indicating that the dependency should not be skipped.
+/// If the dependency is optional and not enabled by any feature,
+/// it returns true, indicating that the dependency should be skipped.
+/// # Arguments
+/// * `name` - The name of the dependency.
+/// * `crate_info` - The `CrateInfo` containing the crate's dependencies and features.
+/// * `deps_and_features` - A slice of tuples containing dependency names and the
+/// features that enable them.
+/// * `enable_features` - A slice of features that are enabled in the main crate.
+/// # Returns
+/// A boolean indicating whether the dependency should be skipped.
+pub fn should_skip_dep(
+    name: &str,
+    crate_info: &CrateInfo,
+    deps_and_features: &[(String, String)],
+    enable_features: &[String],
+) -> bool {
+    let dep_name = name.split(':').next().unwrap_or("").to_string();
+    let feat_of_dep = deps_and_features
+        .iter()
+        .find(|(dep, _)| dep == &dep_name)
+        .map(|(_, feat)| feat);
+
+    if let Some(feat) = feat_of_dep {
+        if enable_features.contains(feat) {
+            debug!("Dependency {} is enabled by feature {}", dep_name, feat);
+            return false;
+        }
+    }
+
+    if is_dep_optional(crate_info, &dep_name) {
+        debug!("Dependency {} is optional, skipping", dep_name);
+        return true;
+    }
+
+    false
+}
+
+fn is_dep_optional(crate_info: &CrateInfo, name: &str) -> bool {
+    crate_info
+        .deps_and_features
+        .iter()
+        .find(|(dep, _)| dep.name == name)
+        .map(|(dep, _)| dep.optional)
+        .unwrap_or(false)
 }
 
 fn parse_top_level_externs<'a>(

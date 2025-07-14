@@ -116,7 +116,7 @@ pub fn final_feature_list_main(
     crate_info: &CrateInfo,
     enable: &[String],
     disable: &[String],
-) -> (bool, Option<String>) {
+) -> (bool, Vec<String>) {
     let mut disable_default = false;
     let mut enable_from_default = Vec::new();
 
@@ -129,13 +129,7 @@ pub fn final_feature_list_main(
         enable_from_default.extend(enable.iter().cloned());
     }
 
-    let feature_string = if enable_from_default.is_empty() {
-        None
-    } else {
-        Some(enable_from_default.join(","))
-    };
-
-    (disable_default, feature_string)
+    (disable_default, enable_from_default)
 }
 
 fn get_feautes_not_disable(crate_info: &CrateInfo, disable: &[String]) -> Vec<String> {
