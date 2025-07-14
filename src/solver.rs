@@ -109,26 +109,33 @@ pub fn final_feature_list_dep(
 /// * `enable` - The list of features to enable
 /// * `disable` - The list of features to disable
 /// # Returns
-/// * `Vec<String>` - The final feature list for the main crate
+/// * `(bool, Option<String>)` - A boolean indicating if the default
+/// features list of main crate should disabled and a string
+/// containing the final feature list for the main crate.
 pub fn final_feature_list_main(
     crate_info: &CrateInfo,
     enable: &[String],
     disable: &[String],
-) -> Vec<String> {
-    let mut args = Vec::new();
+) -> (bool, Option<String>) {
+    let mut disable_default = false;
     let mut enable_from_default = Vec::new();
+
     if disable_in_default(crate_info, disable) {
-        args.push("--no-default-features".to_string());
+        disable_default = true;
         enable_from_default = get_feautes_not_disable(crate_info, disable);
     }
+
     if !enable.is_empty() {
         enable_from_default.extend(enable.iter().cloned());
-        if !args.contains(&"--features".to_string()) {
-            args.push("--features".to_string());
-        }
-        args.push(enable.join(","));
     }
-    args
+
+    let feature_string = if enable_from_default.is_empty() {
+        None
+    } else {
+        Some(enable_from_default.join(","))
+    };
+
+    (disable_default, feature_string)
 }
 
 fn get_feautes_not_disable(crate_info: &CrateInfo, disable: &[String]) -> Vec<String> {

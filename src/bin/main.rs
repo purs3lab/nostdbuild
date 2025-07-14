@@ -97,11 +97,11 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let mut main_args = solver::final_feature_list_main(&crate_info, &enable, &disable);
+    let (disable_default, main_feature_string) = solver::final_feature_list_main(&crate_info, &enable, &disable);
 
     println!(
         "Main crate arguments: {:?} with recurse as {}",
-        main_args, recurse
+        main_feature_string, recurse
     );
 
     let deps_attrs = parser::parse_deps_crate();
@@ -163,20 +163,35 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    let mut final_args = Vec::new();
+    let mut combined_features = Vec::new();
+
     if !deps_args.is_empty() {
-        if !main_args.contains(&"--features".to_string()) {
-            main_args.push("--features".to_string());
-        } else {
-            // If we already have --features, we need to add a comma to separate features
-            main_args.push(",".to_string());
+        if let Some(main_string) = &main_feature_string {
+            deps_args.retain(|x| !main_string.contains(x));
         }
         deps_args.sort();
         deps_args.dedup();
-        main_args.push(deps_args.join(","));
     }
 
-    println!("Final args: {:?}", main_args);
-    compiler::try_compile(&name, &target, &main_args, &possible_archs, &mut results)?;
+    if disable_default {
+        final_args.push("--no-default-features".to_string());    
+    }
+
+    if let Some(main_string) = main_feature_string {
+        combined_features.push(main_string);
+    }
+    if !deps_args.is_empty() {
+        combined_features.push(deps_args.join(","));
+    }
+    if !combined_features.is_empty() {
+        final_args.push("--features".to_string());
+        final_args.push(combined_features.join(","));
+    }
+
+    println!("Final args: {:?}", final_args);
+    // possible_archs.clear();
+    compiler::try_compile(&name, &target, &final_args, &possible_archs, &mut results)?;
     db::write_db_file(db_data)?;
     db::write_final_json(&name, &results);
     Ok(())
