@@ -594,6 +594,22 @@ pub fn remove_table_from_toml(
     Ok(())
 }
 
+/// Check if the Cargo.toml file has a binary target.
+/// # Arguments
+/// * `filename` - The path to the Cargo.toml file
+/// # Returns
+/// A boolean indicating whether the Cargo.toml file has a binary target.
+pub fn toml_has_bin_target(filename: &str) -> bool {
+    let toml_content = fs::read_to_string(filename).expect("Failed to read Cargo.toml");
+    let toml: toml::Value = toml::from_str(&toml_content).expect("Failed to parse Cargo.toml");
+    if let Some(table) = toml.get("bin") {
+        if table.is_table() {
+            return true;
+        }
+    }
+    false
+}
+
 /// Update the main crate's default features list
 /// by adding the default features of the given dependency.
 /// This function will also set the dependency to not have

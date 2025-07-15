@@ -47,14 +47,21 @@ fn try_compile_for_target(
     results: &mut Vec<Results>,
 ) -> anyhow::Result<()> {
     let dir = Path::new(DOWNLOAD_PATH).join(name_with_version.replace(':', "-"));
+    let cargo_path = parser::determine_cargo_toml(&dir);
+    let bin_target = parser::toml_has_bin_target(&cargo_path);
     let mut args = vec![
         "build".to_string(),
         "--release".to_string(),
         "--target".to_string(),
         target.to_string(),
         "--manifest-path".to_string(),
-        parser::determine_cargo_toml(&dir),
+        cargo_path,
     ];
+
+    if !bin_target {
+        args.push("--lib".to_string());
+    }
+
     if !enable.is_empty() {
         args.extend_from_slice(enable);
     }
