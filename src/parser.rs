@@ -269,7 +269,7 @@ pub fn process_crate(
         // If the crate is both conditional and unconditional no_std,
         // we will treat it as unconditional.
         if !no_std {
-            debug!("WARNING: Crate {} is both unconditional and conditional no_std, will consider on unconditional.", name_with_version);
+            debug!("WARNING: Crate {} is both unconditional and conditional no_std, will consider only unconditional.", name_with_version);
         }
 
         let items = parse_item_extern_crates(name_with_version);
@@ -937,8 +937,20 @@ where
 
     for filename in files {
         debug!("Parsing file: {}", filename);
-        let content = fs::read_to_string(&filename).context("Failed to read file")?;
-        let file = syn::parse_file(&content).context("Failed to parse file")?;
+        let content = match fs::read_to_string(&filename) {
+            Ok(content) => content,
+            Err(e) => {
+                debug!("Failed to read file {}: {}", filename, e);
+                continue;
+            }
+        };
+        let file = match syn::parse_file(&content) {
+            Ok(file) => file,
+            Err(e) => {
+                debug!("Failed to parse file {}: {}", filename, e);
+                continue;
+            }
+        };
         visiter_type.visit_file(&file);
     }
     Ok(())
