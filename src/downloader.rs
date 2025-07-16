@@ -64,7 +64,7 @@ pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String,
                 return Ok(format!("{}:{}", newname, ver));
             }
             // Delete the crate if it doesn't contain any .rs files
-            fs::remove_file(&crate_path.to_str().unwrap())?;
+            fs::remove_dir_all(&crate_path.to_str().unwrap())?;
         }
 
         match download_crate(&download_url, &filename) {

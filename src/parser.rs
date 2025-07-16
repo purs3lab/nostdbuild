@@ -1128,7 +1128,15 @@ fn get_all_rs_files(path: &str, recurse: bool) -> Vec<String> {
             push_to_files_vec(&entry.unwrap().path(), &mut files);
         }
     } else {
-        for entry in fs::read_dir(format!("{}/src", path)).unwrap() {
+        let src_path = Path::new(path).join("src");
+        let entries;
+        if !src_path.exists() {
+            debug!("No src directory found in {}", path);
+            entries = fs::read_dir(path).unwrap();
+        } else {
+            entries = fs::read_dir(&src_path).unwrap();
+        }
+        for entry in entries {
             push_to_files_vec(&entry.unwrap().path(), &mut files);
         }
     }
