@@ -626,26 +626,26 @@ pub fn make_dep_non_default_features(
     toml: &mut toml::Value,
     filename: &str,
 ) -> Result<(), anyhow::Error> {
-    let dep_table = toml
-        .get_mut(key)
-        .and_then(toml::Value::as_table_mut)
-        .context(format!("No table found for key: {}", key))?;
-
-    for (_, dep_entry) in dep_table.iter_mut() {
-        match dep_entry {
-            toml::Value::Table(ref mut tbl) => {
-                tbl.insert("default-features".to_string(), toml::Value::Boolean(false));
-            }
-            toml::Value::String(_version_str) => {
-                let mut new_tbl = toml::map::Map::new();
-                new_tbl.insert("version".to_string(), dep_entry.clone());
-                new_tbl.insert("default-features".to_string(), toml::Value::Boolean(false));
-                *dep_entry = toml::Value::Table(new_tbl);
-            }
-            _ => {
-                debug!("Skipping unexpected dep format in {}", key);
+    if let Some(dep_table) = toml.get_mut(key).and_then(toml::Value::as_table_mut) {
+        for (_, dep_entry) in dep_table.iter_mut() {
+            match dep_entry {
+                toml::Value::Table(ref mut tbl) => {
+                    tbl.insert("default-features".to_string(), toml::Value::Boolean(false));
+                }
+                toml::Value::String(_version_str) => {
+                    let mut new_tbl = toml::map::Map::new();
+                    new_tbl.insert("version".to_string(), dep_entry.clone());
+                    new_tbl.insert("default-features".to_string(), toml::Value::Boolean(false));
+                    *dep_entry = toml::Value::Table(new_tbl);
+                }
+                _ => {
+                    debug!("Skipping unexpected dep format in {}", key);
+                }
             }
         }
+    } else {
+        debug!("No table found for key: {} in Cargo.toml", key);
+        return Ok(());
     }
 
     fs::write(
