@@ -76,7 +76,7 @@ impl<'a> Visit<'a> for Attributes {
     }
 
     fn visit_item_macro(&mut self, i: &syn::ItemMacro) {
-        if i.mac.path.is_ident("compiler_error") {
+        if i.mac.path.is_ident("compile_error") {
             let attrs = i.attrs.clone();
             // Remove the attribute from the list which are
             // compiler_error attributes.
@@ -85,6 +85,25 @@ impl<'a> Visit<'a> for Attributes {
             // and also that the attribute to remove
             // has already been visited.
             self.attributes.retain(|a| a != &attrs[0]);
+            // Negate the attrs[0] and add it to the attributes
+            match attrs[0].meta.clone() {
+                Meta::List(meta_list) => {
+                    let path = meta_list.path.get_ident().unwrap();
+                    if path == "cfg" {
+                        let tokens = meta_list.tokens.clone();
+                        let negated: Attribute = syn::parse_quote!(
+                        #[cfg(not(#tokens))]
+                        );
+                        self.attributes.push(negated);
+                    }
+                }
+                _ => {
+                    debug!(
+                        "Unexpected meta type for compiler_error: {:?}",
+                        attrs[0].meta
+                    );
+                }
+            }
         }
     }
 }

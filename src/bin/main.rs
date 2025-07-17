@@ -112,6 +112,7 @@ fn main() -> anyhow::Result<()> {
     // Solve for each dependency
     // TODO: Some dependencies are from git instead of crates.io. Handle those cases (check tool_error_or_crate_issue file).
     // TODO: If a feature is not there in the cargo.toml, add it and then do the build.
+    // TODO: If a feature has ? in it before the /, handle this case.
     let mut deps_args = Vec::new();
     for dep in deps_attrs {
         if parser::should_skip_dep(&dep.crate_name, &crate_info, &dep_and_feats, &main_features) {
