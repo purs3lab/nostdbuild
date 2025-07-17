@@ -594,6 +594,54 @@ pub fn remove_table_from_toml(
     Ok(())
 }
 
+/// Mark the dependencies in the Cargo.toml file under the given key
+/// as not having default features.
+/// # Arguments
+/// * `key` - The key under which the dependencies are listed
+/// * `toml` - The TOML value to modify
+/// * `filename` - The path to the Cargo.toml file
+/// # Returns
+/// A Result indicating success or failure.
+pub fn make_dep_non_default_features(
+    key: &str,
+    toml: &mut toml::Value,
+    filename: &str,
+) -> Result<(), anyhow::Error> {
+    let dep_table = toml
+        .get_mut(key)
+        .and_then(toml::Value::as_table_mut)
+        .context(format!("No table found for key: {}", key))?;
+
+    for (_, dep_entry) in dep_table.iter_mut() {
+        match dep_entry {
+            toml::Value::Table(ref mut tbl) => {
+                tbl.insert("default-features".to_string(), toml::Value::Boolean(false));
+            }
+            toml::Value::String(_version_str) => {
+                let mut new_tbl = toml::map::Map::new();
+                new_tbl.insert("version".to_string(), dep_entry.clone());
+                new_tbl.insert("default-features".to_string(), toml::Value::Boolean(false));
+                *dep_entry = toml::Value::Table(new_tbl);
+            }
+            _ => {
+                debug!("Skipping unexpected dep format in {}", key);
+            }
+        }
+    }
+
+    fs::write(
+        filename,
+        toml::to_string(toml).context("Failed to serialize Cargo.toml")?,
+    )
+    .context("Failed to write Cargo.toml")?;
+
+    debug!(
+        "Set default-features = false for all entries under [{}]",
+        key
+    );
+    Ok(())
+}
+
 /// Check if the Cargo.toml file has a binary target.
 /// # Arguments
 /// * `filename` - The path to the Cargo.toml file
