@@ -50,20 +50,21 @@ fn try_compile_for_target(
     let cargo_path = parser::determine_cargo_toml(&dir);
     let bin_target = parser::toml_has_bin_target(&cargo_path);
     let mut args = vec![
-        "build".to_string(),
-        "--release".to_string(),
-        "--target".to_string(),
-        target.to_string(),
-        "--manifest-path".to_string(),
-        cargo_path,
+        "+nightly",
+        "build",
+        "--release",
+        "--target",
+        target,
+        "--manifest-path",
+        cargo_path.as_str(),
     ];
 
     if !bin_target {
-        args.push("--lib".to_string());
+        args.push("--lib");
     }
 
     if !enable.is_empty() {
-        args.extend_from_slice(enable);
+        args.extend(enable.iter().map(|s| s.as_str()).collect::<Vec<&str>>());
     }
 
     debug!("Running cargo with args: {}", args.join(" "));
@@ -77,7 +78,7 @@ fn try_compile_for_target(
         name: name.to_string(),
         version: version.to_string(),
         target: target.to_string(),
-        args: args.clone(),
+        args: args.iter().map(|s| s.to_string()).collect(),
         status: if output.status.success() {
             Status::Success
         } else {
@@ -96,6 +97,7 @@ fn try_compile_for_target(
     debug!("Cargo build {:?} for target: {}", &result.status, target);
     results.push(result);
     std::process::Command::new("cargo")
+        .arg("+nightly")
         .arg("clean")
         .arg("--manifest-path")
         .arg(parser::determine_cargo_toml(&dir))
