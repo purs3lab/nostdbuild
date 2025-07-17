@@ -221,7 +221,7 @@ pub fn init_worklist(
 
     parser::remove_table_from_toml("workspace", &mut toml, &filename)?;
     parser::remove_table_from_toml("lints", &mut toml, &filename)?;
-    parser::remove_table_from_toml("dev-dependencies", &mut toml, &filename)?;
+    parser::make_dep_non_default_features("dev-dependencies", &mut toml, &filename)?;
 
     crate_info.features = read_local_features(toml);
     for (name, value) in dependencies {
