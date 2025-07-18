@@ -747,8 +747,11 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
         .unwrap_or_else(|| Vec::new());
 
     let main_features = main_toml
-        .get_mut("features")
-        .and_then(|v| v.as_table_mut())
+        .as_table_mut()
+        .expect("Failed to get main Cargo.toml as table")
+        .entry("features")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
         .expect("Failed to get features table from main Cargo.toml");
 
     if let Some(default_features) = main_features.get_mut("default") {

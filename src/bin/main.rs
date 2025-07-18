@@ -113,6 +113,7 @@ fn main() -> anyhow::Result<()> {
     // TODO: Some dependencies are from git instead of crates.io. Handle those cases (check tool_error_or_crate_issue file).
     // TODO: If a feature is not there in the cargo.toml, add it and then do the build.
     // TODO: If a feature has ? in it before the /, handle this case.
+    // TODO: Should we disable default features for main crate if we update its default features list to include dependency's default features?
     let mut deps_args = Vec::new();
     for dep in deps_attrs {
         if parser::should_skip_dep(&dep.crate_name, &crate_info, &dep_and_feats, &main_features) {
