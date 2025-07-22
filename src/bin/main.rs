@@ -114,6 +114,7 @@ fn main() -> anyhow::Result<()> {
     // TODO: If a feature is not there in the cargo.toml, add it and then do the build.
     // TODO: If a feature has ? in it before the /, handle this case.
     // TODO: Should we disable default features for main crate if we update its default features list to include dependency's default features?
+    // TODO: Parse non optional dependencies at all levels to check if they support no_std.
     let mut deps_args = Vec::new();
     for dep in deps_attrs {
         if parser::should_skip_dep(&dep.crate_name, &crate_info, &dep_and_feats, &main_features) {
