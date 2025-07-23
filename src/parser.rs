@@ -2,11 +2,7 @@ use anyhow::Context;
 use log::debug;
 use proc_macro2::TokenStream;
 // use quote::ToTokens;
-use std::{
-    collections::HashSet,
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashSet, fs, path::Path};
 use syn::{visit::Visit, Attribute, ItemExternCrate, Meta};
 use walkdir::WalkDir;
 use z3::{self, ast::Bool};
@@ -495,7 +491,7 @@ pub fn determine_n_depth_dep_no_std(
                         continue;
                     }
                 };
-            let (name, version) = name_with_version
+            let (name_inner, version) = name_with_version
                 .split_once(':')
                 .unwrap_or((&name_with_version, ""));
 
@@ -507,7 +503,7 @@ pub fn determine_n_depth_dep_no_std(
                 current_depth
             );
 
-            local_initlist.push((name.to_string(), version.to_string()));
+            local_initlist.push((name_inner.to_string(), version.to_string()));
         }
     }
 
@@ -634,7 +630,8 @@ pub fn filter_equations<'a>(
 /// * `dir` - The directory to check for the Cargo.toml file
 /// # Returns
 /// The path to the Cargo.toml file if it exists, otherwise panics.
-pub fn determine_cargo_toml(dir: &PathBuf) -> String {
+pub fn determine_cargo_toml(name_with_version: &str) -> String {
+    let dir = Path::new(DOWNLOAD_PATH).join(name_with_version.replace(':', "-"));
     let path = format!("{}/Cargo.toml", dir.display());
     if Path::new(&path).exists() {
         return path;
@@ -750,10 +747,8 @@ pub fn toml_has_bin_target(filename: &str) -> bool {
 /// # Returns
 /// None
 fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(String, String)]) {
-    let main_dir = PathBuf::from(DOWNLOAD_PATH).join(main.replace(':', "-"));
-    let main_cargo_toml = determine_cargo_toml(&main_dir);
-    let dep_dir = PathBuf::from(DOWNLOAD_PATH).join(dep.replace(':', "-"));
-    let dep_cargo_toml = determine_cargo_toml(&dep_dir);
+    let main_cargo_toml = determine_cargo_toml(&main);
+    let dep_cargo_toml = determine_cargo_toml(&dep);
     let dep_name_original = dep.split(':').next().unwrap().to_string();
     let dep_name = crate_name_rename
         .iter()

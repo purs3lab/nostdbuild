@@ -160,8 +160,7 @@ pub fn read_dep_names_and_versions(
     version: &str,
     skip_optional: bool,
 ) -> Result<Vec<(String, String)>, anyhow::Error> {
-    let dir = Path::new(DOWNLOAD_PATH).join(format!("{}-{}", name, version));
-    let filename = parser::determine_cargo_toml(&dir);
+    let filename = parser::determine_cargo_toml(&format!("{}-{}", name, version));
     let mut dep_names = Vec::new();
     let toml = fs::read_to_string(&filename).context("Failed to read Cargo.toml")?;
     let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
@@ -213,7 +212,11 @@ pub fn init_worklist(
     crate_info: &mut CrateInfo,
 ) -> Result<(), anyhow::Error> {
     let dir = Path::new(DOWNLOAD_PATH).join(name.replace(':', "-"));
-    let filename = parser::determine_cargo_toml(&dir);
+    let filename = parser::determine_cargo_toml(&name);
+
+    // Since we are making modifications to the Cargo.toml file,
+    // we need to back it up first.
+    fs::copy(&filename, dir.join("Cargo.toml.bak")).context("Failed to copy Cargo.toml")?;
     debug!("Reading Cargo.toml from {}", filename);
 
     let (name, version) = name.split_once(':').unwrap();
@@ -374,8 +377,7 @@ fn traverse_and_add_local_features(
     crate_info: &mut CrateInfo,
 ) -> anyhow::Result<(), anyhow::Error> {
     if crate_info.name == name && crate_info.version == version {
-        let dir = Path::new(DOWNLOAD_PATH).join(format!("{}-{}", name, version));
-        let filename = parser::determine_cargo_toml(&dir);
+        let filename = parser::determine_cargo_toml(&format!("{}-{}", name, version));
         debug!("Reading Cargo.toml from {}", filename);
         let toml = fs::read_to_string(&filename).context("Failed to read Cargo.toml")?;
         let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;

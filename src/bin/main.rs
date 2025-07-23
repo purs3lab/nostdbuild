@@ -1,6 +1,8 @@
+use anyhow::Context;
 use clap::Parser;
 use env_logger;
 use log::debug;
+use std::fs;
 
 use nostd::{compiler, consts, db, downloader, parser, solver, CrateInfo};
 
@@ -194,5 +196,10 @@ fn main() -> anyhow::Result<()> {
     compiler::try_compile(&name, &target, &final_args, &possible_archs, &mut results)?;
     db::write_db_file(db_data)?;
     db::write_final_json(&name, &results);
+    let dir = std::path::Path::new(consts::DOWNLOAD_PATH).join(name.replace(':', "-"));
+    let filename = parser::determine_cargo_toml(&name);
+    fs::copy(dir.join("Cargo.toml.bak"), &filename)
+        .context("Failed to restore original Cargo.toml")?;
+    fs::remove_file(dir.join("Cargo.toml.bak")).context("Failed to remove backup Cargo.toml")?;
     Ok(())
 }

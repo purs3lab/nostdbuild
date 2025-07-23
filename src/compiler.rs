@@ -1,7 +1,5 @@
-use crate::consts::DOWNLOAD_PATH;
 use anyhow::Context;
 use log::debug;
-use std::path::Path;
 
 use crate::{consts, parser, Results, Status};
 
@@ -46,8 +44,7 @@ fn try_compile_for_target(
     enable: &[String],
     results: &mut Vec<Results>,
 ) -> anyhow::Result<()> {
-    let dir = Path::new(DOWNLOAD_PATH).join(name_with_version.replace(':', "-"));
-    let cargo_path = parser::determine_cargo_toml(&dir);
+    let cargo_path = parser::determine_cargo_toml(&name_with_version);
     let bin_target = parser::toml_has_bin_target(&cargo_path);
     let mut args = vec![
         "+nightly",
@@ -100,7 +97,7 @@ fn try_compile_for_target(
         .arg("+nightly")
         .arg("clean")
         .arg("--manifest-path")
-        .arg(parser::determine_cargo_toml(&dir))
+        .arg(cargo_path)
         .status()
         .context("Failed to run cargo clean")?;
     Ok(())
