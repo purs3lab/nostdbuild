@@ -225,6 +225,9 @@ pub fn parse_crate(crate_name: &str, recurse: bool) -> Attributes {
 /// # Returns
 /// A boolean indicating whether the crate has a no_std attribute.
 pub fn check_for_no_std(name: &str, ctx: &z3::Context) -> bool {
+    // We need to re-parse this instead of using already existing attributes
+    // since files in non root directory might have `no_std` attribute
+    // and we don't want to include those.
     let base_attrs = parse_crate(name, false);
 
     if !parse_main_attributes(&base_attrs, ctx).0 && !base_attrs.unconditional_no_std {
@@ -235,8 +238,6 @@ pub fn check_for_no_std(name: &str, ctx: &z3::Context) -> bool {
 }
 
 /// Parse the dependencies of the main crate
-/// This function will parse the dependencies of the main crate
-/// and return the attributes of each dependency as a vector.
 /// # Returns
 /// A vector containing the attributes of each dependency
 pub fn parse_deps_crate() -> Vec<Attributes> {
@@ -453,6 +454,64 @@ pub fn process_dep_crate(
         deps_args.extend(args);
     }
     Ok(())
+}
+
+/// Recursively determine if dependencies at a certain depth
+/// support no_std.
+/// # Arguments
+/// * `initlist` - The initial list of dependencies to check (depth 0)
+/// * `depth` - The maximum depth to check
+/// * `current_depth` - The current depth in the recursion
+/// * `visited` - A set to keep track of visited dependencies
+/// * `ctx` - The Z3 context
+pub fn determine_n_depth_dep_no_std(
+    initlist: Vec<(String, String)>,
+    depth: u32,
+    current_depth: u32,
+    visited: &mut HashSet<(String, String)>,
+    ctx: &z3::Context,
+) {
+    let mut local_initlist = Vec::new();
+    if current_depth >= depth {
+        return;
+    }
+    for (name, version) in initlist {
+        if !visited.insert((name.clone(), version.clone())) {
+            debug!("Already visited dependency {}:{}", name, version);
+            continue;
+        }
+        let names_and_versions = downloader::read_dep_names_and_versions(&name, &version, true)
+            .expect("Failed to read dependency names and versions");
+        for (dep_name, dep_version) in names_and_versions {
+            debug!(
+                "Processing dependency {}:{} for no_std",
+                dep_name, dep_version
+            );
+            let name_with_version =
+                match downloader::clone_from_crates(&dep_name, Some(&dep_version)) {
+                    Ok(name_with_version) => name_with_version,
+                    Err(e) => {
+                        debug!("Failed to download crate: {}", e);
+                        continue;
+                    }
+                };
+            let (name, version) = name_with_version
+                .split_once(':')
+                .unwrap_or((&name_with_version, ""));
+
+            assert!(
+                check_for_no_std(&name_with_version, ctx),
+                "Dependency {} of dependency {} does not support no_std build at depth {}",
+                name_with_version,
+                name,
+                current_depth
+            );
+
+            local_initlist.push((name.to_string(), version.to_string()));
+        }
+    }
+
+    determine_n_depth_dep_no_std(local_initlist, depth - 1, current_depth + 1, visited, ctx);
 }
 
 /// Parse the attributes of a the main crate.
@@ -946,7 +1005,8 @@ fn parse_n_level_externs<'a>(worklist: &mut Vec<String>) -> bool {
         name = new_name_with_version
             .split_once(':')
             .map_or(name, |(n, _)| n);
-        let names_and_versions = downloader::read_dep_names_and_versions(name, version).unwrap();
+        let names_and_versions =
+            downloader::read_dep_names_and_versions(name, version, false).unwrap();
         let unfiltered = parse_item_extern_crates(&new_name_with_version);
         let std_attrs = get_item_extern_std(&unfiltered);
         if std_attrs.is_some() {

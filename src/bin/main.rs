@@ -18,6 +18,9 @@ struct Cli {
 
     #[arg(long)]
     dry_run: bool,
+
+    #[arg(long)]
+    depth: Option<u32>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -51,6 +54,12 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    let depth = match cli.depth {
+        Some(depth) if depth > 0 => depth,
+        Some(_) => 4,
+        None => 4,
+    };
+
     let mut db_data = db::read_db_file()?;
     let mut results = Vec::new();
 
@@ -70,7 +79,7 @@ fn main() -> anyhow::Result<()> {
         &mut worklist,
         &mut crate_info,
     )?;
-    downloader::download_all_dependencies(&mut worklist, &mut crate_info)?;
+    downloader::download_all_dependencies(&mut worklist, &mut crate_info, depth)?;
 
     debug!("Dependencies: {:?}", crate_info);
 
@@ -114,7 +123,7 @@ fn main() -> anyhow::Result<()> {
     // TODO: If a feature is not there in the cargo.toml, add it and then do the build.
     // TODO: If a feature has ? in it before the /, handle this case.
     // TODO: Should we disable default features for main crate if we update its default features list to include dependency's default features?
-    // TODO: Parse non optional dependencies at all levels to check if they support no_std.
+    // TODO: Fix syn failure when it encounters `yield` keyword in the code.
     let mut deps_args = Vec::new();
     for dep in deps_attrs {
         if parser::should_skip_dep(&dep.crate_name, &crate_info, &dep_and_feats, &main_features) {

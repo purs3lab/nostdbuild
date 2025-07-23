@@ -5,7 +5,7 @@ use git2::Repository;
 use log::debug;
 use reqwest::blocking;
 use semver::VersionReq;
-use std::{fs, path::Path};
+use std::{collections::HashSet, fs, path::Path};
 use tar::Archive;
 use toml::{self, map::Map, Value};
 use walkdir::WalkDir;
@@ -96,8 +96,10 @@ pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String,
 pub fn download_all_dependencies(
     worklist: &mut Vec<(String, String)>,
     crate_info: &mut CrateInfo,
+    depth: u32,
 ) -> Result<(), anyhow::Error> {
     debug!("Initial worklist length: {}", worklist.len());
+    let mut initlist = Vec::new();
     while !worklist.is_empty() {
         debug!("Worklist length: {}", worklist.len());
         let (mut name, version) = worklist.pop().unwrap();
@@ -129,14 +131,20 @@ pub fn download_all_dependencies(
             update_name(&old_name, &name, crate_info);
         }
 
+        initlist.push((name.clone(), new_version.to_string()));
+
         // `clone_from_crates` gives a more accurate version.
         // Update the version in the crate_info with this version.
         traverse_and_update(&name, &version, new_version, crate_info);
 
         traverse_and_add_local_features(&name, new_version, crate_info)?;
-        let dep_names = read_dep_names_and_versions(&name, new_version)?;
+        let dep_names = read_dep_names_and_versions(&name, new_version, false)?;
         traverse_and_add_dep_names(&name, &new_version, crate_info, &dep_names)?;
     }
+    let mut visited = HashSet::new();
+    let cfg = z3::Config::new();
+    let ctx = z3::Context::new(&cfg);
+    parser::determine_n_depth_dep_no_std(initlist, depth, 0, &mut visited, &ctx);
     Ok(())
 }
 
@@ -150,6 +158,7 @@ pub fn download_all_dependencies(
 pub fn read_dep_names_and_versions(
     name: &str,
     version: &str,
+    skip_optional: bool,
 ) -> Result<Vec<(String, String)>, anyhow::Error> {
     let dir = Path::new(DOWNLOAD_PATH).join(format!("{}-{}", name, version));
     let filename = parser::determine_cargo_toml(&dir);
@@ -170,11 +179,17 @@ pub fn read_dep_names_and_versions(
             .clone()
             .try_into()
             .context("Failed to parse dependency")?;
-        let version = match dep {
-            Dependency::Simple(version) => version,
-            Dependency::Special { optional: _ } => "latest".to_string(),
-            Dependency::Detailed { version, .. } => version,
+        let (version, optional) = match dep {
+            Dependency::Simple(version) => (version, false),
+            Dependency::Special { optional } => ("latest".to_string(), optional.unwrap_or(false)),
+            Dependency::Detailed {
+                version, optional, ..
+            } => (version, optional.unwrap_or(false)),
         };
+        if skip_optional && optional {
+            debug!("Skipping optional dependency: {}", name);
+            continue;
+        }
         dep_names.push((name.to_string(), version));
     }
 
