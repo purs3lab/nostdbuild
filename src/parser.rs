@@ -705,14 +705,45 @@ pub fn remove_features_of_deps(
         }
     };
 
-    for (dep_name, _) in table.iter() {
+    let mut dep_names: Vec<String> = Vec::new();
+
+    if key == "target" {
+        table.iter().for_each(|(_, value)| {
+            if let toml::Value::Table(table) = value {
+                for dep_type in ["dev-dependencies", "build-dependencies", "dependencies"] {
+                    if let Some(inner_deps) = table.get(dep_type).and_then(toml::Value::as_table) {
+                        for (dep_name, _) in inner_deps.iter() {
+                            debug!("Found dependency: {}", dep_name);
+                            let dep = dep_name.clone();
+                            if !dep_names.contains(&dep) {
+                                dep_names.push(dep);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    } else {
+        table.iter().for_each(|(dep_name, _)| {
+            dep_names.push(dep_name.clone());
+        });
+    }
+
+    debug!("Removing features for key: {}", key);
+    for dep_name in dep_names {
+        debug!("Removing features for dependency: {}", dep_name);
         let prefix1 = format!("{}/", dep_name);
         let prefix2 = format!("{}?/", dep_name);
+        let prefix3 = format!("dep:{}", dep_name);
         for (_, feature_value) in features.iter_mut() {
             if let toml::Value::Array(arr) = feature_value {
                 arr.retain(|f| {
                     if let toml::Value::String(s) = f {
-                        if s.starts_with(&prefix1) || s.starts_with(&prefix2) {
+                        if s.starts_with(&prefix1)
+                            || s.starts_with(&prefix2)
+                            || s.as_str() == dep_name
+                            || s.ends_with(&prefix3)
+                        {
                             debug!("Removing {} from features as it is a dev-dependency", s);
                             return false;
                         }
