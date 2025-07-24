@@ -673,24 +673,26 @@ pub fn remove_table_from_toml(
     Ok(())
 }
 
-/// For all features that refer to dev-dependencies,
+/// For all features that refer to the `key` table,
 /// remove them from the features list.
-/// This is to prevent errors when we remove the dev-dependencies
+/// This is to prevent errors when we remove the `key` table
 /// from the Cargo.toml file.
 /// # Arguments
+/// * `key` - The key of the table to remove features for
 /// * `toml` - The TOML value to modify
 /// * `filename` - The path to the Cargo.toml file
 /// # Returns
 /// A Result indicating success or failure.
 /// This will also write the modified TOML back to the file.
-pub fn remove_features_dev_deps(
+pub fn remove_features_of_deps(
+    key: &str,
     toml: &mut toml::Value,
     filename: &str,
 ) -> Result<(), anyhow::Error> {
-    let dev_table = match toml.get("dev-dependencies").and_then(toml::Value::as_table) {
-        Some(dev_table) => dev_table.clone(),
+    let table = match toml.get(key).and_then(toml::Value::as_table) {
+        Some(table) => table.clone(),
         None => {
-            debug!("No table found for key: dev-dependencies in Cargo.toml");
+            debug!("No table found for key: {} in Cargo.toml", key);
             return Ok(());
         }
     };
@@ -703,7 +705,7 @@ pub fn remove_features_dev_deps(
         }
     };
 
-    for (dep_name, _) in dev_table.iter() {
+    for (dep_name, _) in table.iter() {
         let prefix1 = format!("{}/", dep_name);
         let prefix2 = format!("{}?/", dep_name);
         for (_, feature_value) in features.iter_mut() {
