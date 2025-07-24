@@ -673,39 +673,52 @@ pub fn remove_table_from_toml(
     Ok(())
 }
 
-/// Mark the dependencies in the Cargo.toml file under the given key
-/// as not having default features.
+/// For all features that refer to dev-dependencies,
+/// remove them from the features list.
+/// This is to prevent errors when we remove the dev-dependencies
+/// from the Cargo.toml file.
 /// # Arguments
-/// * `key` - The key under which the dependencies are listed
 /// * `toml` - The TOML value to modify
 /// * `filename` - The path to the Cargo.toml file
 /// # Returns
 /// A Result indicating success or failure.
-pub fn make_dep_non_default_features(
-    key: &str,
+/// This will also write the modified TOML back to the file.
+pub fn remove_features_dev_deps(
     toml: &mut toml::Value,
     filename: &str,
 ) -> Result<(), anyhow::Error> {
-    if let Some(dep_table) = toml.get_mut(key).and_then(toml::Value::as_table_mut) {
-        for (_, dep_entry) in dep_table.iter_mut() {
-            match dep_entry {
-                toml::Value::Table(ref mut tbl) => {
-                    tbl.insert("default-features".to_string(), toml::Value::Boolean(false));
-                }
-                toml::Value::String(_version_str) => {
-                    let mut new_tbl = toml::map::Map::new();
-                    new_tbl.insert("version".to_string(), dep_entry.clone());
-                    new_tbl.insert("default-features".to_string(), toml::Value::Boolean(false));
-                    *dep_entry = toml::Value::Table(new_tbl);
-                }
-                _ => {
-                    debug!("Skipping unexpected dep format in {}", key);
-                }
+    let dev_table = match toml.get("dev-dependencies").and_then(toml::Value::as_table) {
+        Some(dev_table) => dev_table.clone(),
+        None => {
+            debug!("No table found for key: dev-dependencies in Cargo.toml");
+            return Ok(());
+        }
+    };
+
+    let features = match toml.get_mut("features").and_then(toml::Value::as_table_mut) {
+        Some(features) => features,
+        None => {
+            debug!("No features table found in Cargo.toml");
+            return Ok(());
+        }
+    };
+
+    for (dep_name, _) in dev_table.iter() {
+        let prefix1 = format!("{}/", dep_name);
+        let prefix2 = format!("{}?/", dep_name);
+        for (_, feature_value) in features.iter_mut() {
+            if let toml::Value::Array(arr) = feature_value {
+                arr.retain(|f| {
+                    if let toml::Value::String(s) = f {
+                        if s.starts_with(&prefix1) || s.starts_with(&prefix2) {
+                            debug!("Removing {} from features as it is a dev-dependency", s);
+                            return false;
+                        }
+                    }
+                    true
+                });
             }
         }
-    } else {
-        debug!("No table found for key: {} in Cargo.toml", key);
-        return Ok(());
     }
 
     fs::write(
@@ -714,10 +727,6 @@ pub fn make_dep_non_default_features(
     )
     .context("Failed to write Cargo.toml")?;
 
-    debug!(
-        "Set default-features = false for all entries under [{}]",
-        key
-    );
     Ok(())
 }
 
