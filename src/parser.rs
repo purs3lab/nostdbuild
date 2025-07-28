@@ -3,7 +3,7 @@ use log::debug;
 use proc_macro2::TokenStream;
 // use quote::ToTokens;
 use std::{collections::HashSet, fs, path::Path};
-use syn::{visit::Visit, Attribute, ItemExternCrate, Meta};
+use syn::{visit::Visit, Attribute, ExprBlock, Item, ItemExternCrate, Meta, Stmt};
 use walkdir::WalkDir;
 use z3::{self, ast::Bool};
 
@@ -43,6 +43,21 @@ pub struct ItemExternCratesAll {
     itemexterncrates: Vec<ItemExternCrate>,
 }
 
+trait GetItemExternCrate {
+    fn get_item_extern_crate(&mut self) -> &mut Vec<ItemExternCrate>;
+}
+
+impl GetItemExternCrate for ItemExternCrates {
+    fn get_item_extern_crate(&mut self) -> &mut Vec<ItemExternCrate> {
+        &mut self.itemexterncrates
+    }
+}
+impl GetItemExternCrate for ItemExternCratesAll {
+    fn get_item_extern_crate(&mut self) -> &mut Vec<ItemExternCrate> {
+        &mut self.itemexterncrates
+    }
+}
+
 impl<'a> Visit<'a> for ItemExternCrates {
     fn visit_item_extern_crate(&mut self, i: &ItemExternCrate) {
         // We will save all the extern crates that have an
@@ -51,11 +66,79 @@ impl<'a> Visit<'a> for ItemExternCrates {
             self.itemexterncrates.push(i.clone());
         }
     }
+
+    fn visit_expr_block(&mut self, i: &'a ExprBlock) {
+        visit_expr_block_common(self, i);
+    }
 }
 
 impl<'a> Visit<'a> for ItemExternCratesAll {
     fn visit_item_extern_crate(&mut self, i: &ItemExternCrate) {
         self.itemexterncrates.push(i.clone());
+    }
+
+    fn visit_expr_block(&mut self, i: &'a syn::ExprBlock) {
+        visit_expr_block_common(self, i);
+    }
+}
+
+/// Visit ExprBlocks of the form
+/// ```rust
+/// #[cfg(feature = "use-locks")]
+/// {
+///     self.source.lock.unlock();
+///
+///     #[cfg(feature = "std")]
+///     {
+///         extern crate std;
+///         if std::thread::panicking() {
+///             self.source.state.set(State::Poisoned);
+///         }
+///     }
+/// }
+/// ```
+/// and recurse until it finds an extern crate std.
+/// Once this is found, all the attributes in its path in the
+/// ast will be added to the `item_extern_crate`
+/// # Arguments
+/// * `typ` - The type which we update with the new extern crate std
+/// * `expr_block` - The expression block to visit
+fn visit_expr_block_common<'a, T: Visit<'a> + GetItemExternCrate>(
+    typ: &mut T,
+    expr_block: &'a ExprBlock,
+) {
+    let old_len = typ.get_item_extern_crate().len();
+    syn::visit::visit_expr_block(typ, expr_block);
+    let changed = typ.get_item_extern_crate().len() > old_len;
+    if !expr_block.attrs.is_empty() {
+        let stmts = &expr_block.block.stmts;
+        let attrs = expr_block.attrs.clone();
+        for stmt in stmts {
+            match stmt {
+                Stmt::Item(Item::ExternCrate(item)) => {
+                    typ.get_item_extern_crate().retain(|i| i != item);
+                    let new = ItemExternCrate {
+                        attrs: attrs.clone(),
+                        ..item.clone()
+                    };
+                    typ.get_item_extern_crate().push(new);
+                }
+                _ if changed => {
+                    let extern_item = typ.get_item_extern_crate().last().unwrap();
+                    let new = ItemExternCrate {
+                        attrs: attrs.clone(),
+                        ..extern_item.clone()
+                    };
+                    typ.get_item_extern_crate().push(new);
+                }
+                _ => {
+                    debug!(
+                        "Found unexpected statement in extern crate block: {:?}",
+                        stmt
+                    );
+                }
+            }
+        }
     }
 }
 
