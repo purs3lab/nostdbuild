@@ -395,6 +395,10 @@ pub fn process_crate(
                     (None::<Bool>, None::<ParsedAttr>),
                     |(local_eq, local_attr), std_attr| {
                         let (eq, mut attr) = parse_main_attributes_direct(&std_attr, &ctx);
+                        if eq.is_none() {
+                            debug!("No equation found for attribute: {:?}", std_attr);
+                            return (local_eq, local_attr);
+                        }
                         let combined_eq = match local_eq {
                             Some(prev_eq) => Some(Bool::and(ctx, &[&prev_eq, &eq.unwrap()])),
                             None => Some(eq.unwrap()),
