@@ -258,24 +258,21 @@ pub fn parse_item_extern_crates_for_files(crate_name: &str) -> Vec<String> {
     files_ungaurded
 }
 
-/// Get the attribute of the extern crate std
-/// We only return the cfg attribute associated with the first
-/// extern crate std. This is because we assume that even if there
-/// are multiple extern crate stds, they will have the same
-/// cfg attribute.
+/// Get the attributes of the extern crate std
 /// # Arguments
 /// * `itemexterncrates` - The extern crates of the main crate
 /// # Returns
-/// The attribute of the extern crate std
+/// The attributes of the extern crate std
 /// if it exists, otherwise None.
-pub fn get_item_extern_std(itemexterncrates: &ItemExternCrates) -> Option<Attribute> {
+pub fn get_item_extern_std(itemexterncrates: &ItemExternCrates) -> Vec<Attribute> {
     itemexterncrates
         .itemexterncrates
         .iter()
         .filter(|i| i.ident == "std")
         .flat_map(|i| i.attrs.iter())
-        .find(|a| a.path().get_ident().map_or(false, |ident| ident == "cfg"))
+        .filter(|a| a.path().get_ident().map_or(false, |ident| ident == "cfg"))
         .cloned()
+        .collect()
 }
 
 /// Parse the main crate and return the attributes
@@ -383,7 +380,7 @@ pub fn process_crate(
             return Ok((Vec::new(), Vec::new(), recurse, Vec::new()));
         }
         let std_attrs = get_item_extern_std(&items);
-        if std_attrs.is_some() {
+        if !std_attrs.is_empty() {
             debug!("Leaf level crate reached {}", name_with_version);
             let features = db::get_from_db_data(&db_data, name_with_version);
             if features.is_some() {
@@ -394,7 +391,28 @@ pub fn process_crate(
                 (enable, disable) = features.unwrap().features.clone();
             } else {
                 debug!("No features to enable for crate {}", name_with_version);
-                (equation, parsed_attr) = parse_main_attributes_direct(&std_attrs.unwrap(), &ctx);
+                let (local_equation, local_parsed_attr) = std_attrs.into_iter().fold(
+                    (None::<Bool>, None::<ParsedAttr>),
+                    |(local_eq, local_attr), std_attr| {
+                        let (eq, mut attr) = parse_main_attributes_direct(&std_attr, &ctx);
+                        let combined_eq = match local_eq {
+                            Some(prev_eq) => Some(Bool::and(ctx, &[&prev_eq, &eq.unwrap()])),
+                            None => Some(eq.unwrap()),
+                        };
+                        let combined_attr = match local_attr {
+                            Some(prev_attr) => {
+                                attr.features.extend(prev_attr.features);
+                                Some(ParsedAttr {
+                                    features: attr.features,
+                                    ..prev_attr
+                                })
+                            }
+                            None => Some(attr),
+                        };
+                        (combined_eq, combined_attr)
+                    },
+                );
+                (equation, parsed_attr) = (local_equation, local_parsed_attr.unwrap_or_default());
                 // We need to negate the equation since we are
                 // trying to remove std features.
                 equation = match equation {
@@ -1085,7 +1103,7 @@ fn parse_top_level_externs<'a>(
             continue;
         }
         let std_attrs = get_item_extern_std(&items);
-        if std_attrs.is_some() {
+        if !std_attrs.is_empty() {
             return Ok((equation, parsed_attr));
         }
         worklist.push((name_with_version, equation, parsed_attr));
@@ -1129,7 +1147,7 @@ fn parse_n_level_externs<'a>(worklist: &mut Vec<String>) -> bool {
             downloader::read_dep_names_and_versions(name, version, false).unwrap();
         let unfiltered = parse_item_extern_crates(&new_name_with_version);
         let std_attrs = get_item_extern_std(&unfiltered);
-        if std_attrs.is_some() {
+        if !std_attrs.is_empty() {
             return true;
         }
         let externs = get_item_extern_dep(&unfiltered, &names_and_versions);
