@@ -533,6 +533,11 @@ pub fn process_dep_crate(
     let (enable, disable, _, _) =
         process_crate(ctx, dep, &dep.crate_name, db_data, crate_info, false)?;
 
+    debug!(
+        "Dependency {}: enable: {:?}, disable: {:?}",
+        dep.crate_name, enable, disable
+    );
+
     let (args, update_default_config) = solver::final_feature_list_dep(
         crate_info,
         &dep.crate_name.split(":").next().unwrap_or(""),

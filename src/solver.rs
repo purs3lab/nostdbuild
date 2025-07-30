@@ -63,7 +63,7 @@ pub fn model_to_features(model: &Option<z3::Model>) -> (Vec<String>, Vec<String>
 /// * `disable` - The list of features to disable
 /// # Returns
 /// * `(Vec<String>, bool)` - The final feature list for the
-/// dependencyand a boolean indicating if the default
+/// dependency and a boolean indicating if the default
 /// features list of main crate should be updated
 pub fn final_feature_list_dep(
     crate_info: &CrateInfo,
@@ -72,11 +72,10 @@ pub fn final_feature_list_dep(
     disable: &[String],
 ) -> (Vec<String>, bool) {
     let mut update_default_config = false;
-    let dep_crate_info = crate_info
+    let (dep_crate_info, dep_already_enabled) = crate_info
         .deps_and_features
         .iter()
         .find(|(dep, _)| dep.name == name)
-        .map(|(dep, _)| dep)
         .unwrap_or_else(|| {
             panic!("Dependency {} not found in the list of dependencies", name);
         });
@@ -85,20 +84,31 @@ pub fn final_feature_list_dep(
         update_default_config = true;
     }
 
+    // TODO: If main crate does not have the feature name, we add it and return that feature name.
+    // TODO: If the main crate enabled some dep feature by in the dep's declaration and we need to disable it,
+    // we need to remove that from the list and add a new feature name to enable that in case of non no_std build.
+    // TODO: If we need to disable some feature that main crate enabled by default and we don't need to disable the
+    // default features of main, then we need to update the default features list of main crate to remove that feature
+    // and add a new feature name to enable that in case of non no_std build.
+
     let main_available_features = &crate_info.features;
-    let features_to_enable: Vec<String> = enable
-        .iter()
-        .filter_map(|to_enable| {
-            main_available_features
+    let mut features_to_enable = Vec::new();
+    let mut not_found = Vec::new();
+    for to_enable in enable {
+        // If main crate added this feature when declaring the dependency,
+        // we don't need to add it again.
+        if dep_already_enabled.contains(&to_enable) {
+            continue;
+        }
+        match main_available_features.iter().find(|(_, features)| {
+            features
                 .iter()
-                .find(|(_, features)| {
-                    features
-                        .iter()
-                        .any(|(dep, feature)| dep == name && feature == to_enable)
-                })
-                .map(|(main_feat, _)| main_feat.clone())
-        })
-        .collect();
+                .any(|(dep, feature)| dep == name && feature == to_enable)
+        }) {
+            Some((main_feat, _)) => features_to_enable.push(main_feat.clone()),
+            None => not_found.push(to_enable.clone()),
+        }
+    }
     (features_to_enable, update_default_config)
 }
 
