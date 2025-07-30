@@ -33,6 +33,8 @@ pub const TARGET_LIST: [&str; 26] = [
     "x86_64-unknown-none",
 ];
 
+pub const CUSTOM_FEATURES: &str = "custom_default_features";
+
 /// Check if the target is valid
 /// # Arguments
 /// * `target` - The target to check

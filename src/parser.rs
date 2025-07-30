@@ -7,7 +7,10 @@ use syn::{visit::Visit, Attribute, ExprBlock, Item, ItemExternCrate, Meta, Stmt}
 use walkdir::WalkDir;
 use z3::{self, ast::Bool};
 
-use crate::{consts::DOWNLOAD_PATH, db, downloader, solver, CrateInfo, DBData, DEPENDENCIES};
+use crate::{
+    consts::CUSTOM_FEATURES, consts::DOWNLOAD_PATH, db, downloader, solver, CrateInfo, DBData,
+    DEPENDENCIES,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Logic {
@@ -83,7 +86,7 @@ impl<'a> Visit<'a> for ItemExternCratesAll {
 }
 
 /// Visit ExprBlocks of the form
-/// ```rust
+/// ```ignore
 /// #[cfg(feature = "use-locks")]
 /// {
 ///     self.source.lock.unlock();
@@ -888,9 +891,16 @@ pub fn toml_has_bin_target(filename: &str) -> bool {
 /// by adding the default features of the given dependency.
 /// This function will also set the dependency to not have
 /// default features set in the main crate's Cargo.toml.
+/// The goal of this is to prevent main crate's functionality
+/// from being affected by the dependency's default features
+/// getting disabled.
+/// This also implies that to compile the main crate in
+/// non no_std mode, the new feature that got added should
+/// always be enabled.
 /// # Arguments
 /// * `main` - The name of the main crate
 /// * `dep` - The name of the dependency to add to the main crate's default features
+/// * `crate_name_rename` - A list of names and their renames of crate names
 /// # Returns
 /// None
 fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(String, String)]) {
@@ -955,23 +965,14 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
         .as_table_mut()
         .expect("Failed to get features table from main Cargo.toml");
 
-    if let Some(default_features) = main_features.get_mut("default") {
-        match default_features {
-            toml::Value::Array(arr) => {
-                for feature in dep_default_features {
-                    if !arr.contains(&toml::Value::String(feature.clone())) {
-                        debug!("Adding {} to main crate default features", feature);
-                        arr.push(toml::Value::String(feature));
-                    }
-                }
-            }
-            _ => {
-                debug!("Default features in main Cargo.toml is not an array, skipping update");
-            }
-        }
+    if let Some(_) = main_features.get_mut(CUSTOM_FEATURES) {
+        unreachable!(
+            "The custom features {} should not be present in the main crate's Cargo.toml",
+            CUSTOM_FEATURES
+        );
     } else {
         main_features.insert(
-            "default".to_string(),
+            CUSTOM_FEATURES.to_string(),
             toml::Value::Array(
                 dep_default_features
                     .into_iter()
@@ -980,6 +981,7 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
             ),
         );
         debug!("Added default features to main crate features");
+        println!("WARNING: To use the main crate in non no_std mode, you need to enable the feature `{}`", CUSTOM_FEATURES);
     }
 
     fs::write(
