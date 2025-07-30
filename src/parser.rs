@@ -543,6 +543,7 @@ pub fn process_dep_crate(
         &dep.crate_name.split(":").next().unwrap_or(""),
         &enable,
         &disable,
+        &crate_name_rename,
     );
 
     debug!(
@@ -914,9 +915,9 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
     let dep_name_original = dep.split(':').next().unwrap().to_string();
     let dep_name = crate_name_rename
         .iter()
-        .find(|(name, _)| name == &dep_name_original)
-        .map(|(_, renamed)| renamed)
-        .unwrap_or_else(|| &dep_name_original);
+        .find(|(_, name)| name == &dep_name_original)
+        .map(|(renamed, _)| renamed)
+        .unwrap_or(&dep_name_original);
 
     debug!(
         "Updating main crate default features list: {} with dependency: {}",
@@ -962,32 +963,7 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
         })
         .unwrap_or_else(|| Vec::new());
 
-    let main_features = main_toml
-        .as_table_mut()
-        .expect("Failed to get main Cargo.toml as table")
-        .entry("features")
-        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
-        .as_table_mut()
-        .expect("Failed to get features table from main Cargo.toml");
-
-    if let Some(_) = main_features.get_mut(CUSTOM_FEATURES) {
-        unreachable!(
-            "The custom features {} should not be present in the main crate's Cargo.toml",
-            CUSTOM_FEATURES
-        );
-    } else {
-        main_features.insert(
-            CUSTOM_FEATURES.to_string(),
-            toml::Value::Array(
-                dep_default_features
-                    .into_iter()
-                    .map(toml::Value::String)
-                    .collect(),
-            ),
-        );
-        debug!("Added default features to main crate features");
-        println!("WARNING: To use the main crate in non no_std mode, you need to enable the feature `{}`", CUSTOM_FEATURES);
-    }
+    add_feats_to_custom_feature(&mut main_toml, &dep_default_features);
 
     fs::write(
         &main_cargo_toml,
@@ -996,6 +972,111 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
             .unwrap(),
     )
     .unwrap();
+}
+
+/// Remove a gives list of features from the declared features
+/// of a dependency in the main crate's Cargo.toml.
+/// This will also add the features to the custom feature list
+/// in the main crate's Cargo.toml.
+/// # Arguments
+/// * `main_name` - The name of the main crate
+/// * `name` - The name of the dependency to remove features from
+/// * `feats` - The list of features to remove from the dependency
+/// * `crate_name_rename` - A list of names and their renames of crate names
+/// # Returns
+/// None
+pub fn remove_feat_from_declared_list(
+    main_name: &str,
+    dep_original_name: &String,
+    feats: &[String],
+    crate_name_rename: &[(String, String)],
+) {
+    let main_cargo_toml = determine_cargo_toml(main_name);
+    let mut main_toml: toml::Value =
+        toml::from_str(&fs::read_to_string(&main_cargo_toml).unwrap()).unwrap();
+
+    let dep_name = crate_name_rename
+        .iter()
+        .find(|(_, name)| name == dep_original_name)
+        .map(|(renamed, _)| renamed)
+        .unwrap_or(dep_original_name);
+
+    let dependency = main_toml
+        .get_mut("dependencies")
+        .and_then(|v| v.as_table_mut())
+        .and_then(|table| table.get_mut(dep_name))
+        .expect("Failed to get dependency from main Cargo.toml")
+        .as_table_mut()
+        .expect("Dependency in main Cargo.toml is not a table");
+
+    let declared_features = match dependency
+        .get_mut("features")
+        .and_then(|v| v.as_array_mut())
+    {
+        Some(features) => features,
+        None => {
+            debug!("No features array found for dependency {}", dep_name);
+            return;
+        }
+    };
+
+    declared_features.retain(|f| {
+        if let toml::Value::String(s) = f {
+            !feats.contains(s)
+        } else {
+            true
+        }
+    });
+
+    let formatted_feats: Vec<String> = feats
+        .iter()
+        .map(|f| format!("{}/{}", dep_original_name, f))
+        .collect();
+    add_feats_to_custom_feature(&mut main_toml, &formatted_feats);
+
+    fs::write(
+        &main_cargo_toml,
+        toml::to_string(&main_toml)
+            .context("Failed convert Value to string")
+            .unwrap(),
+    )
+    .unwrap();
+}
+
+fn add_feats_to_custom_feature(main_toml: &mut toml::Value, feats_to_add: &[String]) {
+    let main_features = main_toml
+        .as_table_mut()
+        .expect("Failed to get main Cargo.toml as table")
+        .entry("features")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .expect("Failed to get features table from main Cargo.toml");
+
+    if let Some(custom) = main_features.get_mut(CUSTOM_FEATURES) {
+        if let toml::Value::Array(arr) = custom {
+            for feat in feats_to_add {
+                if !arr.contains(&toml::Value::String(feat.clone())) {
+                    arr.push(toml::Value::String(feat.clone()));
+                    debug!("Added feature {} to custom features", feat);
+                }
+            }
+        } else {
+            debug!("Custom features is not an array, skipping");
+        }
+    } else {
+        main_features.insert(
+            CUSTOM_FEATURES.to_string(),
+            toml::Value::Array(
+                feats_to_add
+                    .to_vec()
+                    .into_iter()
+                    .map(toml::Value::String)
+                    .collect(),
+            ),
+        );
+        debug!("Added default features to main crate features");
+        println!("WARNING: To use the main crate in non no_std mode, you need to enable the feature `{}`", CUSTOM_FEATURES);
+    }
 }
 
 /// Given a `CrateInfo`, this function finds all optional dependencies

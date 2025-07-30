@@ -1,6 +1,6 @@
 use z3::{self, ast::Bool};
 
-use crate::CrateInfo;
+use crate::{parser, CrateInfo};
 
 /// Given a context, a main equation and a list of
 /// filtered equations, solve for the main equation
@@ -70,6 +70,7 @@ pub fn final_feature_list_dep(
     name: &str,
     enable: &[String],
     disable: &[String],
+    crate_name_rename: &[(String, String)],
 ) -> (Vec<String>, bool) {
     let mut update_default_config = false;
     let (dep_crate_info, dep_already_enabled) = crate_info
@@ -84,9 +85,20 @@ pub fn final_feature_list_dep(
         update_default_config = true;
     }
 
+    let dep_feats_to_remove: Vec<String> = disable
+        .iter()
+        .filter(|feat| dep_already_enabled.contains(feat))
+        .cloned()
+        .collect();
+
+    parser::remove_feat_from_declared_list(
+        &format!("{}-{}", crate_info.name, crate_info.version),
+        &name.to_string(),
+        &dep_feats_to_remove,
+        &crate_name_rename,
+    );
+
     // TODO: If main crate does not have the feature name, we add it and return that feature name.
-    // TODO: If the main crate enabled some dep feature by in the dep's declaration and we need to disable it,
-    // we need to remove that from the list and add a new feature name to enable that in case of non no_std build.
     // TODO: If we need to disable some feature that main crate enabled by default and we don't need to disable the
     // default features of main, then we need to update the default features list of main crate to remove that feature
     // and add a new feature name to enable that in case of non no_std build.
