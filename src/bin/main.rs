@@ -122,10 +122,10 @@ fn main() -> anyhow::Result<()> {
     let mut skipped = Vec::new();
     // Solve for each dependency
     // TODO: Some dependencies are from git instead of crates.io. Handle those cases (check tool_error_or_crate_issue file).
-    // TODO: If a feature is not there in the cargo.toml, add it and then do the build.
     // TODO: If a feature has ? in it before the /, handle this case.
     // TODO: Should we disable default features for main crate if we update its default features list to include dependency's default features?
     // TODO: Fix syn failure when it encounters `yield` keyword in the code.
+    // TODO: There are some cleanup and refactoring to minimize the read -> mutate -> write pattern for the toml
     let mut deps_args = Vec::new();
     for dep in deps_attrs {
         if parser::should_skip_dep(&dep.crate_name, &crate_info, &dep_and_feats, &main_features) {
