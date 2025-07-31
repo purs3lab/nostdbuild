@@ -1009,13 +1009,19 @@ pub fn update_feat_lists(
         .map(|(renamed, _)| renamed)
         .unwrap_or(dep_original_name);
 
-    let dependency = main_toml
+    let dependency = match main_toml
         .get_mut("dependencies")
         .and_then(|v| v.as_table_mut())
         .and_then(|table| table.get_mut(dep_name))
         .expect("Failed to get dependency from main Cargo.toml")
         .as_table_mut()
-        .expect("Dependency in main Cargo.toml is not a table");
+    {
+        Some(table) => table,
+        None => {
+            debug!("Dependency {} not found in main Cargo.toml", dep_name);
+            &mut toml::map::Map::new()
+        }
+    };
 
     let declared_features = match dependency
         .get_mut("features")
@@ -1046,8 +1052,16 @@ pub fn update_feat_lists(
         .map(|f| format!("{}/{}", dep_original_name, f))
         .collect();
 
-    add_feats_to_custom_feature(&mut main_toml, CUSTOM_FEATURES_DISABLED, &formatted_feats_to_move);
-    add_feats_to_custom_feature(&mut main_toml, CUSTOM_FEATURES_ENABLED, &formatted_feats_to_add);
+    add_feats_to_custom_feature(
+        &mut main_toml,
+        CUSTOM_FEATURES_DISABLED,
+        &formatted_feats_to_move,
+    );
+    add_feats_to_custom_feature(
+        &mut main_toml,
+        CUSTOM_FEATURES_ENABLED,
+        &formatted_feats_to_add,
+    );
 
     fs::write(
         &main_cargo_toml,
@@ -1056,6 +1070,70 @@ pub fn update_feat_lists(
             .unwrap(),
     )
     .unwrap();
+}
+
+/// Sometime dependencies have features that should be disabled
+/// to compile it in no_std mode. But these features maybe enabled
+/// in the main crate's Cargo.toml.
+/// This function will remove those features from the original feature from
+///  main crate's Cargo.toml and add them to the custom feature list
+/// which is used during std build.
+/// # Arguments
+/// * `main_name` - The name of the main crate
+/// * `name` - The name of the dependency to remove features from
+/// * `disable` - The list of features to disable from the dependency
+/// # Returns
+/// None
+pub fn remove_conflicting_dep_feats(
+    main_name: &str,
+    name: &str,
+    disable: &[String],
+) {
+    let main_cargo_toml = determine_cargo_toml(main_name);
+    let mut main_toml: toml::Value =
+        toml::from_str(&fs::read_to_string(&main_cargo_toml).unwrap()).unwrap();
+
+    let features = main_toml
+        .get_mut("features")
+        .and_then(|v| v.as_table_mut())
+        .expect("Failed to get features table from main Cargo.toml");
+
+    for to_disable in disable {
+        let to_remove = format!("{}/{}", name, to_disable);
+
+        features
+            .iter_mut()
+            .filter_map(|(_, v)| v.as_array_mut())
+            .for_each(|arr| {
+                arr.retain(|f| {
+                    if let toml::Value::String(s) = f {
+                        if s == &to_remove {
+                            debug!("Removing feature {} from main crate", to_remove);
+                            return false;
+                        }
+                    }
+                    true
+                });
+            });
+    }
+
+    let formatted_feats_to_move: Vec<String> = disable
+        .iter()
+        .map(|f| format!("{}/{}", name, f))
+        .collect();
+    add_feats_to_custom_feature(&mut main_toml, CUSTOM_FEATURES_DISABLED, &formatted_feats_to_move);
+
+    fs::write(
+        &main_cargo_toml,
+        toml::to_string(&main_toml)
+            .context("Failed convert Value to string")
+            .unwrap(),
+    )
+    .unwrap();
+    debug!(
+        "Removed conflicting features from main crate: {}",
+        main_name
+    );
 }
 
 fn add_feats_to_custom_feature(

@@ -85,10 +85,6 @@ pub fn final_feature_list_dep(
         update_default_config = true;
     }
 
-    // TODO: If we need to disable some feature that main crate enabled by default and we don't need to disable the
-    // default features of main, then we need to update the default features list of main crate to remove that feature
-    // and add a new feature name to enable that in case of non no_std build.
-
     let main_available_features = &crate_info.features;
     let mut features_to_enable = Vec::new();
     let mut not_found = Vec::new();
@@ -118,13 +114,16 @@ pub fn final_feature_list_dep(
         features_to_enable.push(CUSTOM_FEATURES_ENABLED.to_string());
     }
 
+    let main_name = format!("{}-{}", crate_info.name, crate_info.version);
     parser::update_feat_lists(
-        &format!("{}-{}", crate_info.name, crate_info.version),
+        &main_name,
         &name.to_string(),
         &dep_feats_to_remove,
         &not_found,
         &crate_name_rename,
     );
+
+    parser::remove_conflicting_dep_feats(&main_name, name, disable);
 
     (features_to_enable, update_default_config)
 }
