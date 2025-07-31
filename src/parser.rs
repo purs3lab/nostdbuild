@@ -8,8 +8,8 @@ use walkdir::WalkDir;
 use z3::{self, ast::Bool};
 
 use crate::{
-    consts::CUSTOM_FEATURES, consts::DOWNLOAD_PATH, db, downloader, solver, CrateInfo, DBData,
-    DEPENDENCIES,
+    consts::{CUSTOM_FEATURES_DISABLED, CUSTOM_FEATURES_ENABLED, DOWNLOAD_PATH},
+    db, downloader, solver, CrateInfo, DBData, DEPENDENCIES,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -963,7 +963,11 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
         })
         .unwrap_or_else(|| Vec::new());
 
-    add_feats_to_custom_feature(&mut main_toml, &dep_default_features);
+    add_feats_to_custom_feature(
+        &mut main_toml,
+        CUSTOM_FEATURES_DISABLED,
+        &dep_default_features,
+    );
 
     fs::write(
         &main_cargo_toml,
@@ -978,6 +982,9 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
 /// of a dependency in the main crate's Cargo.toml.
 /// This will also add the features to the custom feature list
 /// in the main crate's Cargo.toml.
+/// This function additionally adds gives features to a new
+/// custom feature list in the main crate's Cargo.toml
+/// which is used during the no_std build.
 /// # Arguments
 /// * `main_name` - The name of the main crate
 /// * `name` - The name of the dependency to remove features from
@@ -985,10 +992,11 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
 /// * `crate_name_rename` - A list of names and their renames of crate names
 /// # Returns
 /// None
-pub fn remove_feat_from_declared_list(
+pub fn update_feat_lists(
     main_name: &str,
     dep_original_name: &String,
-    feats: &[String],
+    feats_to_move: &[String],
+    feats_to_add: &[String],
     crate_name_rename: &[(String, String)],
 ) {
     let main_cargo_toml = determine_cargo_toml(main_name);
@@ -1022,17 +1030,19 @@ pub fn remove_feat_from_declared_list(
 
     declared_features.retain(|f| {
         if let toml::Value::String(s) = f {
-            !feats.contains(s)
+            !feats_to_move.contains(s)
         } else {
             true
         }
     });
 
-    let formatted_feats: Vec<String> = feats
+    let formatted_feats: Vec<String> = feats_to_move
         .iter()
         .map(|f| format!("{}/{}", dep_original_name, f))
         .collect();
-    add_feats_to_custom_feature(&mut main_toml, &formatted_feats);
+
+    add_feats_to_custom_feature(&mut main_toml, CUSTOM_FEATURES_DISABLED, &formatted_feats);
+    add_feats_to_custom_feature(&mut main_toml, CUSTOM_FEATURES_ENABLED, &feats_to_add);
 
     fs::write(
         &main_cargo_toml,
@@ -1043,7 +1053,11 @@ pub fn remove_feat_from_declared_list(
     .unwrap();
 }
 
-fn add_feats_to_custom_feature(main_toml: &mut toml::Value, feats_to_add: &[String]) {
+fn add_feats_to_custom_feature(
+    main_toml: &mut toml::Value,
+    custom_feat: &str,
+    feats_to_add: &[String],
+) {
     let main_features = main_toml
         .as_table_mut()
         .expect("Failed to get main Cargo.toml as table")
@@ -1052,7 +1066,7 @@ fn add_feats_to_custom_feature(main_toml: &mut toml::Value, feats_to_add: &[Stri
         .as_table_mut()
         .expect("Failed to get features table from main Cargo.toml");
 
-    if let Some(custom) = main_features.get_mut(CUSTOM_FEATURES) {
+    if let Some(custom) = main_features.get_mut(custom_feat) {
         if let toml::Value::Array(arr) = custom {
             for feat in feats_to_add {
                 if !arr.contains(&toml::Value::String(feat.clone())) {
@@ -1065,7 +1079,7 @@ fn add_feats_to_custom_feature(main_toml: &mut toml::Value, feats_to_add: &[Stri
         }
     } else {
         main_features.insert(
-            CUSTOM_FEATURES.to_string(),
+            custom_feat.to_string(),
             toml::Value::Array(
                 feats_to_add
                     .to_vec()
@@ -1075,7 +1089,7 @@ fn add_feats_to_custom_feature(main_toml: &mut toml::Value, feats_to_add: &[Stri
             ),
         );
         debug!("Added default features to main crate features");
-        println!("WARNING: To use the main crate in non no_std mode, you need to enable the feature `{}`", CUSTOM_FEATURES);
+        println!("WARNING: To use the main crate in non no_std mode, you need to enable the feature `{}`", custom_feat);
     }
 }
 

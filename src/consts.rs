@@ -33,7 +33,15 @@ pub const TARGET_LIST: [&str; 26] = [
     "x86_64-unknown-none",
 ];
 
-pub const CUSTOM_FEATURES: &str = "custom_default_features";
+/// When we remove a feature from default enabled features, we add it to
+/// this custom feature list to preserve the original functionality
+/// of the crate when used in std mode.
+pub const CUSTOM_FEATURES_DISABLED: &str = "custom_default_features";
+
+/// When a dependency is required to enable a feature but main crate does
+/// not provide a feature  that enables that feature, we add it to this
+/// custom feature and enable it while in no_std mode.
+pub const CUSTOM_FEATURES_ENABLED: &str = "custom_no_std_feature_enabled";
 
 /// Check if the target is valid
 /// # Arguments

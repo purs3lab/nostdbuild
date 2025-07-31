@@ -1,6 +1,6 @@
 use z3::{self, ast::Bool};
 
-use crate::{parser, CrateInfo};
+use crate::{consts::CUSTOM_FEATURES_ENABLED, parser, CrateInfo};
 
 /// Given a context, a main equation and a list of
 /// filtered equations, solve for the main equation
@@ -85,20 +85,6 @@ pub fn final_feature_list_dep(
         update_default_config = true;
     }
 
-    let dep_feats_to_remove: Vec<String> = disable
-        .iter()
-        .filter(|feat| dep_already_enabled.contains(feat))
-        .cloned()
-        .collect();
-
-    parser::remove_feat_from_declared_list(
-        &format!("{}-{}", crate_info.name, crate_info.version),
-        &name.to_string(),
-        &dep_feats_to_remove,
-        &crate_name_rename,
-    );
-
-    // TODO: If main crate does not have the feature name, we add it and return that feature name.
     // TODO: If we need to disable some feature that main crate enabled by default and we don't need to disable the
     // default features of main, then we need to update the default features list of main crate to remove that feature
     // and add a new feature name to enable that in case of non no_std build.
@@ -121,6 +107,25 @@ pub fn final_feature_list_dep(
             None => not_found.push(to_enable.clone()),
         }
     }
+
+    let dep_feats_to_remove: Vec<String> = disable
+        .iter()
+        .filter(|feat| dep_already_enabled.contains(feat))
+        .cloned()
+        .collect();
+
+    if !not_found.is_empty() {
+        features_to_enable.push(CUSTOM_FEATURES_ENABLED.to_string());
+    }
+
+    parser::update_feat_lists(
+        &format!("{}-{}", crate_info.name, crate_info.version),
+        &name.to_string(),
+        &dep_feats_to_remove,
+        &not_found,
+        &crate_name_rename,
+    );
+
     (features_to_enable, update_default_config)
 }
 
