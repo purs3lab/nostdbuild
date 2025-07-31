@@ -1,4 +1,8 @@
 use z3::{self, ast::Bool};
+use log::debug;
+use toml;
+use std::fs;
+use anyhow::Context;
 
 use crate::{consts::CUSTOM_FEATURES_ENABLED, parser, CrateInfo};
 
@@ -87,6 +91,8 @@ pub fn final_feature_list_dep(
 
     let main_available_features = &crate_info.features;
     let mut features_to_enable = Vec::new();
+    // We track that features that exist and are required by the dependency
+    // to make it no_std, but the main crate does not provide a way to enable them.
     let mut not_found = Vec::new();
     for to_enable in enable {
         // If main crate added this feature when declaring the dependency,
@@ -148,17 +154,40 @@ pub fn final_feature_list_main(
 
     if disable_in_default(crate_info, disable) {
         disable_default = true;
-        enable_from_default = get_feautes_not_disable(crate_info, disable);
+        enable_from_default = get_features_not_disabled(crate_info, disable);
     }
 
     if !enable.is_empty() {
         enable_from_default.extend(enable.iter().cloned());
     }
 
+    let main_available_features = &crate_info.features;
+    let mut not_found = Vec::new();
+    enable_from_default.iter().for_each(|to_enable| {
+        if !main_available_features.iter().any(|(name, _)| name == to_enable) {
+            not_found.push(to_enable.clone());
+        }
+    });
+    debug!("Main crate does not have features: {:?}", not_found);
+    let main_name = format!("{}-{}", crate_info.name, crate_info.version);
+    let main_crate_toml = parser::determine_cargo_toml(&main_name);
+    let mut main_toml: toml::Value =
+        toml::from_str(&fs::read_to_string(&main_crate_toml).unwrap()).unwrap();
+    for to_add in not_found {
+        parser::add_feats_to_custom_feature(&mut main_toml, &to_add, &[]);
+    }
+    fs::write(
+        &main_crate_toml,
+        toml::to_string(&main_toml)
+            .context("Failed convert Value to string")
+            .unwrap(),
+    )
+    .unwrap();
+
     (disable_default, enable_from_default)
 }
 
-fn get_feautes_not_disable(crate_info: &CrateInfo, disable: &[String]) -> Vec<String> {
+fn get_features_not_disabled(crate_info: &CrateInfo, disable: &[String]) -> Vec<String> {
     let mut feats: Vec<String> = Vec::new();
     crate_info
         .features

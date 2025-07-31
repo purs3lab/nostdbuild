@@ -1136,7 +1136,18 @@ pub fn remove_conflicting_dep_feats(
     );
 }
 
-fn add_feats_to_custom_feature(
+/// Given a toml::Value representing the main Cargo.toml,
+/// a feature name, and a list of features to add,
+/// this function adds the features to the specified feature.
+/// If the feature does not exist, it creates it.
+/// If the feature already exists, it appends the new features to it.
+/// # Arguments
+/// * `main_toml` - The main Cargo.toml as a toml::Value
+/// * `custom_feat` - The name of the custom feature to add to
+/// * `feats_to_add` - A slice of features to add to the custom feature
+/// # Returns
+/// None
+pub fn add_feats_to_custom_feature(
     main_toml: &mut toml::Value,
     custom_feat: &str,
     feats_to_add: &[String],
