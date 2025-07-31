@@ -978,11 +978,11 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
     .unwrap();
 }
 
-/// Remove a gives list of features from the declared features
+/// Remove a given list of features from the declared features
 /// of a dependency in the main crate's Cargo.toml.
 /// This will also add the features to the custom feature list
 /// in the main crate's Cargo.toml.
-/// This function additionally adds gives features to a new
+/// This function additionally adds given features to a new
 /// custom feature list in the main crate's Cargo.toml
 /// which is used during the no_std build.
 /// # Arguments
@@ -1024,7 +1024,7 @@ pub fn update_feat_lists(
         Some(features) => features,
         None => {
             debug!("No features array found for dependency {}", dep_name);
-            return;
+            &mut Vec::new()
         }
     };
 
@@ -1036,13 +1036,18 @@ pub fn update_feat_lists(
         }
     });
 
-    let formatted_feats: Vec<String> = feats_to_move
+    let formatted_feats_to_move: Vec<String> = feats_to_move
         .iter()
         .map(|f| format!("{}/{}", dep_original_name, f))
         .collect();
 
-    add_feats_to_custom_feature(&mut main_toml, CUSTOM_FEATURES_DISABLED, &formatted_feats);
-    add_feats_to_custom_feature(&mut main_toml, CUSTOM_FEATURES_ENABLED, &feats_to_add);
+    let formatted_feats_to_add: Vec<String> = feats_to_add
+        .iter()
+        .map(|f| format!("{}/{}", dep_original_name, f))
+        .collect();
+
+    add_feats_to_custom_feature(&mut main_toml, CUSTOM_FEATURES_DISABLED, &formatted_feats_to_move);
+    add_feats_to_custom_feature(&mut main_toml, CUSTOM_FEATURES_ENABLED, &formatted_feats_to_add);
 
     fs::write(
         &main_cargo_toml,
