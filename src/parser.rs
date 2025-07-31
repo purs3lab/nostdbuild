@@ -1084,11 +1084,7 @@ pub fn update_feat_lists(
 /// * `disable` - The list of features to disable from the dependency
 /// # Returns
 /// None
-pub fn remove_conflicting_dep_feats(
-    main_name: &str,
-    name: &str,
-    disable: &[String],
-) {
+pub fn remove_conflicting_dep_feats(main_name: &str, name: &str, disable: &[String]) {
     let main_cargo_toml = determine_cargo_toml(main_name);
     let mut main_toml: toml::Value =
         toml::from_str(&fs::read_to_string(&main_cargo_toml).unwrap()).unwrap();
@@ -1117,11 +1113,13 @@ pub fn remove_conflicting_dep_feats(
             });
     }
 
-    let formatted_feats_to_move: Vec<String> = disable
-        .iter()
-        .map(|f| format!("{}/{}", name, f))
-        .collect();
-    add_feats_to_custom_feature(&mut main_toml, CUSTOM_FEATURES_DISABLED, &formatted_feats_to_move);
+    let formatted_feats_to_move: Vec<String> =
+        disable.iter().map(|f| format!("{}/{}", name, f)).collect();
+    add_feats_to_custom_feature(
+        &mut main_toml,
+        CUSTOM_FEATURES_DISABLED,
+        &formatted_feats_to_move,
+    );
 
     fs::write(
         &main_cargo_toml,

@@ -1,8 +1,8 @@
-use z3::{self, ast::Bool};
-use log::debug;
-use toml;
-use std::fs;
 use anyhow::Context;
+use log::debug;
+use std::fs;
+use toml;
+use z3::{self, ast::Bool};
 
 use crate::{consts::CUSTOM_FEATURES_ENABLED, parser, CrateInfo};
 
@@ -164,7 +164,10 @@ pub fn final_feature_list_main(
     let main_available_features = &crate_info.features;
     let mut not_found = Vec::new();
     enable_from_default.iter().for_each(|to_enable| {
-        if !main_available_features.iter().any(|(name, _)| name == to_enable) {
+        if !main_available_features
+            .iter()
+            .any(|(name, _)| name == to_enable)
+        {
             not_found.push(to_enable.clone());
         }
     });
