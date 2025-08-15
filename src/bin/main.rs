@@ -81,18 +81,19 @@ fn main() -> anyhow::Result<()> {
         &mut worklist,
         &mut crate_info,
     )?;
-    downloader::download_all_dependencies(&mut worklist, &mut crate_info, depth)?;
-
+    
     debug!("Dependencies: {:?}", crate_info);
-
+    
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
     let found = parser::check_for_no_std(&name, &ctx);
-
+    
     if !found {
         return Err(anyhow::anyhow!("Main crate does not support no_std build"));
     }
-
+    
+    downloader::download_all_dependencies(&mut worklist, &mut crate_info, depth)?;
+    
     let main_attributes = parser::parse_crate(&name, true);
     let (enable, disable, recurse, _) = parser::process_crate(
         &ctx,
