@@ -81,19 +81,19 @@ fn main() -> anyhow::Result<()> {
         &mut worklist,
         &mut crate_info,
     )?;
-    
+
     debug!("Dependencies: {:?}", crate_info);
-    
+
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
     let found = parser::check_for_no_std(&name, &ctx);
-    
+
     if !found {
         return Err(anyhow::anyhow!("Main crate does not support no_std build"));
     }
-    
+
     downloader::download_all_dependencies(&mut worklist, &mut crate_info, depth)?;
-    
+
     let main_attributes = parser::parse_crate(&name, true);
     let (enable, disable, recurse, _) = parser::process_crate(
         &ctx,
@@ -123,10 +123,13 @@ fn main() -> anyhow::Result<()> {
     let mut skipped = Vec::new();
     // Solve for each dependency
     // TODO: Some dependencies are from git instead of crates.io. Handle those cases (check tool_error_or_crate_issue file).
-    // TODO: If a feature has ? in it before the /, handle this case.
     // TODO: Should we disable default features for main crate if we update its default features list to include dependency's default features?
     // TODO: Fix syn failure when it encounters `yield` keyword in the code.
     // TODO: There are some cleanup and refactoring to minimize the read -> mutate -> write pattern for the toml
+    // TODO: Update the db writing strategy to write only once at the end for the main crate only.
+    // TODO: Use db lookup to make sure direct dependencies does not enable non available features, if db entry does not exist, process it as usual.
+    // TODO: Handle crates which are proc-macros.
+    // TODO: Optionally, do a cyclic check of features that gets enabled from the default list due to default disabling to make sure it does not cause issues.
     let mut deps_args = Vec::new();
     for dep in deps_attrs {
         if parser::should_skip_dep(&dep.crate_name, &crate_info, &dep_and_feats, &main_features) {
