@@ -192,6 +192,13 @@ impl<'a> Visit<'a> for Attributes {
             }
         }
     }
+
+    fn visit_item_mod(&mut self, i: &'a syn::ItemMod) {
+        if i.ident != "test" {
+            debug!("Visiting module: {}", i.ident);
+            syn::visit::visit_item_mod(self, i);
+        }
+    }
 }
 
 /// Parse the extern crates of the main crate
@@ -858,7 +865,7 @@ pub fn remove_features_of_deps(
                             || s.as_str() == dep_name
                             || s.ends_with(&prefix3)
                         {
-                            debug!("Removing {} from features as it is a dev-dependency", s);
+                            debug!("Removing {} from features", s);
                             return false;
                         }
                     }
