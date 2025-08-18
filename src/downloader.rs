@@ -329,9 +329,13 @@ fn read_local_features(toml: toml::Value) -> Vec<(String, Vec<(String, String)>)
                         if v.as_str().unwrap().starts_with("dep:") {
                             return (v.as_str().unwrap()[4..].to_string(), "dep:".to_string());
                         }
-                        let v = v.as_str().unwrap().split("/");
-                        let left = v.clone().next().unwrap_or("").to_string();
-                        let right = v.clone().last().unwrap_or("").to_string();
+                        let v: Vec<_> = v.as_str().unwrap().split("/").collect();
+                        let left = v
+                            .first()
+                            .map(|s| s.strip_suffix("?").unwrap_or(s))
+                            .unwrap_or("")
+                            .to_string();
+                        let right = v.last().unwrap_or(&"").to_string();
                         (left, right)
                     })
                     .collect(),
