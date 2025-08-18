@@ -360,16 +360,14 @@ pub fn process_crate(
     db_data: &mut Vec<DBData>,
     crate_info: &CrateInfo,
     is_main: bool,
-) -> anyhow::Result<(Vec<String>, Vec<String>, bool, Vec<String>)> {
-    let mut recurse = false;
-    let mut is_leaf = false;
+) -> anyhow::Result<(Vec<String>, Vec<String>, Vec<String>)> {
     let (mut enable, mut disable): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
 
     let (no_std, mut equation, mut parsed_attr) = parse_main_attributes(&attrs, &ctx);
     if !attrs.unconditional_no_std {
         if !no_std {
             debug!("No no_std found for the crate");
-            return Ok((Vec::new(), Vec::new(), recurse, Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new()));
         }
     } else {
         debug!(
@@ -387,7 +385,7 @@ pub fn process_crate(
         // This case implies that the crate is no_std without any feature requirements.
         if items.itemexterncrates.len() == 0 {
             debug!("No extern crates found for the crate");
-            return Ok((Vec::new(), Vec::new(), recurse, Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new()));
         }
         let std_attrs = get_item_extern_std(&items);
         if !std_attrs.is_empty() {
@@ -434,14 +432,9 @@ pub fn process_crate(
                     None => None,
                 };
                 debug!("Main equation: {:?}", equation);
-                is_leaf = true;
             }
         } else {
-            if is_main {
-                // Main crate is special since we are anyway processing the direct
-                // dependencies.
-                recurse = true;
-            } else {
+            if !is_main {
                 debug!("Leaf level crate reached {}", name_with_version);
                 let (name, version) = name_with_version.split_once(':').unwrap();
                 if let Some(dep_and_features) = get_deps_and_features(name, version, crate_info) {
@@ -459,7 +452,7 @@ pub fn process_crate(
                         }
                         Err(e) => {
                             debug!("Failed to parse extern crates: {}", e);
-                            return Ok((Vec::new(), Vec::new(), recurse, Vec::new()));
+                            return Ok((Vec::new(), Vec::new(), Vec::new()));
                         }
                     }
                 }
@@ -500,11 +493,7 @@ pub fn process_crate(
         (enable, disable) = solver::model_to_features(&model);
     }
 
-    if is_leaf {
-        db::add_to_db_data(db_data, name_with_version, (&enable, &disable));
-    }
-
-    Ok((enable, disable, recurse, possible_archs))
+    Ok((enable, disable, possible_archs))
 }
 
 /// Process the dependency crate.
@@ -537,7 +526,7 @@ pub fn process_dep_crate(
         dep.crate_name
     );
 
-    let (enable, disable, _, _) =
+    let (enable, disable, _) =
         process_crate(ctx, dep, &dep.crate_name, db_data, crate_info, false)?;
 
     debug!(

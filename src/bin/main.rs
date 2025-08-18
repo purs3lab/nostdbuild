@@ -95,7 +95,7 @@ fn main() -> anyhow::Result<()> {
     downloader::download_all_dependencies(&mut worklist, &mut crate_info, depth)?;
 
     let main_attributes = parser::parse_crate(&name, true);
-    let (enable, disable, recurse, _) = parser::process_crate(
+    let (enable, disable, _) = parser::process_crate(
         &ctx,
         &main_attributes,
         &name,
@@ -114,10 +114,7 @@ fn main() -> anyhow::Result<()> {
 
     let dep_and_feats = parser::features_for_optional_deps(&crate_info);
 
-    println!(
-        "Main crate arguments: {:?} with recurse as {}",
-        main_features, recurse
-    );
+    println!("Main crate arguments: {:?}", main_features,);
 
     let deps_attrs = parser::parse_deps_crate();
     let mut skipped = Vec::new();
@@ -126,7 +123,6 @@ fn main() -> anyhow::Result<()> {
     // TODO: Should we disable default features for main crate if we update its default features list to include dependency's default features?
     // TODO: Fix syn failure when it encounters `yield` keyword in the code.
     // TODO: There are some cleanup and refactoring to minimize the read -> mutate -> write pattern for the toml
-    // TODO: Update the db writing strategy to write only once at the end for the main crate only.
     // TODO: Use db lookup to make sure direct dependencies does not enable non available features, if db entry does not exist, process it as usual.
     // TODO: Handle crates which are proc-macros.
     // TODO: Optionally, do a cyclic check of features that gets enabled from the default list due to default disabling to make sure it does not cause issues.
@@ -198,6 +194,7 @@ fn main() -> anyhow::Result<()> {
     // This is temporary, we will remove it later
     let possible_archs = Vec::new();
     compiler::try_compile(&name, &target, &final_args, &possible_archs, &mut results)?;
+    db::add_to_db_data(&mut db_data, &name, (&enable, &disable));
     db::write_db_file(db_data)?;
     db::write_final_json(&name, &results);
     let dir = std::path::Path::new(consts::DOWNLOAD_PATH).join(name.replace(':', "-"));
