@@ -9,22 +9,41 @@ pub fn try_compile(
     enable: &[String],
     possible_archs: &[String],
     results: &mut Vec<Results>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
+    let mut one_succeeded = false;
     if !clitarget.is_empty() {
-        try_compile_for_target(name_with_version, clitarget, enable, results)?;
-        return Ok(());
+        try_compile_for_target(
+            name_with_version,
+            clitarget,
+            enable,
+            results,
+            &mut one_succeeded,
+        )?;
+        return Ok(one_succeeded);
     }
 
     if possible_archs.is_empty() {
         for target in consts::TARGET_LIST.iter() {
-            try_compile_for_target(name_with_version, target, enable, results)?;
+            try_compile_for_target(
+                name_with_version,
+                target,
+                enable,
+                results,
+                &mut one_succeeded,
+            )?;
         }
     } else {
         for arch in possible_archs.iter() {
             let targets = consts::get_target_names_from_arch(arch);
             if !targets.is_empty() {
                 for target in targets.iter() {
-                    try_compile_for_target(name_with_version, target, enable, results)?;
+                    try_compile_for_target(
+                        name_with_version,
+                        target,
+                        enable,
+                        results,
+                        &mut one_succeeded,
+                    )?;
                 }
             } else {
                 return Err(anyhow::anyhow!(
@@ -35,7 +54,7 @@ pub fn try_compile(
             }
         }
     }
-    Ok(())
+    Ok(one_succeeded)
 }
 
 fn try_compile_for_target(
@@ -43,6 +62,7 @@ fn try_compile_for_target(
     target: &str,
     enable: &[String],
     results: &mut Vec<Results>,
+    one_succeeded: &mut bool,
 ) -> anyhow::Result<()> {
     let cargo_path = parser::determine_cargo_toml(&name_with_version);
     let bin_target = parser::toml_has_bin_target(&cargo_path);
@@ -77,6 +97,9 @@ fn try_compile_for_target(
         target: target.to_string(),
         args: args.iter().map(|s| s.to_string()).collect(),
         status: if output.status.success() {
+            if !*one_succeeded {
+                *one_succeeded = true;
+            }
             Status::Success
         } else {
             Status::Failed

@@ -193,8 +193,13 @@ fn main() -> anyhow::Result<()> {
     println!("Final args: {:?}", final_args);
     // This is temporary, we will remove it later
     let possible_archs = Vec::new();
-    compiler::try_compile(&name, &target, &final_args, &possible_archs, &mut results)?;
-    db::add_to_db_data(&mut db_data, &name, (&enable, &disable));
+    let one_succeeded =
+        compiler::try_compile(&name, &target, &final_args, &possible_archs, &mut results)?;
+
+    if one_succeeded {
+        db::add_to_db_data(&mut db_data, &name, (&enable, &disable));
+    }
+
     db::write_db_file(db_data)?;
     db::write_final_json(&name, &results);
     let dir = std::path::Path::new(consts::DOWNLOAD_PATH).join(name.replace(':', "-"));
