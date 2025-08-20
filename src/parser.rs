@@ -1475,16 +1475,21 @@ fn parse_token_stream<'a>(
         match token {
             proc_macro2::TokenTree::Group(g) => {
                 let mut group_expr = None;
+                let constants_before_call = parsed.constants.len();
                 let local_group_items =
                     parse_token_stream(g.stream(), parsed, ctx, &mut group_expr, in_any);
 
-                let refs: Vec<&Bool> = local_group_items.iter().collect();
-                if refs.is_empty() {
+                let local_group_items_refs: Vec<&Bool> = local_group_items.iter().collect();
+                if local_group_items_refs.is_empty() {
+                    // Prevent false positives when feature(no_std) is present in an attribute
+                    if parsed.constants.len() == constants_before_call + 1 {
+                        parsed.constants.truncate(constants_before_call);
+                    }
                     continue;
                 }
                 let local_expr = match curr_logic {
-                    Logic::And => Some(Bool::and(ctx, refs.as_slice())),
-                    Logic::Or | Logic::Any => Some(Bool::or(ctx, refs.as_slice())),
+                    Logic::And => Some(Bool::and(ctx, local_group_items_refs.as_slice())),
+                    Logic::Or | Logic::Any => Some(Bool::or(ctx, local_group_items_refs.as_slice())),
                     Logic::Not => {
                         current_expr = match local_group_items.first() {
                             Some(first) => Some(first.not()),
