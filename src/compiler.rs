@@ -64,8 +64,8 @@ fn try_compile_for_target(
     results: &mut Vec<Results>,
     one_succeeded: &mut bool,
 ) -> anyhow::Result<()> {
-    let cargo_path = parser::determine_cargo_toml(&name_with_version);
-    let bin_target = parser::toml_has_bin_target(&cargo_path);
+    let manifest = parser::determine_manifest_file(&name_with_version);
+    let bin_target = parser::toml_has_bin_target(&manifest);
     let mut args = vec![
         "+nightly",
         "build",
@@ -73,7 +73,7 @@ fn try_compile_for_target(
         "--target",
         target,
         "--manifest-path",
-        cargo_path.as_str(),
+        manifest.as_str(),
     ];
 
     if !bin_target {
@@ -120,7 +120,7 @@ fn try_compile_for_target(
         .arg("+nightly")
         .arg("clean")
         .arg("--manifest-path")
-        .arg(cargo_path)
+        .arg(manifest)
         .status()
         .context("Failed to run cargo clean")?;
     Ok(())

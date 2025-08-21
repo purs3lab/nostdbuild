@@ -124,7 +124,6 @@ fn main() -> anyhow::Result<()> {
     // TODO: Fix syn failure when it encounters `yield` keyword in the code.
     // TODO: There are some cleanup and refactoring to minimize the read -> mutate -> write pattern for the toml
     // TODO: Use db lookup to make sure direct dependencies does not enable non required features, if db entry does not exist, process it as usual.
-    // TODO: Handle crates which are proc-macros.
     // TODO: Optionally, do a cyclic check of features that gets enabled from the default list due to default disabling to make sure it does not cause issues.
     // TODO: Use better mechanism to get the .rs file to check for no_std (use metadata to get this).
     let mut deps_args = Vec::new();
@@ -204,8 +203,8 @@ fn main() -> anyhow::Result<()> {
     db::write_db_file(db_data)?;
     db::write_final_json(&name, &results);
     let dir = std::path::Path::new(consts::DOWNLOAD_PATH).join(name.replace(':', "-"));
-    let filename = parser::determine_cargo_toml(&name);
-    fs::copy(dir.join("Cargo.toml.bak"), &filename)
+    let manifest = parser::determine_manifest_file(&name);
+    fs::copy(dir.join("Cargo.toml.bak"), &manifest)
         .context("Failed to restore original Cargo.toml")?;
     fs::remove_file(dir.join("Cargo.toml.bak")).context("Failed to remove backup Cargo.toml")?;
     Ok(())

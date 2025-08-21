@@ -173,14 +173,14 @@ pub fn final_feature_list_main(
     });
     debug!("Main crate does not have features: {:?}", not_found);
     let main_name = format!("{}-{}", crate_info.name, crate_info.version);
-    let main_crate_toml = parser::determine_cargo_toml(&main_name);
+    let main_manifest = parser::determine_manifest_file(&main_name);
     let mut main_toml: toml::Value =
-        toml::from_str(&fs::read_to_string(&main_crate_toml).unwrap()).unwrap();
+        toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
     for to_add in not_found {
         parser::add_feats_to_custom_feature(&mut main_toml, &to_add, &[]);
     }
     fs::write(
-        &main_crate_toml,
+        &main_manifest,
         toml::to_string(&main_toml)
             .context("Failed convert Value to string")
             .unwrap(),

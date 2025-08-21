@@ -173,9 +173,9 @@ pub fn read_dep_names_and_versions(
     version: &str,
     skip_optional: bool,
 ) -> Result<Vec<(String, String)>, anyhow::Error> {
-    let filename = parser::determine_cargo_toml(&format!("{}-{}", name, version));
+    let manifest = parser::determine_manifest_file(&format!("{}-{}", name, version));
     let mut dep_names = Vec::new();
-    let toml = fs::read_to_string(&filename).context("Failed to read Cargo.toml")?;
+    let toml = fs::read_to_string(&manifest).context("Failed to read Cargo.toml")?;
     let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
 
     let deps = toml
@@ -225,12 +225,12 @@ pub fn init_worklist(
     crate_info: &mut CrateInfo,
 ) -> Result<(), anyhow::Error> {
     let dir = Path::new(DOWNLOAD_PATH).join(name.replace(':', "-"));
-    let filename = parser::determine_cargo_toml(&name);
+    let manifest = parser::determine_manifest_file(&name);
 
     // Since we are making modifications to the Cargo.toml file,
     // we need to back it up first.
-    fs::copy(&filename, dir.join("Cargo.toml.bak")).context("Failed to copy Cargo.toml")?;
-    debug!("Reading Cargo.toml from {}", filename);
+    fs::copy(&manifest, dir.join("Cargo.toml.bak")).context("Failed to copy Cargo.toml")?;
+    debug!("Reading Cargo.toml from {}", manifest);
 
     let (name, version) = name.split_once(':').unwrap();
     crate_info.name = name.to_string();
@@ -239,7 +239,7 @@ pub fn init_worklist(
     crate_info.default_features = true;
     crate_info.features = Vec::new();
 
-    let toml = fs::read_to_string(&filename).context("Failed to read Cargo.toml")?;
+    let toml = fs::read_to_string(&manifest).context("Failed to read Cargo.toml")?;
     let mut toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
     let dependencies = toml
         .get("dependencies")
@@ -250,12 +250,12 @@ pub fn init_worklist(
             Map::new()
         });
 
-    parser::remove_table_from_toml("workspace", &mut toml, &filename)?;
-    parser::remove_table_from_toml("lints", &mut toml, &filename)?;
-    parser::remove_features_of_deps("dev-dependencies", &mut toml, &filename)?;
-    parser::remove_table_from_toml("dev-dependencies", &mut toml, &filename)?;
-    parser::remove_features_of_deps("target", &mut toml, &filename)?;
-    parser::remove_table_from_toml("target", &mut toml, &filename)?;
+    parser::remove_table_from_toml("workspace", &mut toml, &manifest)?;
+    parser::remove_table_from_toml("lints", &mut toml, &manifest)?;
+    parser::remove_features_of_deps("dev-dependencies", &mut toml, &manifest)?;
+    parser::remove_table_from_toml("dev-dependencies", &mut toml, &manifest)?;
+    parser::remove_features_of_deps("target", &mut toml, &manifest)?;
+    parser::remove_table_from_toml("target", &mut toml, &manifest)?;
 
     crate_info.features = read_local_features(toml);
     for (name, value) in dependencies {
@@ -397,9 +397,9 @@ fn traverse_and_add_local_features(
     crate_info: &mut CrateInfo,
 ) -> anyhow::Result<(), anyhow::Error> {
     if crate_info.name == name && crate_info.version == version {
-        let filename = parser::determine_cargo_toml(&format!("{}-{}", name, version));
-        debug!("Reading Cargo.toml from {}", filename);
-        let toml = fs::read_to_string(&filename).context("Failed to read Cargo.toml")?;
+        let manifest = parser::determine_manifest_file(&format!("{}-{}", name, version));
+        debug!("Reading Cargo.toml from {}", manifest);
+        let toml = fs::read_to_string(&manifest).context("Failed to read Cargo.toml")?;
         let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
         crate_info.features = read_local_features(toml);
         // Once we find the crate, we don't need to traverse further.

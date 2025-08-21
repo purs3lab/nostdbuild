@@ -605,7 +605,7 @@ pub fn determine_n_depth_dep_no_std(
                 debug!("{} is a proc-macro, skipping", name_with_version);
                 continue;
             }
-            
+
             let (name_inner, version) = name_with_version
                 .split_once(':')
                 .unwrap_or((&name_with_version, ""));
@@ -745,7 +745,7 @@ pub fn filter_equations<'a>(
 /// * `dir` - The directory to check for the Cargo.toml file
 /// # Returns
 /// The path to the Cargo.toml file if it exists, otherwise panics.
-pub fn determine_cargo_toml(name_with_version: &str) -> String {
+pub fn determine_manifest_file(name_with_version: &str) -> String {
     let dir = Path::new(DOWNLOAD_PATH).join(name_with_version.replace(':', "-"));
     let path = format!("{}/Cargo.toml", dir.display());
     if Path::new(&path).exists() {
@@ -900,7 +900,7 @@ pub fn toml_has_bin_target(filename: &str) -> bool {
 /// # Returns
 /// A boolean indicating whether the crate is a procedural macro.
 pub fn is_proc_macro(crate_name: &str) -> bool {
-    let manifest = determine_cargo_toml(crate_name);
+    let manifest = determine_manifest_file(crate_name);
     let toml: toml::Value =
         toml::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
     if let Some(lib) = toml.get("lib") {
@@ -928,8 +928,8 @@ pub fn is_proc_macro(crate_name: &str) -> bool {
 /// # Returns
 /// None
 fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(String, String)]) {
-    let main_cargo_toml = determine_cargo_toml(&main);
-    let dep_cargo_toml = determine_cargo_toml(&dep);
+    let main_manifest = determine_manifest_file(&main);
+    let dep_manifest = determine_manifest_file(&dep);
     let dep_name_original = dep.split(':').next().unwrap().to_string();
     let dep_name = crate_name_rename
         .iter()
@@ -939,13 +939,13 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
 
     debug!(
         "Updating main crate default features list: {} with dependency: {}",
-        main_cargo_toml, dep_cargo_toml
+        main_manifest, dep_manifest
     );
 
     let mut main_toml: toml::Value =
-        toml::from_str(&fs::read_to_string(&main_cargo_toml).unwrap()).unwrap();
+        toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
     let mut dep_toml: toml::Value =
-        toml::from_str(&fs::read_to_string(&dep_cargo_toml).unwrap()).unwrap();
+        toml::from_str(&fs::read_to_string(&dep_manifest).unwrap()).unwrap();
 
     let main_dependencies = main_toml
         .get_mut("dependencies")
@@ -988,7 +988,7 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
     );
 
     fs::write(
-        &main_cargo_toml,
+        &main_manifest,
         toml::to_string(&main_toml)
             .context("Failed convert Value to string")
             .unwrap(),
@@ -1017,9 +1017,9 @@ pub fn update_feat_lists(
     feats_to_add: &[String],
     crate_name_rename: &[(String, String)],
 ) {
-    let main_cargo_toml = determine_cargo_toml(main_name);
+    let main_manifest = determine_manifest_file(main_name);
     let mut main_toml: toml::Value =
-        toml::from_str(&fs::read_to_string(&main_cargo_toml).unwrap()).unwrap();
+        toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
 
     let dep_name = crate_name_rename
         .iter()
@@ -1082,7 +1082,7 @@ pub fn update_feat_lists(
     );
 
     fs::write(
-        &main_cargo_toml,
+        &main_manifest,
         toml::to_string(&main_toml)
             .context("Failed convert Value to string")
             .unwrap(),
@@ -1103,9 +1103,9 @@ pub fn update_feat_lists(
 /// # Returns
 /// None
 pub fn remove_conflicting_dep_feats(main_name: &str, name: &str, disable: &[String]) {
-    let main_cargo_toml = determine_cargo_toml(main_name);
+    let main_manifest = determine_manifest_file(main_name);
     let mut main_toml: toml::Value =
-        toml::from_str(&fs::read_to_string(&main_cargo_toml).unwrap()).unwrap();
+        toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
 
     let features = main_toml
         .get_mut("features")
@@ -1140,7 +1140,7 @@ pub fn remove_conflicting_dep_feats(main_name: &str, name: &str, disable: &[Stri
     );
 
     fs::write(
-        &main_cargo_toml,
+        &main_manifest,
         toml::to_string(&main_toml)
             .context("Failed convert Value to string")
             .unwrap(),
