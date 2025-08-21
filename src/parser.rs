@@ -600,6 +600,12 @@ pub fn determine_n_depth_dep_no_std(
                         continue;
                     }
                 };
+
+            if is_proc_macro(&name_with_version) {
+                debug!("{} is a proc-macro, skipping", name_with_version);
+                continue;
+            }
+            
             let (name_inner, version) = name_with_version
                 .split_once(':')
                 .unwrap_or((&name_with_version, ""));
@@ -883,6 +889,23 @@ pub fn toml_has_bin_target(filename: &str) -> bool {
     if let Some(table) = toml.get("bin") {
         if table.is_table() {
             return true;
+        }
+    }
+    false
+}
+
+/// Given a crate name with version, check if it is a procedural macro.
+/// # Arguments
+/// * `crate_name` - The name of the crate with version
+/// # Returns
+/// A boolean indicating whether the crate is a procedural macro.
+pub fn is_proc_macro(crate_name: &str) -> bool {
+    let manifest = determine_cargo_toml(crate_name);
+    let toml: toml::Value =
+        toml::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+    if let Some(lib) = toml.get("lib") {
+        if let Some(proc_macro) = lib.get("proc-macro") {
+            return proc_macro.as_bool().unwrap_or(false);
         }
     }
     false

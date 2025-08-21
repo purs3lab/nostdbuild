@@ -130,6 +130,11 @@ pub fn download_all_dependencies(
             update_name(&old_name, &name, crate_info);
         }
 
+        if parser::is_proc_macro(&name_with_version) {
+            debug!("{} is a proc-macro, skipping", name_with_version);
+            continue;
+        }
+
         let cfg = z3::Config::new();
         let ctx = z3::Context::new(&cfg);
         let found = parser::check_for_no_std(&name_with_version, &ctx);
