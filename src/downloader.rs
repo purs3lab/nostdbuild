@@ -102,7 +102,7 @@ pub fn download_all_dependencies(
     let mut initlist = Vec::new();
     while !worklist.is_empty() {
         debug!("Worklist length: {}", worklist.len());
-        let (mut name, version) = worklist.pop().unwrap();
+        let (name, version) = worklist.pop().unwrap();
         debug!("Downloading {} with version {}", name, version);
         let name_with_version = match clone_from_crates(&name, Some(&version)) {
             Ok(name_with_version) => name_with_version,
@@ -112,17 +112,16 @@ pub fn download_all_dependencies(
             }
         };
         let old_name = name.clone();
-        name = name_with_version
-            .split_once(':')
-            .map_or(name, |(n, _)| n.to_string());
+        let (name, new_version) = match name_with_version.split_once(':') {
+            Some((n, v)) => (n.to_string(), v.to_string()),
+            None => (name, "latest".to_string()),
+        };
 
         let mut dep_lock = DEPENDENCIES.lock().unwrap();
         if !dep_lock.contains(&name_with_version) {
             dep_lock.push(name_with_version.clone());
         }
         drop(dep_lock);
-
-        let new_version = name_with_version.split(':').last().unwrap_or("latest");
 
         // Some crates have _ in their name when in the dependency list,
         // but the actual crate name has - instead.
@@ -131,14 +130,23 @@ pub fn download_all_dependencies(
             update_name(&old_name, &name, crate_info);
         }
 
+        let cfg = z3::Config::new();
+        let ctx = z3::Context::new(&cfg);
+        let found = parser::check_for_no_std(&name_with_version, &ctx);
+        assert!(
+            found,
+            "Dependency {} does not support no_std build",
+            name_with_version
+        );
+
         initlist.push((name.clone(), new_version.to_string()));
 
         // `clone_from_crates` gives a more accurate version.
         // Update the version in the crate_info with this version.
-        traverse_and_update(&name, &version, new_version, crate_info);
+        traverse_and_update(&name, &version, &new_version, crate_info);
 
-        traverse_and_add_local_features(&name, new_version, crate_info)?;
-        let dep_names = read_dep_names_and_versions(&name, new_version, false)?;
+        traverse_and_add_local_features(&name, &new_version, crate_info)?;
+        let dep_names = read_dep_names_and_versions(&name, &new_version, false)?;
         traverse_and_add_dep_names(&name, &new_version, crate_info, &dep_names)?;
     }
     let mut visited = HashSet::new();

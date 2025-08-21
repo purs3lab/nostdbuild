@@ -519,15 +519,14 @@ pub fn process_dep_crate(
     deps_args: &mut Vec<String>,
     crate_name_rename: &[(String, String)],
 ) -> Result<(), anyhow::Error> {
-    let found = check_for_no_std(&dep.crate_name, ctx);
-    assert!(
-        found,
-        "Dependency {} does not support no_std build",
-        dep.crate_name
-    );
-
-    let (enable, disable, _) =
-        process_crate(ctx, dep, &dep.crate_name, db_data, crate_info, false)?;
+    let (enable, disable) = match db::get_from_db_data(db_data, &dep.crate_name) {
+        Some(dbdata) => (dbdata.features.0.clone(), dbdata.features.1.clone()),
+        None => {
+            let (enable, disable, _) =
+                process_crate(ctx, dep, &dep.crate_name, db_data, crate_info, false)?;
+            (enable, disable)
+        }
+    };
 
     debug!(
         "Dependency {}: enable: {:?}, disable: {:?}",
@@ -1489,7 +1488,9 @@ fn parse_token_stream<'a>(
                 }
                 let local_expr = match curr_logic {
                     Logic::And => Some(Bool::and(ctx, local_group_items_refs.as_slice())),
-                    Logic::Or | Logic::Any => Some(Bool::or(ctx, local_group_items_refs.as_slice())),
+                    Logic::Or | Logic::Any => {
+                        Some(Bool::or(ctx, local_group_items_refs.as_slice()))
+                    }
                     Logic::Not => {
                         current_expr = match local_group_items.first() {
                             Some(first) => Some(first.not()),
