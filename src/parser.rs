@@ -8,7 +8,9 @@ use walkdir::WalkDir;
 use z3::{self, ast::Bool};
 
 use crate::{
-    consts::{CUSTOM_FEATURES_DISABLED, CUSTOM_FEATURES_ENABLED, DOWNLOAD_PATH},
+    consts::{
+        CUSTOM_FEATURES_DISABLED, CUSTOM_FEATURES_ENABLED, DEP_UNNECESSARY_FEATURES, DOWNLOAD_PATH,
+    },
     db, downloader, solver, CrateInfo, DBData, DEPENDENCIES,
 };
 
@@ -516,9 +518,8 @@ pub fn process_dep_crate(
     main_name: &str,
     db_data: &mut Vec<DBData>,
     crate_info: &CrateInfo,
-    deps_args: &mut Vec<String>,
     crate_name_rename: &[(String, String)],
-) -> Result<(), anyhow::Error> {
+) -> Result<Vec<String>, anyhow::Error> {
     let (enable, disable) = match db::get_from_db_data(db_data, &dep.crate_name) {
         Some(dbdata) => (dbdata.features.0.clone(), dbdata.features.1.clone()),
         None => {
@@ -555,10 +556,91 @@ pub fn process_dep_crate(
         dep.crate_name, args
     );
 
-    if !args.is_empty() {
-        deps_args.extend(args);
+    Ok(args)
+}
+
+/// Sometimes main might enable a feature that enables a dependency feature
+/// that is not required for no_std build and can cause build failure.
+/// If such a feature exists in a main feature which is not necessary,
+/// for the main, it is dropped from the enabled features of main crate.
+/// If the feature is part of a fixed feature list, it is moved to a
+/// custom feature list called `dep-unnecessary-features`.
+/// # Arguments
+/// * `main_name` - The name of the main crate
+/// * `fixed_main_args` - The fixed features of the main crate
+/// * `flexible_main_args` - The list of features whihc are not necessary for main
+/// * `dep_name` - The name of the dependency
+/// * `deps_args` - The features required for the dependency
+pub fn move_unnecessary_dep_feats(
+    main_name: &str,
+    fixed_main_args: &[String],
+    flexible_main_args: &mut Vec<String>,
+    dep_name: &str,
+    deps_args: &[String],
+) {
+    let main_manifest = determine_manifest_file(main_name);
+    let mut main_toml: toml::Value =
+        toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
+    let main_features = main_toml.get_mut("features").and_then(|f| f.as_table_mut());
+
+    if main_features.is_none() {
+        debug!("No features found for main crate {}", main_name);
+        return;
     }
-    Ok(())
+    let main_features = main_features.unwrap();
+
+    let prefix1 = format!("{}/", dep_name);
+    let prefix2 = format!("{}?/", dep_name);
+
+    flexible_main_args.retain(|feature| {
+        main_features
+            .get_mut(feature)
+            .and_then(|f| f.as_array_mut())
+            .map_or(false, |arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .filter(|&f| f.starts_with(&prefix1) || f.starts_with(&prefix2))
+                    .into_iter()
+                    .map(extract_key)
+                    .any(|f| !deps_args.contains(&f.to_string()))
+            })
+    });
+
+    let mut removed = HashSet::new();
+    for feature in fixed_main_args {
+        if let Some(arr) = main_features
+            .get_mut(feature)
+            .and_then(|f| f.as_array_mut())
+        {
+            arr.retain(|v| {
+                if let Some(s) = v.as_str() {
+                    if s.starts_with(&prefix1) || s.starts_with(&prefix2) {
+                        let key = extract_key(s);
+                        if !deps_args.contains(&key.to_string()) {
+                            debug!("Removing unnecessary feature {} from main crate", s);
+                            removed.insert(feature.to_string());
+                            return false;
+                        }
+                    }
+                }
+                true
+            });
+        }
+    }
+
+    add_feats_to_custom_feature(
+        &mut main_toml,
+        DEP_UNNECESSARY_FEATURES,
+        &removed.iter().cloned().collect::<Vec<_>>(),
+    );
+
+    fs::write(
+        &main_manifest,
+        toml::to_string(&main_toml)
+            .context("Failed convert Value to string")
+            .unwrap(),
+    )
+    .unwrap();
 }
 
 /// Recursively determine if dependencies at a certain depth
@@ -901,8 +983,7 @@ pub fn toml_has_bin_target(filename: &str) -> bool {
 /// A boolean indicating whether the crate is a procedural macro.
 pub fn is_proc_macro(crate_name: &str) -> bool {
     let manifest = determine_manifest_file(crate_name);
-    let toml: toml::Value =
-        toml::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+    let toml: toml::Value = toml::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
     if let Some(lib) = toml.get("lib") {
         if let Some(proc_macro) = lib.get("proc-macro") {
             return proc_macro.as_bool().unwrap_or(false);
@@ -1414,6 +1495,15 @@ fn get_deps_and_features<'a>(
         }
     }
     None
+}
+
+fn extract_key<'a>(s: &'a str) -> &'a str {
+    s.split('/')
+        .collect::<Vec<_>>()
+        .first()
+        .unwrap_or(&"")
+        .strip_suffix("?")
+        .unwrap_or(s)
 }
 
 fn get_files_in_attributes<'a>(

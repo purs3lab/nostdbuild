@@ -109,7 +109,7 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let (disable_default, main_features) =
+    let (disable_default, mut main_features) =
         solver::final_feature_list_main(&crate_info, &enable, &disable);
 
     let dep_and_feats = parser::features_for_optional_deps(&crate_info);
@@ -123,7 +123,6 @@ fn main() -> anyhow::Result<()> {
     // TODO: Should we disable default features for main crate if we update its default features list to include dependency's default features?
     // TODO: Fix syn failure when it encounters `yield` keyword in the code.
     // TODO: There are some cleanup and refactoring to minimize the read -> mutate -> write pattern for the toml
-    // TODO: Use db lookup to make sure direct dependencies does not enable non required features, if db entry does not exist, process it as usual.
     // TODO: Optionally, do a cyclic check of features that gets enabled from the default list due to default disabling to make sure it does not cause issues.
     // TODO: Use better mechanism to get the .rs file to check for no_std (use metadata to get this).
     let mut deps_args = Vec::new();
@@ -133,15 +132,23 @@ fn main() -> anyhow::Result<()> {
             skipped.push(dep);
             continue;
         }
-        parser::process_dep_crate(
+        let local_dep_args = parser::process_dep_crate(
             &ctx,
             &dep,
             &name,
             &mut db_data,
             &crate_info,
-            &mut deps_args,
             &crate_name_rename,
         )?;
+        deps_args.extend(local_dep_args);
+
+        parser::move_unnecessary_dep_feats(
+            &name,
+            &enable,
+            &mut main_features,
+            &dep.crate_name,
+            &deps_args,
+        );
     }
 
     let mut dep_args_skipped = Vec::new();
@@ -151,20 +158,29 @@ fn main() -> anyhow::Result<()> {
                 "Dependency {} which was skipped previously is now required",
                 dep.crate_name
             );
-            parser::process_dep_crate(
+            let local_dep_args = parser::process_dep_crate(
                 &ctx,
                 &dep,
                 &name,
                 &mut db_data,
                 &crate_info,
-                &mut dep_args_skipped,
                 &crate_name_rename,
             )?;
+
+            dep_args_skipped.extend(local_dep_args);
+            parser::move_unnecessary_dep_feats(
+                &name,
+                &enable,
+                &mut main_features,
+                &dep.crate_name,
+                &dep_args_skipped,
+            );
         }
     }
 
     let mut final_args = Vec::new();
     let mut combined_features = Vec::new();
+    main_features.extend(enable.clone());
     let main_feature_string = main_features.join(",");
 
     if !deps_args.is_empty() {

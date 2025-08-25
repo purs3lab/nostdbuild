@@ -157,20 +157,19 @@ pub fn final_feature_list_main(
         enable_from_default = get_features_not_disabled(crate_info, disable);
     }
 
-    if !enable.is_empty() {
-        enable_from_default.extend(enable.iter().cloned());
-    }
-
     let main_available_features = &crate_info.features;
     let mut not_found = Vec::new();
-    enable_from_default.iter().for_each(|to_enable| {
-        if !main_available_features
-            .iter()
-            .any(|(name, _)| name == to_enable)
-        {
-            not_found.push(to_enable.clone());
-        }
-    });
+    enable_from_default
+        .iter()
+        .chain(enable.iter())
+        .for_each(|to_enable| {
+            if !main_available_features
+                .iter()
+                .any(|(name, _)| name == to_enable)
+            {
+                not_found.push(to_enable.clone());
+            }
+        });
     debug!("Main crate does not have features: {:?}", not_found);
     let main_name = format!("{}-{}", crate_info.name, crate_info.version);
     let main_manifest = parser::determine_manifest_file(&main_name);

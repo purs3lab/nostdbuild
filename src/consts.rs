@@ -43,6 +43,12 @@ pub const CUSTOM_FEATURES_DISABLED: &str = "custom_default_features";
 /// custom feature and enable it while in no_std mode.
 pub const CUSTOM_FEATURES_ENABLED: &str = "custom_no_std_feature_enabled";
 
+/// If after processing a dependency, we find that main enables some
+/// feature for the dependency which is uncessary and might cause
+/// compilation issues, we add it to this list so as to preserve
+/// original functionality in std mode.
+pub const DEP_UNNECESSARY_FEATURES: &str = "dep_unnecessary_features";
+
 /// Check if the target is valid
 /// # Arguments
 /// * `target` - The target to check
