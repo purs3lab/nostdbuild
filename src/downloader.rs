@@ -59,12 +59,12 @@ pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String,
 
         let crate_path = dir.join(format!("{}-{}", newname, ver));
         if Path::new(&crate_path).exists() {
-            if contains_one_rs_file(&crate_path.to_str().unwrap()) {
+            if contains_one_rs_file(crate_path.to_str().unwrap()) {
                 debug!("Crate with name {} already downloaded", newname);
                 return Ok(format!("{}:{}", newname, ver));
             }
             // Delete the crate if it doesn't contain any .rs files
-            fs::remove_dir_all(&crate_path.to_str().unwrap())?;
+            fs::remove_dir_all(crate_path)?;
         }
 
         match download_crate(&download_url, &filename) {
@@ -205,7 +205,7 @@ pub fn read_dep_names_and_versions(
         dep_names.push((name.to_string(), version));
     }
 
-    return Ok(dep_names);
+    Ok(dep_names)
 }
 
 /// Initialize the worklist with the dependencies of a crate.
@@ -225,7 +225,7 @@ pub fn init_worklist(
     crate_info: &mut CrateInfo,
 ) -> Result<(), anyhow::Error> {
     let dir = Path::new(DOWNLOAD_PATH).join(name.replace(':', "-"));
-    let manifest = parser::determine_manifest_file(&name);
+    let manifest = parser::determine_manifest_file(name);
 
     // Since we are making modifications to the Cargo.toml file,
     // we need to back it up first.
@@ -445,7 +445,7 @@ fn get_download_url(
             if *version == "latest" {
                 crate_data.versions[0].num.clone()
             } else {
-                let ver = VersionReq::parse(&version).context("Known: Failed to parse version")?;
+                let ver = VersionReq::parse(version).context("Known: Failed to parse version")?;
                 let resolved_versions = crate_data
                     .versions
                     .iter()

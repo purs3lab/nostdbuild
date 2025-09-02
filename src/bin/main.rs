@@ -1,6 +1,5 @@
 use anyhow::Context;
 use clap::Parser;
-use env_logger;
 use log::debug;
 use std::fs;
 
@@ -67,7 +66,7 @@ fn main() -> anyhow::Result<()> {
 
     if let Some(url) = cli.url {
         debug!("URL provided: {}", url);
-        if let Err(_) = downloader::clone_repo(&url, &name) {
+        if downloader::clone_repo(&url, &name).is_err() {
             return Err(anyhow::anyhow!("Failed to clone repo"));
         }
     } else {

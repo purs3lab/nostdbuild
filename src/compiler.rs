@@ -64,7 +64,7 @@ fn try_compile_for_target(
     results: &mut Vec<Results>,
     one_succeeded: &mut bool,
 ) -> anyhow::Result<()> {
-    let manifest = parser::determine_manifest_file(&name_with_version);
+    let manifest = parser::determine_manifest_file(name_with_version);
     let bin_target = parser::toml_has_bin_target(&manifest);
     let mut args = vec![
         "+nightly",

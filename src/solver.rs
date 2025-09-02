@@ -67,6 +67,7 @@ pub fn model_to_features(model: &Option<z3::Model>) -> (Vec<String>, Vec<String>
 /// * `disable` - The list of features to disable
 /// # Returns
 /// * `(Vec<String>, bool)` - The final feature list for the
+///
 /// dependency and a boolean indicating if the default
 /// features list of main crate should be updated
 pub fn final_feature_list_dep(
@@ -97,7 +98,7 @@ pub fn final_feature_list_dep(
     for to_enable in enable {
         // If main crate added this feature when declaring the dependency,
         // we don't need to add it again.
-        if dep_already_enabled.contains(&to_enable) {
+        if dep_already_enabled.contains(to_enable) {
             continue;
         }
         match main_available_features.iter().find(|(_, features)| {
@@ -126,7 +127,7 @@ pub fn final_feature_list_dep(
         &name.to_string(),
         &dep_feats_to_remove,
         &not_found,
-        &crate_name_rename,
+        crate_name_rename,
     );
 
     parser::remove_conflicting_dep_feats(&main_name, name, disable);
@@ -142,6 +143,7 @@ pub fn final_feature_list_dep(
 /// * `disable` - The list of features to disable
 /// # Returns
 /// * `(bool, Option<String>)` - A boolean indicating if the default
+///
 /// features list of main crate should disabled and a string
 /// containing the final feature list for the main crate.
 pub fn final_feature_list_main(
@@ -191,17 +193,17 @@ pub fn final_feature_list_main(
 
 fn get_features_not_disabled(crate_info: &CrateInfo, disable: &[String]) -> Vec<String> {
     let mut feats: Vec<String> = Vec::new();
-    crate_info
+    if let Some((_, features)) = crate_info
         .features
         .iter()
         .find(|(name, _)| name == "default")
-        .map(|(_, features)| {
-            features.iter().for_each(|feature| {
-                if !disable.contains(&feature.1) {
-                    feats.push(feature.1.clone());
-                }
-            });
+    {
+        features.iter().for_each(|feature| {
+            if !disable.contains(&feature.1) {
+                feats.push(feature.1.clone());
+            }
         });
+    };
     feats
 }
 
@@ -210,9 +212,7 @@ fn disable_in_default(crate_info: &CrateInfo, disable: &[String]) -> bool {
         .features
         .iter()
         .find(|(name, _)| name == "default")
-        .map_or(false, |(_, features)| {
-            features.iter().any(|feature| disable.contains(&feature.1))
-        })
+        .is_some_and(|(_, features)| features.iter().any(|feature| disable.contains(&feature.1)))
 }
 
 fn model_to_enabled_features(model: &z3::Model) -> Vec<String> {

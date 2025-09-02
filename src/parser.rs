@@ -67,7 +67,7 @@ impl<'a> Visit<'a> for ItemExternCrates {
     fn visit_item_extern_crate(&mut self, i: &ItemExternCrate) {
         // We will save all the extern crates that have an
         // attribute associated with them.
-        if i.attrs.len() != 0 {
+        if !i.attrs.is_empty() {
             self.itemexterncrates.push(i.clone());
         }
     }
@@ -256,7 +256,7 @@ pub fn parse_item_extern_crates_for_files(crate_name: &str) -> Vec<String> {
             .any(|i| {
                 !i.attrs
                     .iter()
-                    .any(|a| a.path().get_ident().map_or(false, |ident| ident == "cfg"))
+                    .any(|a| a.path().get_ident().is_some_and(|ident| ident == "cfg"))
             });
         if extern_std_without_cfg {
             debug!("Found unguarded extern crate std in file: {}", file);
@@ -282,7 +282,7 @@ pub fn get_item_extern_std(itemexterncrates: &ItemExternCrates) -> Vec<Attribute
         .iter()
         .filter(|i| i.ident == "std")
         .flat_map(|i| i.attrs.iter())
-        .filter(|a| a.path().get_ident().map_or(false, |ident| ident == "cfg"))
+        .filter(|a| a.path().get_ident().is_some_and(|ident| ident == "cfg"))
         .cloned()
         .collect()
 }
@@ -359,13 +359,13 @@ pub fn process_crate(
     ctx: &z3::Context,
     attrs: &Attributes,
     name_with_version: &str,
-    db_data: &mut Vec<DBData>,
+    db_data: &mut [DBData],
     crate_info: &CrateInfo,
     is_main: bool,
 ) -> anyhow::Result<(Vec<String>, Vec<String>, Vec<String>)> {
     let (mut enable, mut disable): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
 
-    let (no_std, mut equation, mut parsed_attr) = parse_main_attributes(&attrs, &ctx);
+    let (no_std, mut equation, mut parsed_attr) = parse_main_attributes(attrs, ctx);
     if !attrs.unconditional_no_std {
         if !no_std {
             debug!("No no_std found for the crate");
@@ -385,26 +385,26 @@ pub fn process_crate(
         let items = parse_item_extern_crates(name_with_version);
 
         // This case implies that the crate is no_std without any feature requirements.
-        if items.itemexterncrates.len() == 0 {
+        if items.itemexterncrates.is_empty() {
             debug!("No extern crates found for the crate");
             return Ok((Vec::new(), Vec::new(), Vec::new()));
         }
         let std_attrs = get_item_extern_std(&items);
         if !std_attrs.is_empty() {
             debug!("Leaf level crate reached {}", name_with_version);
-            let features = db::get_from_db_data(&db_data, name_with_version);
-            if features.is_some() {
+            let features = db::get_from_db_data(db_data, name_with_version);
+            if let Some(feats) = features {
                 debug!(
-                    "Features to enable and disable for crate {}: {:?}",
-                    name_with_version, features
+                    "Features to enable and disable for crate {} from db: {:?}",
+                    name_with_version, feats
                 );
-                (enable, disable) = features.unwrap().features.clone();
+                (enable, disable) = feats.features.clone();
             } else {
                 debug!("No features to enable for crate {}", name_with_version);
                 let (local_equation, local_parsed_attr) = std_attrs.into_iter().fold(
                     (None::<Bool>, None::<ParsedAttr>),
                     |(local_eq, local_attr), std_attr| {
-                        let (eq, mut attr) = parse_main_attributes_direct(&std_attr, &ctx);
+                        let (eq, mut attr) = parse_main_attributes_direct(&std_attr, ctx);
                         if eq.is_none() {
                             debug!("No equation found for attribute: {:?}", std_attr);
                             return (local_eq, local_attr);
@@ -429,45 +429,40 @@ pub fn process_crate(
                 (equation, parsed_attr) = (local_equation, local_parsed_attr.unwrap_or_default());
                 // We need to negate the equation since we are
                 // trying to remove std features.
-                equation = match equation {
-                    Some(eq) => Some(eq.not()),
-                    None => None,
-                };
+                equation = equation.map(|eq| eq.not());
                 debug!("Main equation: {:?}", equation);
             }
-        } else {
-            if !is_main {
-                debug!("Leaf level crate reached {}", name_with_version);
-                let (name, version) = name_with_version.split_once(':').unwrap();
-                if let Some(dep_and_features) = get_deps_and_features(name, version, crate_info) {
-                    let names_and_versions: Vec<(String, String)> = dep_and_features
-                        .iter()
-                        .map(|(dep, _)| (dep.name.clone(), dep.version.clone()))
-                        .collect();
-                    let externs = get_item_extern_dep(&items, &names_and_versions);
-                    match parse_top_level_externs(&ctx, &names_and_versions, &externs) {
-                        Ok((eq, attr)) => {
-                            if eq.is_some() {
-                                equation = Some(eq.unwrap().not());
-                                parsed_attr = attr;
-                            }
-                        }
-                        Err(e) => {
-                            debug!("Failed to parse extern crates: {}", e);
-                            return Ok((Vec::new(), Vec::new(), Vec::new()));
+        } else if !is_main {
+            debug!("Leaf level crate reached {}", name_with_version);
+            let (name, version) = name_with_version.split_once(':').unwrap();
+            if let Some(dep_and_features) = get_deps_and_features(name, version, crate_info) {
+                let names_and_versions: Vec<(String, String)> = dep_and_features
+                    .iter()
+                    .map(|(dep, _)| (dep.name.clone(), dep.version.clone()))
+                    .collect();
+                let externs = get_item_extern_dep(&items, &names_and_versions);
+                match parse_top_level_externs(ctx, &names_and_versions, &externs) {
+                    Ok((eq, attr)) => {
+                        if let Some(eq) = eq {
+                            equation = Some(eq.not());
+                            parsed_attr = attr;
                         }
                     }
+                    Err(e) => {
+                        debug!("Failed to parse extern crates: {}", e);
+                        return Ok((Vec::new(), Vec::new(), Vec::new()));
+                    }
                 }
-                debug!("main equation: {:?}", equation);
             }
+            debug!("main equation: {:?}", equation);
         }
     }
-    let (equations, possible_archs) = parse_attributes(&attrs, &ctx);
+    let (equations, possible_archs) = parse_attributes(attrs, ctx);
     let filtered = filter_equations(&equations, &parsed_attr.features);
 
     // This part adds equations if there are attributes that conditionally include
     // files which might contain unguarded `extern crate std`.
-    let files_and_equations = get_files_in_attributes(&attrs, &ctx);
+    let files_and_equations = get_files_in_attributes(attrs, ctx);
     debug!("Files in attributes: {:?}", files_and_equations);
     let files_unguared = parse_item_extern_crates_for_files(name_with_version);
     debug!(
@@ -490,7 +485,7 @@ pub fn process_crate(
     }
 
     // Finally, we solve the equations
-    let model = solver::solve(&ctx, &equation, &filtered);
+    let model = solver::solve(ctx, &equation, &filtered);
     if enable.is_empty() && disable.is_empty() {
         (enable, disable) = solver::model_to_features(&model);
     }
@@ -516,7 +511,7 @@ pub fn process_dep_crate(
     ctx: &z3::Context,
     dep: &Attributes,
     main_name: &str,
-    db_data: &mut Vec<DBData>,
+    db_data: &mut [DBData],
     crate_info: &CrateInfo,
     crate_name_rename: &[(String, String)],
 ) -> Result<Vec<String>, anyhow::Error> {
@@ -536,10 +531,10 @@ pub fn process_dep_crate(
 
     let (args, update_default_config) = solver::final_feature_list_dep(
         crate_info,
-        &dep.crate_name.split(":").next().unwrap_or(""),
+        dep.crate_name.split(":").next().unwrap_or(""),
         &enable,
         &disable,
-        &crate_name_rename,
+        crate_name_rename,
     );
 
     debug!(
@@ -548,7 +543,7 @@ pub fn process_dep_crate(
     );
 
     if update_default_config {
-        update_main_crate_default_list(&main_name, &dep.crate_name, &crate_name_rename);
+        update_main_crate_default_list(main_name, &dep.crate_name, crate_name_rename);
     }
 
     debug!(
@@ -596,11 +591,10 @@ pub fn move_unnecessary_dep_feats(
         main_features
             .get_mut(feature)
             .and_then(|f| f.as_array_mut())
-            .map_or(false, |arr| {
+            .is_some_and(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str())
                     .filter(|&f| f.starts_with(&prefix1) || f.starts_with(&prefix2))
-                    .into_iter()
                     .map(extract_key)
                     .any(|f| !deps_args.contains(&f.to_string()))
             })
@@ -726,7 +720,7 @@ pub fn parse_main_attributes<'a>(
     for attr in &attrs.attributes {
         if attr.path().get_ident().unwrap() == "cfg_attr" {
             // println!("{}", attr.to_token_stream());
-            (equation, parsed) = parse_meta_for_cfg_attr(&attr.meta, &ctx);
+            (equation, parsed) = parse_meta_for_cfg_attr(&attr.meta, ctx);
             if is_no_std(&parsed) {
                 atleast_one_no_std = true;
                 debug!("Found no_std");
@@ -751,7 +745,7 @@ pub fn parse_main_attributes_direct<'a>(
     attr: &Attribute,
     ctx: &'a z3::Context,
 ) -> (Option<Bool<'a>>, ParsedAttr) {
-    parse_meta_for_cfg_attr(&attr.meta, &ctx)
+    parse_meta_for_cfg_attr(&attr.meta, ctx)
 }
 
 /// Parse the attributes of a dependency crate.
@@ -773,7 +767,7 @@ pub fn parse_attributes<'a>(
     for attr in &attrs.attributes {
         let ident = attr.path().get_ident().unwrap();
         if ident == "cfg" {
-            (temp_eq, parsed) = parse_meta_for_cfg_attr(&attr.meta, &ctx);
+            (temp_eq, parsed) = parse_meta_for_cfg_attr(&attr.meta, ctx);
             possible_target_archs.extend(parsed.possible_target_archs.clone());
             // TODO: Should this check be removed?
             if parsed.features.len() == 1 || parsed.logic.is_empty() {
@@ -801,18 +795,16 @@ pub fn filter_equations<'a>(
     let mut filtered: Vec<Bool<'_>> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    for eq in equations {
-        if let Some(e) = eq {
-            let mut found = false;
-            for feature in main_features {
-                if e.to_string().contains(feature) {
-                    found = true;
-                    break;
-                }
+    for e in equations.iter().flatten() {
+        let mut found = false;
+        for feature in main_features {
+            if e.to_string().contains(feature) {
+                found = true;
+                break;
             }
-            if found {
-                filtered.push(e.clone());
-            }
+        }
+        if found {
+            filtered.push(e.clone());
         }
     }
 
@@ -860,7 +852,7 @@ pub fn remove_table_from_toml(
             debug!("{} found in Cargo.toml, removing it", key);
             table.remove(key);
             fs::write(
-                &filename,
+                filename,
                 toml::to_string(&toml).context("Failed to write Cargo.toml")?,
             )
             .context("Failed to write Cargo.toml")?;
@@ -1009,8 +1001,8 @@ pub fn is_proc_macro(crate_name: &str) -> bool {
 /// # Returns
 /// None
 fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(String, String)]) {
-    let main_manifest = determine_manifest_file(&main);
-    let dep_manifest = determine_manifest_file(&dep);
+    let main_manifest = determine_manifest_file(main);
+    let dep_manifest = determine_manifest_file(dep);
     let dep_name_original = dep.split(':').next().unwrap().to_string();
     let dep_name = crate_name_rename
         .iter()
@@ -1052,7 +1044,7 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
         .and_then(|v| v.as_table_mut())
         .expect("Failed to get features table from dependency Cargo.toml");
 
-    let dep_default_features = dep_features
+    let dep_default_features: Vec<String> = dep_features
         .get("default")
         .and_then(|v| v.as_array())
         .map(|v| {
@@ -1060,7 +1052,7 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
                 .filter_map(|f| f.as_str().map(|s| format!("{}/{}", dep_name, s)))
                 .collect()
         })
-        .unwrap_or_else(|| Vec::new());
+        .unwrap_or_default();
 
     add_feats_to_custom_feature(
         &mut main_toml,
@@ -1273,8 +1265,8 @@ pub fn add_feats_to_custom_feature(
             custom_feat.to_string(),
             toml::Value::Array(
                 feats_to_add
-                    .to_vec()
-                    .into_iter()
+                    .iter()
+                    .cloned()
                     .map(toml::Value::String)
                     .collect(),
             ),
@@ -1334,7 +1326,7 @@ pub fn features_for_optional_deps(crate_info: &CrateInfo) -> Vec<(String, String
 /// * `name` - The name of the dependency.
 /// * `crate_info` - The `CrateInfo` containing the crate's dependencies and features.
 /// * `deps_and_features` - A slice of tuples containing dependency names and the
-/// features that enable them.
+///   features that enable them.
 /// * `enable_features` - A slice of features that are enabled in the main crate.
 /// # Returns
 /// A boolean indicating whether the dependency should be skipped.
@@ -1396,7 +1388,7 @@ fn parse_top_level_externs<'a>(
         }
         let name_with_version = downloader::clone_from_crates(&ex.ident.to_string(), version)?;
         let items = parse_item_extern_crates(&name_with_version);
-        if items.itemexterncrates.len() == 0 {
+        if items.itemexterncrates.is_empty() {
             continue;
         }
         let std_attrs = get_item_extern_std(&items);
@@ -1431,7 +1423,7 @@ fn parse_n_level_externs_entry<'a>(
     }
 }
 
-fn parse_n_level_externs<'a>(worklist: &mut Vec<String>) -> bool {
+fn parse_n_level_externs(worklist: &mut Vec<String>) -> bool {
     let mut local_worklist = Vec::new();
     for name_with_version in worklist.drain(..) {
         let (mut name, version) = name_with_version.split_once(':').unwrap();
@@ -1455,7 +1447,7 @@ fn parse_n_level_externs<'a>(worklist: &mut Vec<String>) -> bool {
                 .map(|(_, version)| version);
             local_worklist.push(format!(
                 "{}:{}",
-                ex.ident.to_string(),
+                ex.ident,
                 version.unwrap_or(&"latest".to_string())
             ));
         });
@@ -1490,14 +1482,14 @@ fn get_deps_and_features<'a>(
         return Some(&crate_info.deps_and_features);
     }
     for (dep, _) in &crate_info.deps_and_features {
-        if let Some(res) = get_deps_and_features(name, version, &dep) {
+        if let Some(res) = get_deps_and_features(name, version, dep) {
             return Some(res);
         }
     }
     None
 }
 
-fn extract_key<'a>(s: &'a str) -> &'a str {
+fn extract_key(s: &str) -> &str {
     s.split('/')
         .collect::<Vec<_>>()
         .first()
@@ -1550,8 +1542,8 @@ where
     Ok(())
 }
 
-fn is_any_logic(logic: &String) -> Option<Logic> {
-    match logic.as_str() {
+fn is_any_logic(logic: &str) -> Option<Logic> {
+    match logic {
         "any" => Some(Logic::Any),
         "and" => Some(Logic::And),
         "all" => Some(Logic::And),
@@ -1574,7 +1566,6 @@ fn parse_token_stream<'a>(
     parsed: &mut ParsedAttr,
     ctx: &'a z3::Context,
     equation: &mut Option<Bool<'a>>,
-    in_any: &mut bool,
 ) -> Vec<Bool<'a>> {
     let mut was_feature = false;
     let mut was_filepath = false;
@@ -1589,7 +1580,7 @@ fn parse_token_stream<'a>(
                 let mut group_expr = None;
                 let constants_before_call = parsed.constants.len();
                 let local_group_items =
-                    parse_token_stream(g.stream(), parsed, ctx, &mut group_expr, in_any);
+                    parse_token_stream(g.stream(), parsed, ctx, &mut group_expr);
 
                 let local_group_items_refs: Vec<&Bool> = local_group_items.iter().collect();
                 if local_group_items_refs.is_empty() {
@@ -1605,10 +1596,7 @@ fn parse_token_stream<'a>(
                         Some(Bool::or(ctx, local_group_items_refs.as_slice()))
                     }
                     Logic::Not => {
-                        current_expr = match local_group_items.first() {
-                            Some(first) => Some(first.not()),
-                            None => None,
-                        };
+                        current_expr = local_group_items.first().map(|first| first.not());
                         None
                     }
                 };
@@ -1660,20 +1648,18 @@ fn parse_token_stream<'a>(
     if let Some(expr) = current_expr {
         *equation = Some(expr.clone());
         group_items.push(expr);
-    } else {
-        if !group_items.is_empty() {
-            match curr_logic {
-                Logic::And => {
-                    let refs: Vec<&Bool> = group_items.iter().collect();
-                    *equation = Some(Bool::and(ctx, refs.as_slice()));
-                }
-                Logic::Or | Logic::Any => {
-                    let refs: Vec<&Bool> = group_items.iter().collect();
-                    *equation = Some(Bool::or(ctx, refs.as_slice()));
-                }
-                Logic::Not => {
-                    *equation = Some(group_items.first().unwrap().not());
-                }
+    } else if !group_items.is_empty() {
+        match curr_logic {
+            Logic::And => {
+                let refs: Vec<&Bool> = group_items.iter().collect();
+                *equation = Some(Bool::and(ctx, refs.as_slice()));
+            }
+            Logic::Or | Logic::Any => {
+                let refs: Vec<&Bool> = group_items.iter().collect();
+                *equation = Some(Bool::or(ctx, refs.as_slice()));
+            }
+            Logic::Not => {
+                *equation = Some(group_items.first().unwrap().not());
             }
         }
     }
@@ -1690,7 +1676,7 @@ fn parse_meta_for_cfg_attr<'a>(
             let tokens = list.tokens.clone();
             let mut parsed = ParsedAttr::default();
             let mut equation = None;
-            parse_token_stream(tokens, &mut parsed, ctx, &mut equation, &mut false);
+            parse_token_stream(tokens, &mut parsed, ctx, &mut equation);
             (equation, parsed)
         }
         _ => {
@@ -1710,17 +1696,16 @@ fn get_all_rs_files(path: &str, recurse: bool) -> Vec<String> {
 
     if recurse {
         for entry in WalkDir::new(path) {
-            push_to_files_vec(&entry.unwrap().path(), &mut files);
+            push_to_files_vec(entry.unwrap().path(), &mut files);
         }
     } else {
         let src_path = Path::new(path).join("src");
-        let entries;
-        if !src_path.exists() {
+        let entries = if !src_path.exists() {
             debug!("No src directory found in {}", path);
-            entries = fs::read_dir(path).unwrap();
+            fs::read_dir(path).unwrap()
         } else {
-            entries = fs::read_dir(&src_path).unwrap();
-        }
+            fs::read_dir(&src_path).unwrap()
+        };
         for entry in entries {
             push_to_files_vec(&entry.unwrap().path(), &mut files);
         }

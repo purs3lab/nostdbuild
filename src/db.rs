@@ -16,6 +16,7 @@ use crate::{
 /// Read the db file and return the data
 /// # Returns
 /// * `Vec<DBData>` - The data from the db file
+///
 /// This function fails silently if the db file cannot be decoded
 pub fn read_db_file() -> anyhow::Result<Vec<DBData>> {
     if !Path::new(DB_FILE_NAME).exists() {
@@ -47,6 +48,7 @@ pub fn read_db_file() -> anyhow::Result<Vec<DBData>> {
 /// * `db_data` - The data to write to the db file
 /// # Returns
 /// * `Result<(), anyhow::Error>` - The result of writing the db file
+///
 /// This function fails silently if the data given cannot be encoded
 pub fn write_db_file(db_data: Vec<DBData>) -> anyhow::Result<()> {
     debug!("Saving {:?} ", db_data);
@@ -68,8 +70,9 @@ pub fn write_db_file(db_data: Vec<DBData>) -> anyhow::Result<()> {
 /// * `name` - The name to get from the db data
 /// # Returns
 /// * `Option<&DBData>` - The db data if found
+///
 /// This function returns an immutable reference to the db data if found
-pub fn get_from_db_data<'a>(db_data: &'a Vec<DBData>, name: &str) -> Option<&'a DBData> {
+pub fn get_from_db_data<'a>(db_data: &'a [DBData], name: &str) -> Option<&'a DBData> {
     db_data
         .iter()
         .find(|dbdata| dbdata.name_with_version == name)
