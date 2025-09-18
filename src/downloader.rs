@@ -7,12 +7,13 @@ use reqwest::blocking;
 use semver::VersionReq;
 use std::{collections::HashSet, fs, path::Path};
 use tar::Archive;
-use toml::{self, map::Map, Value};
+use toml::{self, Value, map::Map};
 use walkdir::WalkDir;
 
 use crate::{
+    CrateInfo, DEPENDENCIES, Dependency,
     consts::{CRATE_IO, DOWNLOAD_PATH},
-    parser, CrateInfo, Dependency, DEPENDENCIES,
+    parser,
 };
 
 /// Clone a git repository to the specified location
@@ -82,7 +83,7 @@ pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String,
     fs::remove_file(&filename).context("Failed to delete crate file")?;
 
     debug!("Downloaded {} to {}", newname, dir.display());
-    debug!("Name with version: {}", format!("{}:{}", newname, ver));
+    debug!("Name with version: {}:{}", newname, ver);
     Ok(format!("{}:{}", newname, ver))
 }
 
@@ -330,7 +331,7 @@ fn read_local_features(toml: toml::Value) -> Vec<(String, Vec<(String, String)>)
             Map::new()
         });
 
-    let features = features
+    features
         .iter()
         .map(|(k, v)| {
             (
@@ -354,8 +355,7 @@ fn read_local_features(toml: toml::Value) -> Vec<(String, Vec<(String, String)>)
                     .collect(),
             )
         })
-        .collect();
-    features
+        .collect()
 }
 
 fn create_client() -> Result<SyncClient, anyhow::Error> {

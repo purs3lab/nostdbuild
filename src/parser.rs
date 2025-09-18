@@ -379,7 +379,10 @@ pub fn process_crate(
         // If the crate is both conditional and unconditional no_std,
         // we will treat it as unconditional.
         if !no_std {
-            debug!("WARNING: Crate {} is both unconditional and conditional no_std, will consider only unconditional.", name_with_version);
+            debug!(
+                "WARNING: Crate {} is both unconditional and conditional no_std, will consider only unconditional.",
+                name_with_version
+            );
         }
 
         let items = parse_item_extern_crates(name_with_version);
@@ -607,14 +610,14 @@ pub fn move_unnecessary_dep_feats(
             .and_then(|f| f.as_array_mut())
         {
             arr.retain(|v| {
-                if let Some(s) = v.as_str() {
-                    if s.starts_with(&prefix1) || s.starts_with(&prefix2) {
-                        let key = extract_key(s);
-                        if !deps_args.contains(&key.to_string()) {
-                            debug!("Removing unnecessary feature {} from main crate", s);
-                            removed.insert(feature.to_string());
-                            return false;
-                        }
+                if let Some(s) = v.as_str()
+                    && (s.starts_with(&prefix1) || s.starts_with(&prefix2))
+                {
+                    let key = extract_key(s);
+                    if !deps_args.contains(&key.to_string()) {
+                        debug!("Removing unnecessary feature {} from main crate", s);
+                        removed.insert(feature.to_string());
+                        return false;
                     }
                 }
                 true
@@ -847,17 +850,17 @@ pub fn remove_table_from_toml(
     toml: &mut toml::Value,
     filename: &str,
 ) -> Result<(), anyhow::Error> {
-    if let Some(table) = toml.as_table_mut() {
-        if table.contains_key(key) {
-            debug!("{} found in Cargo.toml, removing it", key);
-            table.remove(key);
-            fs::write(
-                filename,
-                toml::to_string(&toml).context("Failed to write Cargo.toml")?,
-            )
-            .context("Failed to write Cargo.toml")?;
-            debug!("Removed {} from Cargo.toml", key);
-        }
+    if let Some(table) = toml.as_table_mut()
+        && table.contains_key(key)
+    {
+        debug!("{} found in Cargo.toml, removing it", key);
+        table.remove(key);
+        fs::write(
+            filename,
+            toml::to_string(&toml).context("Failed to write Cargo.toml")?,
+        )
+        .context("Failed to write Cargo.toml")?;
+        debug!("Removed {} from Cargo.toml", key);
     }
     Ok(())
 }
@@ -927,15 +930,14 @@ pub fn remove_features_of_deps(
         for (_, feature_value) in features.iter_mut() {
             if let toml::Value::Array(arr) = feature_value {
                 arr.retain(|f| {
-                    if let toml::Value::String(s) = f {
-                        if s.starts_with(&prefix1)
+                    if let toml::Value::String(s) = f
+                        && (s.starts_with(&prefix1)
                             || s.starts_with(&prefix2)
                             || s.as_str() == dep_name
-                            || s.ends_with(&prefix3)
-                        {
-                            debug!("Removing {} from features", s);
-                            return false;
-                        }
+                            || s.ends_with(&prefix3))
+                    {
+                        debug!("Removing {} from features", s);
+                        return false;
                     }
                     true
                 });
@@ -960,10 +962,10 @@ pub fn remove_features_of_deps(
 pub fn toml_has_bin_target(filename: &str) -> bool {
     let toml_content = fs::read_to_string(filename).expect("Failed to read Cargo.toml");
     let toml: toml::Value = toml::from_str(&toml_content).expect("Failed to parse Cargo.toml");
-    if let Some(table) = toml.get("bin") {
-        if table.is_table() {
-            return true;
-        }
+    if let Some(table) = toml.get("bin")
+        && table.is_table()
+    {
+        return true;
     }
     false
 }
@@ -976,10 +978,10 @@ pub fn toml_has_bin_target(filename: &str) -> bool {
 pub fn is_proc_macro(crate_name: &str) -> bool {
     let manifest = determine_manifest_file(crate_name);
     let toml: toml::Value = toml::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
-    if let Some(lib) = toml.get("lib") {
-        if let Some(proc_macro) = lib.get("proc-macro") {
-            return proc_macro.as_bool().unwrap_or(false);
-        }
+    if let Some(lib) = toml.get("lib")
+        && let Some(proc_macro) = lib.get("proc-macro")
+    {
+        return proc_macro.as_bool().unwrap_or(false);
     }
     false
 }
@@ -1193,11 +1195,11 @@ pub fn remove_conflicting_dep_feats(main_name: &str, name: &str, disable: &[Stri
             .filter_map(|(_, v)| v.as_array_mut())
             .for_each(|arr| {
                 arr.retain(|f| {
-                    if let toml::Value::String(s) = f {
-                        if s == &to_remove {
-                            debug!("Removing feature {} from main crate", to_remove);
-                            return false;
-                        }
+                    if let toml::Value::String(s) = f
+                        && s == &to_remove
+                    {
+                        debug!("Removing feature {} from main crate", to_remove);
+                        return false;
                     }
                     true
                 });
@@ -1272,7 +1274,10 @@ pub fn add_feats_to_custom_feature(
             ),
         );
         debug!("Added default features to main crate features");
-        println!("WARNING: To use the main crate in non no_std mode, you need to enable the feature `{}`", custom_feat);
+        println!(
+            "WARNING: To use the main crate in non no_std mode, you need to enable the feature `{}`",
+            custom_feat
+        );
     }
 }
 
@@ -1342,11 +1347,11 @@ pub fn should_skip_dep(
         .find(|(dep, _)| dep == &dep_name)
         .map(|(_, feat)| feat);
 
-    if let Some(feat) = feat_of_dep {
-        if enable_features.contains(feat) {
-            debug!("Dependency {} is enabled by feature {}", dep_name, feat);
-            return false;
-        }
+    if let Some(feat) = feat_of_dep
+        && enable_features.contains(feat)
+    {
+        debug!("Dependency {} is enabled by feature {}", dep_name, feat);
+        return false;
     }
 
     if is_dep_optional(crate_info, &dep_name) {

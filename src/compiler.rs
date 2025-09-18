@@ -1,7 +1,7 @@
 use anyhow::Context;
 use log::debug;
 
-use crate::{consts, parser, Results, Status};
+use crate::{Results, Status, consts, parser};
 
 pub fn try_compile(
     name_with_version: &str,

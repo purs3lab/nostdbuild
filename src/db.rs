@@ -9,8 +9,8 @@ use std::{
 };
 
 use crate::{
-    consts::{DB_FILE_NAME, RESULTS_JSON_PREFIX, RESULTS_JSON_SUFFIX},
     DBData, Results,
+    consts::{DB_FILE_NAME, RESULTS_JSON_PREFIX, RESULTS_JSON_SUFFIX},
 };
 
 /// Read the db file and return the data

@@ -3,7 +3,7 @@ use clap::Parser;
 use log::debug;
 use std::fs;
 
-use nostd::{compiler, consts, db, downloader, parser, solver, CrateInfo};
+use nostd::{CrateInfo, compiler, consts, db, downloader, parser, solver};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]

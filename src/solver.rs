@@ -4,7 +4,7 @@ use std::fs;
 use toml;
 use z3::{self, ast::Bool};
 
-use crate::{consts::CUSTOM_FEATURES_ENABLED, parser, CrateInfo};
+use crate::{CrateInfo, consts::CUSTOM_FEATURES_ENABLED, parser};
 
 /// Given a context, a main equation and a list of
 /// filtered equations, solve for the main equation
