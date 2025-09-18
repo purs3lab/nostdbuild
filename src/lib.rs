@@ -1,3 +1,5 @@
+#![feature(rustc_private)]
+
 use bincode::{Decode, Encode};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
@@ -9,6 +11,8 @@ pub mod db;
 pub mod downloader;
 pub mod parser;
 pub mod solver;
+
+pub mod hir_driver;
 
 lazy_static! {
     // This is a list of all dependencies for a crate.
