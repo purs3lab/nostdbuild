@@ -507,7 +507,6 @@ pub fn process_crate(
 /// * `main_name` - The name of the main crate
 /// * `db_data` - The database data
 /// * `crate_info` - The crate info
-/// * `deps_args` - Output: The featurs for this dependency
 /// * `crate_name_rename` - A list of names and their renames of crate names
 /// # Returns
 /// A Result indicating success or failure.

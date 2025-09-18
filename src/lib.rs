@@ -9,6 +9,7 @@ pub mod compiler;
 pub mod consts;
 pub mod db;
 pub mod downloader;
+pub mod hir;
 pub mod parser;
 pub mod solver;
 

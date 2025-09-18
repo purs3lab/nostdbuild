@@ -5,7 +5,7 @@ use clap::Parser;
 use log::debug;
 use std::fs;
 
-use nostd::{CrateInfo, compiler, consts, db, downloader, parser, solver};
+use nostd::{CrateInfo, compiler, consts, db, downloader, hir, parser, solver};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -92,6 +92,11 @@ fn main() -> anyhow::Result<()> {
     if !found {
         return Err(anyhow::anyhow!("Main crate does not support no_std build"));
     }
+
+    // Here we collect all std usages with the default features enabled.
+    // This is done to check for std usages that are not behind any attribute guards.
+    // If any such usage is found, we stop further processing.
+    hir::do_first_pass(&name);
 
     downloader::download_all_dependencies(&mut worklist, &mut crate_info, depth)?;
 

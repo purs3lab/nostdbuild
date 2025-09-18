@@ -25,6 +25,8 @@ use clap::Parser;
 use log::debug;
 use serde::{Deserialize, Serialize};
 
+use crate::consts;
+
 struct MyVisitor<'tcx> {
     tcx: TyCtxt<'tcx>,
     spans: Vec<ReadableSpan>,
@@ -195,10 +197,7 @@ impl rustc_driver::Callbacks for MyCompilerCalls {
         }
 
         println!("Found spans: {:?}", visitor.spans);
-        dump_spans_as_json(
-            "/evaldisk/sourag/results/hir_visitor_span_dump.json",
-            &visitor.spans,
-        );
+        dump_spans_as_json(consts::HIR_VISITOR_SPAN_DUMP, &visitor.spans);
         self.compilation
     }
 }
