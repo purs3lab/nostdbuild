@@ -7,12 +7,7 @@ use syn::{visit::Visit, Attribute, ExprBlock, Item, ItemExternCrate, Meta, Stmt}
 use walkdir::WalkDir;
 use z3::{self, ast::Bool};
 
-use crate::{
-    consts::{
-        CUSTOM_FEATURES_DISABLED, CUSTOM_FEATURES_ENABLED, DEP_UNNECESSARY_FEATURES, DOWNLOAD_PATH,
-    },
-    db, downloader, solver, CrateInfo, DBData, DEPENDENCIES,
-};
+use crate::{CrateInfo, DBData, DEPENDENCIES, consts, db, downloader, solver};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Logic {
@@ -233,7 +228,7 @@ pub fn parse_item_extern_crates(crate_name: &str) -> ItemExternCrates {
 /// A vector containing the names of the files
 /// that have unguarded `extern crate std`.
 pub fn parse_item_extern_crates_for_files(crate_name: &str) -> Vec<String> {
-    let path = format!("{}/{}", DOWNLOAD_PATH, crate_name.replace(':', "-"));
+    let path = format!("{}/{}", consts::DOWNLOAD_PATH, crate_name.replace(':', "-"));
     let files = get_all_rs_files(&path, true);
     let mut files_ungaurded = Vec::new();
     for file in files {
@@ -241,7 +236,7 @@ pub fn parse_item_extern_crates_for_files(crate_name: &str) -> Vec<String> {
             itemexterncrates: Vec::new(),
         };
 
-        let filename = file.replace(DOWNLOAD_PATH, "");
+        let filename = file.replace(consts::DOWNLOAD_PATH, "");
         if let Err(err) = visit(&mut itemexterncrates, &filename, true) {
             debug!(
                 "Failed to parse file {} with error:{}. Will continue...",
@@ -313,6 +308,12 @@ pub fn parse_crate(crate_name: &str, recurse: bool) -> Attributes {
 /// # Returns
 /// A boolean indicating whether the crate has a no_std attribute.
 pub fn check_for_no_std(name: &str, ctx: &z3::Context) -> bool {
+    // This is the list of known syn failure crates which are no_std
+    if consts::KNOWN_SYN_FAILURES.contains(&name) {
+        debug!("Skipping known syn failure crate: {}", name);
+        return true;
+    }
+
     // We need to re-parse this instead of using already existing attributes
     // since files in non root directory might have `no_std` attribute
     // and we don't want to include those.
@@ -627,7 +628,7 @@ pub fn move_unnecessary_dep_feats(
 
     add_feats_to_custom_feature(
         &mut main_toml,
-        DEP_UNNECESSARY_FEATURES,
+        consts::DEP_UNNECESSARY_FEATURES,
         &removed.iter().cloned().collect::<Vec<_>>(),
     );
 
@@ -823,7 +824,7 @@ pub fn filter_equations<'a>(
 /// # Returns
 /// The path to the Cargo.toml file if it exists, otherwise panics.
 pub fn determine_manifest_file(name_with_version: &str) -> String {
-    let dir = Path::new(DOWNLOAD_PATH).join(name_with_version.replace(':', "-"));
+    let dir = Path::new(consts::DOWNLOAD_PATH).join(name_with_version.replace(':', "-"));
     let path = format!("{}/Cargo.toml", dir.display());
     if Path::new(&path).exists() {
         return path;
@@ -1058,7 +1059,7 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
 
     add_feats_to_custom_feature(
         &mut main_toml,
-        CUSTOM_FEATURES_DISABLED,
+        consts::CUSTOM_FEATURES_DISABLED,
         &dep_default_features,
     );
 
@@ -1147,12 +1148,12 @@ pub fn update_feat_lists(
 
     add_feats_to_custom_feature(
         &mut main_toml,
-        CUSTOM_FEATURES_DISABLED,
+        consts::CUSTOM_FEATURES_DISABLED,
         &formatted_feats_to_move,
     );
     add_feats_to_custom_feature(
         &mut main_toml,
-        CUSTOM_FEATURES_ENABLED,
+        consts::CUSTOM_FEATURES_ENABLED,
         &formatted_feats_to_add,
     );
 
@@ -1210,7 +1211,7 @@ pub fn remove_conflicting_dep_feats(main_name: &str, name: &str, disable: &[Stri
         disable.iter().map(|f| format!("{}/{}", name, f)).collect();
     add_feats_to_custom_feature(
         &mut main_toml,
-        CUSTOM_FEATURES_DISABLED,
+        consts::CUSTOM_FEATURES_DISABLED,
         &formatted_feats_to_move,
     );
 
@@ -1523,7 +1524,7 @@ fn visit<T>(visiter_type: &mut T, crate_name: &str, recurse: bool) -> anyhow::Re
 where
     T: for<'a> Visit<'a>,
 {
-    let path = format!("{}/{}", DOWNLOAD_PATH, crate_name.replace(':', "-"));
+    let path = format!("{}/{}", consts::DOWNLOAD_PATH, crate_name.replace(':', "-"));
     let files = get_all_rs_files(&path, recurse);
 
     for filename in files {

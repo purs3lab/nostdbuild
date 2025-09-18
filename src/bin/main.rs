@@ -122,12 +122,19 @@ fn main() -> anyhow::Result<()> {
     // Solve for each dependency
     // TODO: Some dependencies are from git instead of crates.io. Handle those cases (check tool_error_or_crate_issue file).
     // TODO: Should we disable default features for main crate if we update its default features list to include dependency's default features?
-    // TODO: Fix syn failure when it encounters `yield` keyword in the code.
     // TODO: There are some cleanup and refactoring to minimize the read -> mutate -> write pattern for the toml
     // TODO: Optionally, do a cyclic check of features that gets enabled from the default list due to default disabling to make sure it does not cause issues.
     // TODO: Use better mechanism to get the .rs file to check for no_std (use metadata to get this).
     let mut deps_args = Vec::new();
     for dep in deps_attrs {
+        if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {
+            debug!(
+                "Dependency {} has known syntex failure, skipping",
+                dep.crate_name
+            );
+            continue;
+        }
+
         if parser::should_skip_dep(&dep.crate_name, &crate_info, &dep_and_feats, &main_features) {
             debug!("Dependency {} is optional, skipping", dep.crate_name);
             skipped.push(dep);
