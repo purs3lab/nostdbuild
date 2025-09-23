@@ -7,7 +7,7 @@ extern crate rustc_span;
 
 use rustc_driver::Compilation;
 use rustc_hir::{
-    self as hir, Expr, Impl, Item, PathSegment, TraitImplHeader, def,
+    self as hir, Expr, GenericParam, Generics, Impl, Item, PathSegment, TraitImplHeader, def,
     intravisit::{self, Visitor},
 };
 use rustc_interface::interface;
@@ -62,8 +62,11 @@ impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
         // TODO: For all the items where generics are possible, handle those generics
         // TODO: Fix match inner variants to handle Local and SelfTyAlias better
         // TODO: Handle fn args and return types
+        // TODO: Handle generic parameters with default values (for all kinds of items)
+        //       Similar to the handling for Struct.
+        //       Should we handle where clauses?
         // TODO: Handle generic types in functions (check for trait bounds as well)
-        // TODO: Need to handle trait objects, impl traits
+        //       Need to handle trait objects, impl traits
 
         if let hir::ExprKind::Path(path) = &ex.kind
             && match_variants_inner(&self.tcx, &hir::TyKind::Path(*path), true)
@@ -102,9 +105,10 @@ impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
                     return;
                 }
             }
-            hir::ItemKind::Struct(ident, _, variants) => {
+            hir::ItemKind::Struct(ident, Generics { params, .. }, variants) => {
                 debug!("Found struct: {}", ident.name);
                 match_variants(&self.tcx, &mut self.spans, &variants);
+                handle_generic_param(&self.tcx, &mut self.spans, params);
             }
             hir::ItemKind::Enum(ident, _, def) => {
                 debug!("Found enum: {}", ident.name);
@@ -139,6 +143,24 @@ impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
         }
 
         intravisit::walk_item(self, item);
+    }
+}
+
+fn handle_generic_param(tcx: &TyCtxt, spans: &mut HashSet<ReadableSpan>, params: &[GenericParam]) {
+    for param in params {
+        match param.kind {
+            hir::GenericParamKind::Type { default, .. } => {
+                if let Some(ty) = default
+                    && match_variants_inner(tcx, &ty.kind, false)
+                {
+                    println!("Found generic type parameter with default: {:?}", param);
+                    spans.insert(get_readable_span(tcx, param.span));
+                }
+            }
+            _ => {
+                unimplemented!("Other generic param kind handling not implemented yet");
+            }
+        }
     }
 }
 
