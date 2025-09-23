@@ -73,3 +73,12 @@ pub struct CrateInfo {
     pub default_features: bool,
     pub optional: bool,
 }
+
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
+pub struct ReadableSpan {
+    file: String,
+    start_line: usize,
+    start_col: usize,
+    end_line: usize,
+    end_col: usize,
+}
