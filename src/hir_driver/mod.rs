@@ -66,7 +66,7 @@ impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
                     return;
                 }
             };
-            let def_path = self.tcx.def_path_str(*def_id);
+            let def_path = self.tcx.def_path_debug_str(*def_id);
             debug!("Path resolved to definition: {}", def_path);
             let span = path.span.source_callsite();
             if self.skipped_spans.iter().any(|&s| s.contains(span)) {
@@ -105,7 +105,7 @@ fn def_path_string_with_std(def_path: &str) -> bool {
 
 fn starts_with_std(def_path: &str) -> bool {
     let def_path = def_path.strip_prefix("::").unwrap_or(def_path);
-    def_path.starts_with("std::")
+    def_path.starts_with("std[") || def_path.starts_with("std::")
 }
 
 fn get_readable_span(tcx: &TyCtxt, span: Span) -> ReadableSpan {
