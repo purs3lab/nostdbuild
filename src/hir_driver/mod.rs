@@ -7,7 +7,8 @@ extern crate rustc_span;
 
 use rustc_driver::Compilation;
 use rustc_hir::{
-    self as hir, Expr, GenericParam, Generics, Impl, Item, PathSegment, TraitImplHeader, def,
+    self as hir, Expr, FnDecl, FnSig, GenericParam, Generics, Impl, Item, PathSegment,
+    TraitImplHeader, def,
     intravisit::{self, Visitor},
 };
 use rustc_interface::interface;
@@ -61,19 +62,21 @@ impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
 
         // TODO: For all the items where generics are possible, handle those generics
         // TODO: Fix match inner variants to handle Local and SelfTyAlias better
-        // TODO: Handle fn args and return types
+        // TODO: Update the match and update code to use a single function
         // TODO: Handle generic parameters with default values (for all kinds of items)
         //       Similar to the handling for Struct.
         //       Should we handle where clauses?
-        // TODO: Handle generic types in functions (check for trait bounds as well)
-        //       Need to handle trait objects, impl traits
+        // TODO: Handle most used TyKinds correctly. We are missing `OpaqueDef`, `Ref` and others.
 
-        if let hir::ExprKind::Path(path) = &ex.kind
-            && match_variants_inner(&self.tcx, &hir::TyKind::Path(*path), true)
-        {
+        if let hir::ExprKind::Path(path) = &ex.kind {
             // If this expression in a macro expansion, get the callsite span
-            self.spans
-                .insert(get_readable_span(&self.tcx, expr_span.source_callsite()));
+            match_variants_inner_and_update(
+                &self.tcx,
+                &hir::TyKind::Path(*path),
+                true,
+                &mut self.spans,
+                expr_span.source_callsite(),
+            );
         }
 
         if let hir::ExprKind::MethodCall(segment, _, _, _) = &ex.kind {
@@ -126,23 +129,71 @@ impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
                 );
                 if let Some(TraitImplHeader { trait_ref, .. }) = of_trait {
                     // Pls clean this up later
-                    if match_variants_inner(
+                    match_variants_inner_and_update(
                         &self.tcx,
                         &hir::TyKind::Path(hir::QPath::Resolved(None, trait_ref.path)),
                         false,
-                    ) {
-                        self.spans.insert(get_readable_span(&self.tcx, item.span));
-                    }
+                        &mut self.spans,
+                        trait_ref.path.span,
+                    );
                 }
-                if match_variants_inner(&self.tcx, &self_ty.kind, false) {
-                    self.spans.insert(get_readable_span(&self.tcx, item.span));
+                match_variants_inner_and_update(
+                    &self.tcx,
+                    &self_ty.kind,
+                    false,
+                    &mut self.spans,
+                    self_ty.span,
+                );
+            }
+
+            hir::ItemKind::Fn {
+                sig:
+                    FnSig {
+                        decl: FnDecl { inputs, output, .. },
+                        ..
+                    },
+                generics: Generics { params, .. },
+                ..
+            } => {
+                for input in inputs.iter() {
+                    match_variants_inner_and_update(
+                        &self.tcx,
+                        &input.kind,
+                        false,
+                        &mut self.spans,
+                        input.span,
+                    );
                 }
+
+                if let hir::FnRetTy::Return(ty) = output {
+                    match_variants_inner_and_update(
+                        &self.tcx,
+                        &ty.kind,
+                        false,
+                        &mut self.spans,
+                        ty.span,
+                    );
+                }
+
+                handle_generic_param(&self.tcx, &mut self.spans, params);
             }
 
             _ => {}
         }
 
         intravisit::walk_item(self, item);
+    }
+}
+
+fn match_variants_inner_and_update(
+    tcx: &TyCtxt,
+    kind: &hir::TyKind,
+    direct: bool,
+    spans: &mut HashSet<ReadableSpan>,
+    span: Span,
+) {
+    if match_variants_inner(tcx, kind, direct) {
+        spans.insert(get_readable_span(tcx, span));
     }
 }
 
@@ -158,7 +209,10 @@ fn handle_generic_param(tcx: &TyCtxt, spans: &mut HashSet<ReadableSpan>, params:
                 }
             }
             _ => {
-                unimplemented!("Other generic param kind handling not implemented yet");
+                debug!("Other types are Lifetimes and Consts.");
+                unimplemented!(
+                    "adt_const_params feature lets you have complex const params. We need to handle those as well."
+                );
             }
         }
     }
