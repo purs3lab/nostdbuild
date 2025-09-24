@@ -1,9 +1,11 @@
 use anyhow::Context;
 use log::debug;
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 // use quote::ToTokens;
 use std::{collections::HashSet, fs, path::Path};
-use syn::{visit::Visit, Attribute, ExprBlock, Item, ItemExternCrate, Meta, Stmt};
+use syn::{
+    Attribute, ExprBlock, Item, ItemExternCrate, Meta, Stmt, spanned::Spanned, visit::Visit,
+};
 use walkdir::WalkDir;
 use z3::{self, ast::Bool};
 
@@ -31,6 +33,7 @@ pub struct Attributes {
     attributes: Vec<Attribute>,
     pub crate_name: String,
     pub unconditional_no_std: bool,
+    pub spans: Vec<Span>,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -195,6 +198,71 @@ impl<'a> Visit<'a> for Attributes {
             debug!("Visiting module: {}", i.ident);
             syn::visit::visit_item_mod(self, i);
         }
+    }
+
+    // All visitors that collect Span
+    fn visit_item(&mut self, i: &'a Item) {
+        let attrs: &Vec<Attribute>;
+        let span: Span;
+        match i {
+            Item::Fn(func) => {
+                attrs = &func.attrs;
+                span = func.span();
+            }
+            Item::Struct(struc) => {
+                attrs = &struc.attrs;
+                span = struc.span();
+            }
+            Item::Enum(enm) => {
+                attrs = &enm.attrs;
+                span = enm.span();
+            }
+            Item::Const(konst) => {
+                attrs = &konst.attrs;
+                span = konst.span();
+            }
+            Item::Static(stat) => {
+                attrs = &stat.attrs;
+                span = stat.span();
+            }
+            Item::Type(ty) => {
+                attrs = &ty.attrs;
+                span = ty.span();
+            }
+            Item::Union(un) => {
+                attrs = &un.attrs;
+                span = un.span();
+            }
+            Item::Trait(trt) => {
+                attrs = &trt.attrs;
+                span = trt.span();
+            }
+            Item::Impl(imp) => {
+                attrs = &imp.attrs;
+                span = imp.span();
+            }
+            Item::Mod(m) => {
+                attrs = &m.attrs;
+                span = m.span();
+            }
+            Item::Use(u) => {
+                attrs = &u.attrs;
+                span = u.span();
+            }
+            _ => {
+                syn::visit::visit_item(self, i);
+                return;
+            }
+        }
+        check_attr_save_span(self, attrs, span);
+        syn::visit::visit_item(self, i);
+    }
+    // TODO: Add visit_field and visit_variant if required
+}
+
+fn check_attr_save_span(attributes: &mut Attributes, attr: &[Attribute], span: Span) {
+    if attr.iter().any(|a| a.path().is_ident("cfg")) {
+        attributes.spans.push(span);
     }
 }
 

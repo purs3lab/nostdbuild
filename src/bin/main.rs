@@ -93,14 +93,12 @@ fn main() -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("Main crate does not support no_std build"));
     }
 
-    // Here we collect all std usages with the default features enabled.
-    // This is done to check for std usages that are not behind any attribute guards.
-    // If any such usage is found, we stop further processing.
-    hir::do_first_pass(&name);
-
     downloader::download_all_dependencies(&mut worklist, &mut crate_info, depth)?;
 
     let main_attributes = parser::parse_crate(&name, true);
+
+    let readable_spans = hir::proc_macro_span_to_readable(&main_attributes.spans);
+
     let (enable, disable, _) = parser::process_crate(
         &ctx,
         &main_attributes,
@@ -227,6 +225,13 @@ fn main() -> anyhow::Result<()> {
 
     if one_succeeded {
         db::add_to_db_data(&mut db_data, &name, (&enable, &disable));
+    } else {
+        hir::hir_visit(&name);
+        if hir::check_for_unguarded_std_usages(&readable_spans) {
+            return Err(anyhow::anyhow!(
+                "Found unguarded std usage in the main crate"
+            ));
+        }
     }
 
     db::write_db_file(db_data)?;

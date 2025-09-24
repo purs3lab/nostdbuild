@@ -1,11 +1,13 @@
 use log::debug;
+use proc_macro2::Span;
 use std::{fs, path, process::Command};
 use which::which;
 
+use crate::ReadableSpan;
 use crate::consts;
 use crate::parser;
 
-pub fn do_first_pass(crate_name: &str) {
+pub fn hir_visit(crate_name: &str) {
     if !is_cargo_hir_installed() {
         panic!(
             "cargo-hir is not installed. Please install it by running `cargo install --path . --bin cargo-hir --bin hir-driver --force` from the root of the repository"
@@ -49,6 +51,36 @@ pub fn do_first_pass(crate_name: &str) {
             stderr
         );
     }
+}
+
+pub fn check_for_unguarded_std_usages(spans: &[ReadableSpan]) -> bool {
+    if !path::Path::new(consts::HIR_VISITOR_SPAN_DUMP).exists() {
+        panic!(
+            "HIR visitor span dump file does not exist. Please ensure that `cargo-hir` ran successfully."
+        );
+    }
+
+    let data = fs::read_to_string(consts::HIR_VISITOR_SPAN_DUMP)
+        .expect("Unable to read HIR visitor span dump file");
+    let hir_spans: Vec<ReadableSpan> =
+        serde_json::from_str(&data).expect("Unable to parse HIR visitor span dump file");
+
+    debug!("Hir spans: {:?}", hir_spans);
+    debug!("Proc macro spans: {:?}", spans);
+    false
+}
+
+pub fn proc_macro_span_to_readable(spans: &[Span]) -> Vec<ReadableSpan> {
+    spans
+        .iter()
+        .map(|s| ReadableSpan {
+            file: s.file(),
+            start_line: s.start().line,
+            start_col: s.start().column,
+            end_line: s.end().line,
+            end_col: s.end().column,
+        })
+        .collect()
 }
 
 fn is_cargo_hir_installed() -> bool {
