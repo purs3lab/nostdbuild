@@ -62,11 +62,13 @@ impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
 
         // TODO: For all the items where generics are possible, handle those generics
         // TODO: Fix match inner variants to handle Local and SelfTyAlias better
-        // TODO: Update the match and update code to use a single function
         // TODO: Handle generic parameters with default values (for all kinds of items)
         //       Similar to the handling for Struct.
         //       Should we handle where clauses?
         // TODO: Handle most used TyKinds correctly. We are missing `OpaqueDef`, `Ref` and others.
+        // TODO: Handle traits.
+        // TODO: Handle let with generics
+        // TODO: PathSegment can have args which are generic args. Handle those as well.
 
         if let hir::ExprKind::Path(path) = &ex.kind {
             // If this expression in a macro expansion, get the callsite span
@@ -113,15 +115,24 @@ impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
                 match_variants(&self.tcx, &mut self.spans, &variants);
                 handle_generic_param(&self.tcx, &mut self.spans, params);
             }
-            hir::ItemKind::Enum(ident, _, def) => {
+            hir::ItemKind::Enum(ident, Generics { params, .. }, def) => {
                 debug!("Found enum: {}", ident.name);
                 for variant in def.variants {
                     debug!(" Variant: {}", variant.ident.name);
                     match_variants(&self.tcx, &mut self.spans, &variant.data);
+                    handle_generic_param(&self.tcx, &mut self.spans, params);
                 }
             }
+            hir::ItemKind::Union(ident, Generics { params, .. }, variants) => {
+                debug!("Found union: {}", ident.name);
+                match_variants(&self.tcx, &mut self.spans, &variants);
+                handle_generic_param(&self.tcx, &mut self.spans, params);
+            }
             hir::ItemKind::Impl(Impl {
-                of_trait, self_ty, ..
+                generics,
+                of_trait,
+                self_ty,
+                ..
             }) => {
                 println!(
                     "Found impl with self type: {:?} abd of_trait: {:?}",
@@ -144,6 +155,7 @@ impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
                     &mut self.spans,
                     self_ty.span,
                 );
+                handle_generic_param(&self.tcx, &mut self.spans, generics.params);
             }
 
             hir::ItemKind::Fn {
