@@ -7,8 +7,7 @@ extern crate rustc_span;
 
 use rustc_driver::Compilation;
 use rustc_hir::{
-    self as hir, Expr, FnDecl, FnSig, GenericParam, Generics, Impl, Item, PathSegment,
-    TraitImplHeader, def,
+    self as hir, Item, def,
     intravisit::{self, Visitor},
 };
 use rustc_interface::interface;
@@ -53,185 +52,48 @@ impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
         self.tcx
     }
 
-    fn visit_expr(&mut self, ex: &'tcx Expr<'tcx>) {
-        let expr_span = ex.span;
-        if self.skipped_spans.iter().any(|&s| s.contains(expr_span)) {
-            debug!("Ignoring expression in skipped span");
-            return;
-        }
-
-        // TODO: For all the items where generics are possible, handle those generics
-        // TODO: Fix match inner variants to handle Local and SelfTyAlias better
-        // TODO: Handle generic parameters with default values (for all kinds of items)
-        //       Similar to the handling for Struct.
-        //       Should we handle where clauses?
-        // TODO: Handle most used TyKinds correctly. We are missing `OpaqueDef`, `Ref` and others.
-        // TODO: Handle traits.
-        // TODO: Handle let with generics
-        // TODO: PathSegment can have args which are generic args. Handle those as well.
-
-        if let hir::ExprKind::Path(path) = &ex.kind {
-            // If this expression in a macro expansion, get the callsite span
-            match_variants_inner_and_update(
-                &self.tcx,
-                &hir::TyKind::Path(*path),
-                true,
-                &mut self.spans,
-                expr_span.source_callsite(),
-            );
-        }
-
-        if let hir::ExprKind::MethodCall(segment, _, _, _) = &ex.kind {
-            println!("Found method call: {}", segment.ident.name);
-
-            if let Some(method_def_id) = self
-                .tcx
-                .typeck(ex.hir_id.owner.def_id)
-                .type_dependent_def_id(ex.hir_id)
-            {
-                let method_path = self.tcx.def_path_str(method_def_id);
-                if does_def_path_string_has_std(&method_path) {
-                    self.spans
-                        .insert(get_readable_span(&self.tcx, expr_span.source_callsite()));
+    fn visit_path(&mut self, path: &hir::Path<'tcx>, _id: hir::HirId) {
+        let segment = path.segments.last();
+        if let Some(segment) = segment {
+            let def_id = match &segment.res {
+                def::Res::Def(_, def_id) => def_id,
+                def::Res::Local(hir_id) => &hir_id.owner.to_def_id(),
+                def::Res::SelfTyAlias { alias_to, .. } => alias_to,
+                def::Res::SelfTyParam { trait_ } => trait_,
+                _ => {
+                    debug!("Not a definition or local");
+                    intravisit::walk_path(self, path);
+                    return;
                 }
+            };
+            let def_path = self.tcx.def_path_str(*def_id);
+            debug!("Path resolved to definition: {}", def_path);
+            let span = path.span.source_callsite();
+            if self.skipped_spans.iter().any(|&s| s.contains(span)) {
+                debug!("Ignoring path in skipped span");
+                return;
+            }
+            if def_path_string_with_std(&def_path) {
+                self.spans.insert(get_readable_span(&self.tcx, span));
             }
         }
-
-        intravisit::walk_expr(self, ex);
+        intravisit::walk_path(self, path);
     }
 
     fn visit_item(&mut self, item: &'tcx Item) {
-        match item.kind {
-            hir::ItemKind::Mod(ident, _) => {
-                debug!("Found module: {}", ident.name);
-                if ident.name.as_str() == "test" {
-                    debug!("Ignoring test module");
-                    self.skipped_spans.push(item.span);
-                    return;
-                }
+        if let hir::ItemKind::Mod(ident, _) = item.kind {
+            debug!("Found module: {}", ident.name);
+            if ident.name.as_str() == "test" {
+                debug!("Ignoring test module");
+                self.skipped_spans.push(item.span);
+                return;
             }
-            hir::ItemKind::Struct(ident, Generics { params, .. }, variants) => {
-                debug!("Found struct: {}", ident.name);
-                match_variants(&self.tcx, &mut self.spans, &variants);
-                handle_generic_param(&self.tcx, &mut self.spans, params);
-            }
-            hir::ItemKind::Enum(ident, Generics { params, .. }, def) => {
-                debug!("Found enum: {}", ident.name);
-                for variant in def.variants {
-                    debug!(" Variant: {}", variant.ident.name);
-                    match_variants(&self.tcx, &mut self.spans, &variant.data);
-                    handle_generic_param(&self.tcx, &mut self.spans, params);
-                }
-            }
-            hir::ItemKind::Union(ident, Generics { params, .. }, variants) => {
-                debug!("Found union: {}", ident.name);
-                match_variants(&self.tcx, &mut self.spans, &variants);
-                handle_generic_param(&self.tcx, &mut self.spans, params);
-            }
-            hir::ItemKind::Impl(Impl {
-                generics,
-                of_trait,
-                self_ty,
-                ..
-            }) => {
-                println!(
-                    "Found impl with self type: {:?} abd of_trait: {:?}",
-                    self_ty, of_trait
-                );
-                if let Some(TraitImplHeader { trait_ref, .. }) = of_trait {
-                    // Pls clean this up later
-                    match_variants_inner_and_update(
-                        &self.tcx,
-                        &hir::TyKind::Path(hir::QPath::Resolved(None, trait_ref.path)),
-                        false,
-                        &mut self.spans,
-                        trait_ref.path.span,
-                    );
-                }
-                match_variants_inner_and_update(
-                    &self.tcx,
-                    &self_ty.kind,
-                    false,
-                    &mut self.spans,
-                    self_ty.span,
-                );
-                handle_generic_param(&self.tcx, &mut self.spans, generics.params);
-            }
-
-            hir::ItemKind::Fn {
-                sig:
-                    FnSig {
-                        decl: FnDecl { inputs, output, .. },
-                        ..
-                    },
-                generics: Generics { params, .. },
-                ..
-            } => {
-                for input in inputs.iter() {
-                    match_variants_inner_and_update(
-                        &self.tcx,
-                        &input.kind,
-                        false,
-                        &mut self.spans,
-                        input.span,
-                    );
-                }
-
-                if let hir::FnRetTy::Return(ty) = output {
-                    match_variants_inner_and_update(
-                        &self.tcx,
-                        &ty.kind,
-                        false,
-                        &mut self.spans,
-                        ty.span,
-                    );
-                }
-
-                handle_generic_param(&self.tcx, &mut self.spans, params);
-            }
-
-            _ => {}
         }
-
         intravisit::walk_item(self, item);
     }
 }
 
-fn match_variants_inner_and_update(
-    tcx: &TyCtxt,
-    kind: &hir::TyKind,
-    direct: bool,
-    spans: &mut HashSet<ReadableSpan>,
-    span: Span,
-) {
-    if match_variants_inner(tcx, kind, direct) {
-        spans.insert(get_readable_span(tcx, span));
-    }
-}
-
-fn handle_generic_param(tcx: &TyCtxt, spans: &mut HashSet<ReadableSpan>, params: &[GenericParam]) {
-    for param in params {
-        match param.kind {
-            hir::GenericParamKind::Type { default, .. } => {
-                if let Some(ty) = default
-                    && match_variants_inner(tcx, &ty.kind, false)
-                {
-                    println!("Found generic type parameter with default: {:?}", param);
-                    spans.insert(get_readable_span(tcx, param.span));
-                }
-            }
-            _ => {
-                debug!("Other types are Lifetimes and Consts.");
-                unimplemented!(
-                    "adt_const_params feature lets you have complex const params. We need to handle those as well."
-                );
-            }
-        }
-    }
-}
-
-fn does_def_path_string_has_std(def_path: &str) -> bool {
-    println!("Checking def path: {}", def_path);
+fn def_path_string_with_std(def_path: &str) -> bool {
     if let Some((left, right)) = def_path.split_once(" as ") {
         let left = left.strip_prefix("<").unwrap_or(left);
         let right = right.strip_suffix(">").unwrap_or(right);
@@ -244,57 +106,6 @@ fn does_def_path_string_has_std(def_path: &str) -> bool {
 fn starts_with_std(def_path: &str) -> bool {
     let def_path = def_path.strip_prefix("::").unwrap_or(def_path);
     def_path.starts_with("std::")
-}
-
-fn match_variants(tcx: &TyCtxt, spans: &mut HashSet<ReadableSpan>, variants: &hir::VariantData) {
-    match variants {
-        hir::VariantData::Struct { fields, .. } | hir::VariantData::Tuple(fields, _, _) => {
-            for field in *fields {
-                debug!("  Field: {}", field.ident.name);
-                if match_variants_inner(tcx, &field.ty.kind, false) {
-                    spans.insert(get_readable_span(tcx, field.span));
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn match_variants_inner(tcx: &TyCtxt, tykind: &hir::TyKind, direct: bool) -> bool {
-    if direct {
-        println!("Matching path directly from expression");
-    }
-    let mut segment = None;
-    if let hir::TyKind::Path(hir::QPath::Resolved(_, path)) = tykind {
-        segment = path.segments.last();
-    } else if let hir::TyKind::Path(hir::QPath::TypeRelative(ty, _)) = tykind
-        && let hir::TyKind::Path(hir::QPath::Resolved(_, path)) = &ty.kind
-    {
-        segment = path.segments.last();
-    }
-
-    if let Some(PathSegment { res, .. }) = segment {
-        let def_id = match res {
-            def::Res::Def(_, def_id) => def_id,
-            def::Res::Local(hir_id) => &hir_id.owner.to_def_id(),
-            def::Res::SelfTyAlias { alias_to, .. } => alias_to,
-            _ => {
-                debug!("    Not a definition or local");
-                return false;
-            }
-        };
-
-        let def_path = tcx.def_path_str(*def_id);
-        if !direct {
-            debug!("    Type resolved to definition: {}", def_path);
-        } else {
-            debug!("Type resolved to definition: {}", def_path);
-        }
-        if does_def_path_string_has_std(&def_path) {
-            return true;
-        }
-    }
-    false
 }
 
 fn get_readable_span(tcx: &TyCtxt, span: Span) -> ReadableSpan {
