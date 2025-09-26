@@ -65,6 +65,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut db_data = db::read_db_file()?;
     let mut results = Vec::new();
+    let mut telemetry = nostd::Telemetry::default();
 
     if let Some(url) = cli.url {
         debug!("URL provided: {}", url);
@@ -93,7 +94,7 @@ fn main() -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("Main crate does not support no_std build"));
     }
 
-    downloader::download_all_dependencies(&mut worklist, &mut crate_info, depth)?;
+    let no_std = downloader::download_all_dependencies(&mut worklist, &mut crate_info, depth)?;
 
     let main_attributes = parser::parse_crate(&name, true);
 
@@ -128,6 +129,12 @@ fn main() -> anyhow::Result<()> {
     // TODO: There are some cleanup and refactoring to minimize the read -> mutate -> write pattern for the toml
     // TODO: Optionally, do a cyclic check of features that gets enabled from the default list due to default disabling to make sure it does not cause issues.
     // TODO: Use better mechanism to get the .rs file to check for no_std (use metadata to get this).
+    // TODO: Convert assertions to non fatal warnings and collect stats and dump at the end.
+    // TODO: IMPORTANT: Sometimes, enabling a feature enables an optional dependency. If this is the case, We need to check if the
+    // features required by the optional dependency are available. If not, we either add them to main crate or disable the optional dependency.
+    // Check `mech-core` for an example.
+    // TODO: IMPORTANT: `should_skip_dep` currently does not do a recursive check. If a feature enables another feature and so on, we need to check all the features in the chain.
+    // TODO: Current syn file names are a placeholder. We need to get the actual file names.
     let mut deps_args = Vec::new();
     for dep in deps_attrs {
         if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {
@@ -143,6 +150,9 @@ fn main() -> anyhow::Result<()> {
             skipped.push(dep);
             continue;
         }
+
+        debug!("Processing dependency: {}", dep.crate_name);
+
         let local_dep_args = parser::process_dep_crate(
             &ctx,
             &dep,
@@ -218,7 +228,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     println!("Final args: {:?}", final_args);
-    let one_succeeded = compiler::try_compile(&name, &target, &final_args, &mut results)?;
+    let one_succeeded = if no_std {
+        compiler::try_compile(&name, &target, &final_args, &mut results)
+    } else {
+        Ok(false)
+    }?;
 
     if one_succeeded {
         db::add_to_db_data(&mut db_data, &name, (&enable, &disable));

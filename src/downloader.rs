@@ -98,7 +98,7 @@ pub fn download_all_dependencies(
     worklist: &mut Vec<(String, String)>,
     crate_info: &mut CrateInfo,
     depth: u32,
-) -> Result<(), anyhow::Error> {
+) -> Result<bool, anyhow::Error> {
     debug!("Initial worklist length: {}", worklist.len());
     let mut initlist = Vec::new();
     while !worklist.is_empty() {
@@ -139,13 +139,16 @@ pub fn download_all_dependencies(
         let cfg = z3::Config::new();
         let ctx = z3::Context::new(&cfg);
         let found = parser::check_for_no_std(&name_with_version, &ctx);
-        assert!(
-            found,
-            "Dependency {} does not support no_std build",
-            name_with_version
-        );
-
-        initlist.push((name.clone(), new_version.to_string()));
+        if !parser::is_dep_optional(crate_info, &name) {
+            if !found {
+                debug!(
+                    "ERROR: Dependency {} does not support no_std build",
+                    name_with_version
+                );
+                return Ok(false);
+            }
+            initlist.push((name.clone(), new_version.to_string()));
+        }
 
         // `clone_from_crates` gives a more accurate version.
         // Update the version in the crate_info with this version.
@@ -159,7 +162,7 @@ pub fn download_all_dependencies(
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
     parser::determine_n_depth_dep_no_std(initlist, depth, 0, &mut visited, &ctx);
-    Ok(())
+    Ok(true)
 }
 
 /// Read the dependencies and their versions from the Cargo.toml file

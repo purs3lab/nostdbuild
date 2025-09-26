@@ -826,10 +826,7 @@ pub fn parse_main_attributes_direct<'a>(
 /// # Returns
 /// A tuple containing the equations for the dependency
 /// crate and the parsed attributes.
-pub fn parse_attributes<'a>(
-    attrs: &Attributes,
-    ctx: &'a z3::Context,
-) -> Vec<Option<Bool<'a>>> {
+pub fn parse_attributes<'a>(attrs: &Attributes, ctx: &'a z3::Context) -> Vec<Option<Bool<'a>>> {
     let mut equation: Vec<Option<Bool>> = Vec::new();
     let mut temp_eq: Option<Bool>;
     let mut parsed: ParsedAttr;
@@ -1424,10 +1421,23 @@ pub fn should_skip_dep(
         return true;
     }
 
+    debug!("Dependency {} is not optional, not skipping", dep_name);
+
     false
 }
 
-fn is_dep_optional(crate_info: &CrateInfo, name: &str) -> bool {
+/// Check if a dependency is optional in the given `CrateInfo`.
+/// This also checks the enabled features to determine if enabling that
+/// feature caused an optional dependency to be included.
+/// TODO: Do recursive check on the feature list to see if some feature deep
+/// in the chain enables the optional dependency.
+/// # Arguments
+/// * `crate_info` - The `CrateInfo` containing the crate's dependencies and
+///   features.
+/// * `name` - The name of the dependency to check.
+/// # Returns
+/// A boolean indicating whether the dependency is optional.
+pub fn is_dep_optional(crate_info: &CrateInfo, name: &str) -> bool {
     crate_info
         .deps_and_features
         .iter()
