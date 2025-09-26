@@ -99,7 +99,7 @@ fn main() -> anyhow::Result<()> {
 
     let readable_spans = hir::proc_macro_span_to_readable(&main_attributes.spans);
 
-    let (enable, disable, _) = parser::process_crate(
+    let (enable, disable) = parser::process_crate(
         &ctx,
         &main_attributes,
         &name,
@@ -218,10 +218,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     println!("Final args: {:?}", final_args);
-    // This is temporary, we will remove it later
-    let possible_archs = Vec::new();
-    let one_succeeded =
-        compiler::try_compile(&name, &target, &final_args, &possible_archs, &mut results)?;
+    let one_succeeded = compiler::try_compile(&name, &target, &final_args, &mut results)?;
 
     if one_succeeded {
         db::add_to_db_data(&mut db_data, &name, (&enable, &disable));

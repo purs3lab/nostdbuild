@@ -7,7 +7,6 @@ pub fn try_compile(
     name_with_version: &str,
     clitarget: &str,
     enable: &[String],
-    possible_archs: &[String],
     results: &mut Vec<Results>,
 ) -> anyhow::Result<bool> {
     let mut one_succeeded = false;
@@ -22,37 +21,14 @@ pub fn try_compile(
         return Ok(one_succeeded);
     }
 
-    if possible_archs.is_empty() {
-        for target in consts::TARGET_LIST.iter() {
-            try_compile_for_target(
-                name_with_version,
-                target,
-                enable,
-                results,
-                &mut one_succeeded,
-            )?;
-        }
-    } else {
-        for arch in possible_archs.iter() {
-            let targets = consts::get_target_names_from_arch(arch);
-            if !targets.is_empty() {
-                for target in targets.iter() {
-                    try_compile_for_target(
-                        name_with_version,
-                        target,
-                        enable,
-                        results,
-                        &mut one_succeeded,
-                    )?;
-                }
-            } else {
-                return Err(anyhow::anyhow!(
-                    "Invalid arch `{}`. Choose target from one of {:?}",
-                    arch,
-                    consts::TARGET_LIST
-                ));
-            }
-        }
+    for target in consts::TARGET_LIST.iter() {
+        try_compile_for_target(
+            name_with_version,
+            target,
+            enable,
+            results,
+            &mut one_succeeded,
+        )?;
     }
     Ok(one_succeeded)
 }

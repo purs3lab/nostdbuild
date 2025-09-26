@@ -23,7 +23,6 @@ enum Logic {
 pub struct ParsedAttr {
     constants: Vec<String>,
     pub features: Vec<String>,
-    pub possible_target_archs: Vec<String>,
     pub filepath: Option<String>,
     logic: Vec<Logic>,
 }
@@ -431,14 +430,14 @@ pub fn process_crate(
     db_data: &mut [DBData],
     crate_info: &CrateInfo,
     is_main: bool,
-) -> anyhow::Result<(Vec<String>, Vec<String>, Vec<String>)> {
+) -> anyhow::Result<(Vec<String>, Vec<String>)> {
     let (mut enable, mut disable): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
 
     let (no_std, mut equation, mut parsed_attr) = parse_main_attributes(attrs, ctx);
     if !attrs.unconditional_no_std {
         if !no_std {
             debug!("No no_std found for the crate");
-            return Ok((Vec::new(), Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new()));
         }
     } else {
         debug!(
@@ -459,7 +458,7 @@ pub fn process_crate(
         // This case implies that the crate is no_std without any feature requirements.
         if items.itemexterncrates.is_empty() {
             debug!("No extern crates found for the crate");
-            return Ok((Vec::new(), Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new()));
         }
         let std_attrs = get_item_extern_std(&items);
         if !std_attrs.is_empty() {
@@ -522,14 +521,14 @@ pub fn process_crate(
                     }
                     Err(e) => {
                         debug!("Failed to parse extern crates: {}", e);
-                        return Ok((Vec::new(), Vec::new(), Vec::new()));
+                        return Ok((Vec::new(), Vec::new()));
                     }
                 }
             }
             debug!("main equation: {:?}", equation);
         }
     }
-    let (equations, possible_archs) = parse_attributes(attrs, ctx);
+    let equations = parse_attributes(attrs, ctx);
     let filtered = filter_equations(&equations, &parsed_attr.features);
 
     // This part adds equations if there are attributes that conditionally include
@@ -562,7 +561,7 @@ pub fn process_crate(
         (enable, disable) = solver::model_to_features(&model);
     }
 
-    Ok((enable, disable, possible_archs))
+    Ok((enable, disable))
 }
 
 /// Process the dependency crate.
@@ -589,7 +588,7 @@ pub fn process_dep_crate(
     let (enable, disable) = match db::get_from_db_data(db_data, &dep.crate_name) {
         Some(dbdata) => (dbdata.features.0.clone(), dbdata.features.1.clone()),
         None => {
-            let (enable, disable, _) =
+            let (enable, disable) =
                 process_crate(ctx, dep, &dep.crate_name, db_data, crate_info, false)?;
             (enable, disable)
         }
@@ -830,16 +829,14 @@ pub fn parse_main_attributes_direct<'a>(
 pub fn parse_attributes<'a>(
     attrs: &Attributes,
     ctx: &'a z3::Context,
-) -> (Vec<Option<Bool<'a>>>, Vec<String>) {
+) -> Vec<Option<Bool<'a>>> {
     let mut equation: Vec<Option<Bool>> = Vec::new();
-    let mut possible_target_archs: Vec<String> = Vec::new();
     let mut temp_eq: Option<Bool>;
     let mut parsed: ParsedAttr;
     for attr in &attrs.attributes {
         let ident = attr.path().get_ident().unwrap();
         if ident == "cfg" {
             (temp_eq, parsed) = parse_meta_for_cfg_attr(&attr.meta, ctx);
-            possible_target_archs.extend(parsed.possible_target_archs.clone());
             // TODO: Should this check be removed?
             if parsed.features.len() == 1 || parsed.logic.is_empty() {
                 // Attributes like `#[cfg (feature = "serde")]` are not interesting.
@@ -849,7 +846,7 @@ pub fn parse_attributes<'a>(
         }
     }
 
-    (equation, possible_target_archs)
+    equation
 }
 
 /// Filter the equations based on the main features.
@@ -1642,7 +1639,6 @@ fn parse_token_stream<'a>(
 ) -> Vec<Bool<'a>> {
     let mut was_feature = false;
     let mut was_filepath = false;
-    let mut was_target_arch = false;
     let mut current_expr: Option<Bool> = None;
     let mut group_items: Vec<Bool> = Vec::new();
     let mut curr_logic = Logic::Any;
@@ -1685,8 +1681,6 @@ fn parse_token_stream<'a>(
 
                 if ident_str == "feature" {
                     was_feature = true;
-                } else if ident_str == "target_arch" {
-                    was_target_arch = true;
                 } else if ident_str == "path" {
                     was_filepath = true;
                 } else if let Some(logic) = is_any_logic(&ident_str) {
@@ -1704,10 +1698,6 @@ fn parse_token_stream<'a>(
                     let feature_var = Bool::new_const(ctx, feature_str);
                     group_items.push(feature_var);
                     was_feature = false;
-                } else if was_target_arch {
-                    let target_arch_str = l.to_string()[1..l.to_string().len() - 1].to_string();
-                    parsed.possible_target_archs.push(target_arch_str);
-                    was_target_arch = false;
                 } else if was_filepath {
                     let filepath_str = l.to_string()[1..l.to_string().len() - 1].to_string();
                     parsed.filepath = Some(filepath_str);

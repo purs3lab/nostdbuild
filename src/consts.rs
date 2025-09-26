@@ -70,16 +70,3 @@ pub const HIR_VISITOR_SPAN_DUMP: &str =
 pub fn is_valid_target(target: &str) -> bool {
     TARGET_LIST.contains(&target)
 }
-
-/// Get the target names which start with the given architecture
-/// # Arguments
-/// * `arch` - The architecture to get the target names for
-/// # Returns
-/// * `Vec<String>` - The target names which start with the given architecture
-pub fn get_target_names_from_arch(arch: &str) -> Vec<String> {
-    TARGET_LIST
-        .iter()
-        .filter(|target| target.starts_with(arch))
-        .map(|&target| target.to_string())
-        .collect()
-}
