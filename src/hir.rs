@@ -70,11 +70,11 @@ pub fn check_for_unguarded_std_usages(spans: &[ReadableSpan]) -> bool {
     false
 }
 
-pub fn proc_macro_span_to_readable(spans: &[Span]) -> Vec<ReadableSpan> {
+pub fn proc_macro_span_to_readable(spans: &[(Span, Option<String>)]) -> Vec<ReadableSpan> {
     spans
         .iter()
-        .map(|s| ReadableSpan {
-            file: s.file(),
+        .map(|(s, name)| ReadableSpan {
+            file: name.clone().unwrap_or_else(|| "unknown".to_string()),
             start_line: s.start().line,
             start_col: s.start().column,
             end_line: s.end().line,

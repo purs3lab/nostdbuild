@@ -134,7 +134,6 @@ fn main() -> anyhow::Result<()> {
     // features required by the optional dependency are available. If not, we either add them to main crate or disable the optional dependency.
     // Check `mech-core` for an example.
     // TODO: IMPORTANT: `should_skip_dep` currently does not do a recursive check. If a feature enables another feature and so on, we need to check all the features in the chain.
-    // TODO: Current syn file names are a placeholder. We need to get the actual file names.
     let mut deps_args = Vec::new();
     for dep in deps_attrs {
         if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {

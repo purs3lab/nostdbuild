@@ -32,7 +32,9 @@ pub struct Attributes {
     attributes: Vec<Attribute>,
     pub crate_name: String,
     pub unconditional_no_std: bool,
-    pub spans: Vec<Span>,
+    // Stores the filename as well since we can't recover
+    // it later from the Span.
+    pub spans: Vec<(Span, Option<String>)>,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -46,17 +48,28 @@ pub struct ItemExternCratesAll {
 }
 
 trait GetItemExternCrate {
-    fn get_item_extern_crate(&mut self) -> &mut Vec<ItemExternCrate>;
+    fn get_item_extern_crate(&mut self) -> Option<&mut Vec<ItemExternCrate>> {
+        None
+    }
+    fn get_spans(&mut self) -> Option<&mut Vec<(Span, Option<String>)>> {
+        None
+    }
+}
+
+impl GetItemExternCrate for Attributes {
+    fn get_spans(&mut self) -> Option<&mut Vec<(Span, Option<String>)>> {
+        Some(&mut self.spans)
+    }
 }
 
 impl GetItemExternCrate for ItemExternCrates {
-    fn get_item_extern_crate(&mut self) -> &mut Vec<ItemExternCrate> {
-        &mut self.itemexterncrates
+    fn get_item_extern_crate(&mut self) -> Option<&mut Vec<ItemExternCrate>> {
+        Some(&mut self.itemexterncrates)
     }
 }
 impl GetItemExternCrate for ItemExternCratesAll {
-    fn get_item_extern_crate(&mut self) -> &mut Vec<ItemExternCrate> {
-        &mut self.itemexterncrates
+    fn get_item_extern_crate(&mut self) -> Option<&mut Vec<ItemExternCrate>> {
+        Some(&mut self.itemexterncrates)
     }
 }
 
@@ -109,29 +122,30 @@ fn visit_expr_block_common<'a, T: Visit<'a> + GetItemExternCrate>(
     typ: &mut T,
     expr_block: &'a ExprBlock,
 ) {
-    let old_len = typ.get_item_extern_crate().len();
+    let old_len = typ.get_item_extern_crate().unwrap_or(&mut Vec::new()).len();
     syn::visit::visit_expr_block(typ, expr_block);
-    let changed = typ.get_item_extern_crate().len() > old_len;
+    let get_item_extern_crate = typ.get_item_extern_crate().unwrap();
+    let changed = get_item_extern_crate.len() > old_len;
     if !expr_block.attrs.is_empty() {
         let stmts = &expr_block.block.stmts;
         let attrs = expr_block.attrs.clone();
         for stmt in stmts {
             match stmt {
                 Stmt::Item(Item::ExternCrate(item)) => {
-                    typ.get_item_extern_crate().retain(|i| i != item);
+                    get_item_extern_crate.retain(|i| i != item);
                     let new = ItemExternCrate {
                         attrs: attrs.clone(),
                         ..item.clone()
                     };
-                    typ.get_item_extern_crate().push(new);
+                    get_item_extern_crate.push(new);
                 }
                 _ if changed => {
-                    let extern_item = typ.get_item_extern_crate().last().unwrap();
+                    let extern_item = get_item_extern_crate.last().unwrap();
                     let new = ItemExternCrate {
                         attrs: attrs.clone(),
                         ..extern_item.clone()
                     };
-                    typ.get_item_extern_crate().push(new);
+                    get_item_extern_crate.push(new);
                 }
                 _ => {
                     debug!(
@@ -261,7 +275,7 @@ impl<'a> Visit<'a> for Attributes {
 
 fn check_attr_save_span(attributes: &mut Attributes, attr: &[Attribute], span: Span) {
     if attr.iter().any(|a| a.path().is_ident("cfg")) {
-        attributes.spans.push(span);
+        attributes.spans.push((span, None));
     }
 }
 
@@ -1596,7 +1610,7 @@ fn get_files_in_attributes<'a>(
 
 fn visit<T>(visiter_type: &mut T, crate_name: &str, recurse: bool) -> anyhow::Result<()>
 where
-    T: for<'a> Visit<'a>,
+    T: for<'a> Visit<'a> + GetItemExternCrate,
 {
     let path = format!("{}/{}", consts::DOWNLOAD_PATH, crate_name.replace(':', "-"));
     let files = get_all_rs_files(&path, recurse);
@@ -1618,6 +1632,21 @@ where
             }
         };
         visiter_type.visit_file(&file);
+        if let Some(spans) = visiter_type.get_spans() {
+            // Newly added spans will have None as filename.
+            // We fill it with the current filename.
+            for span in spans {
+                if span.1.is_none() {
+                    span.1.replace(
+                        filename
+                            .clone()
+                            .strip_prefix(&(path.clone() + "/"))
+                            .unwrap()
+                            .to_string(),
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }
