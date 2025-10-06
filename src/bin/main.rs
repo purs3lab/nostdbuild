@@ -118,16 +118,15 @@ fn main() -> anyhow::Result<()> {
         solver::final_feature_list_main(&crate_info, &enable, &disable);
 
     let dep_and_feats = parser::features_for_optional_deps(&crate_info);
+    debug!("Dependency and features: {:?}", dep_and_feats);
 
     println!("Main crate arguments: {:?}", main_features,);
 
     let deps_attrs = parser::parse_deps_crate();
     let mut skipped = Vec::new();
     // Solve for each dependency
-    // TODO: Some dependencies are from git instead of crates.io. Handle those cases (check tool_error_or_crate_issue file).
-    // TODO: Should we disable default features for main crate if we update its default features list to include dependency's default features?
+    // TODO: Some dependencies are from git instead of crates.io. Handle those cases.
     // TODO: There are some cleanup and refactoring to minimize the read -> mutate -> write pattern for the toml
-    // TODO: Optionally, do a cyclic check of features that gets enabled from the default list due to default disabling to make sure it does not cause issues.
     // TODO: Use better mechanism to get the .rs file to check for no_std (use metadata to get this).
     // TODO: Convert assertions to non fatal warnings and collect stats and dump at the end.
     // TODO: IMPORTANT: Sometimes, enabling a feature enables an optional dependency. If this is the case, We need to check if the
@@ -144,7 +143,14 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        if parser::should_skip_dep(&dep.crate_name, &crate_info, &dep_and_feats, &main_features) {
+        if parser::should_skip_dep(
+            &name,
+            &dep.crate_name,
+            &crate_info,
+            &dep_and_feats,
+            &main_features,
+            disable_default,
+        ) {
             debug!("Dependency {} is optional, skipping", dep.crate_name);
             skipped.push(dep);
             continue;
@@ -171,9 +177,21 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
+    let mut temp_combined = deps_args.clone();
+    temp_combined.sort();
+    temp_combined.dedup();
+    temp_combined.extend(main_features.clone());
+
     let mut dep_args_skipped = Vec::new();
     for dep in skipped {
-        if !parser::should_skip_dep(&dep.crate_name, &crate_info, &dep_and_feats, &deps_args) {
+        if !parser::should_skip_dep(
+            &name,
+            &dep.crate_name,
+            &crate_info,
+            &dep_and_feats,
+            &temp_combined,
+            disable_default,
+        ) {
             debug!(
                 "Dependency {} which was skipped previously is now required",
                 dep.crate_name

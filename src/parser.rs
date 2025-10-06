@@ -1245,7 +1245,7 @@ pub fn update_feat_lists(
 /// to compile it in no_std mode. But these features maybe enabled
 /// in the main crate's Cargo.toml.
 /// This function will remove those features from the original feature from
-///  main crate's Cargo.toml and add them to the custom feature list
+/// main crate's Cargo.toml and add them to the custom feature list
 /// which is used during std build.
 /// # Arguments
 /// * `main_name` - The name of the main crate
@@ -1301,6 +1301,60 @@ pub fn remove_conflicting_dep_feats(main_name: &str, name: &str, disable: &[Stri
         "Removed conflicting features from main crate: {}",
         main_name
     );
+}
+
+/// When a crate enables some features that inturn enable a dependency that does
+/// not support no_std, we need to remove that feature from the main crate feature.
+/// # Arguments
+/// * `main_name` - The name of the main crate
+/// * `feats` - The list of features in main crate that enable the dependency
+/// * `to_drop` - The feature to drop from the main crate
+/// # Returns
+/// None
+pub fn remove_feats_enabling_dep(main_name: &str, feats: &[String], to_drop: &String) {
+    if feats.is_empty() {
+        return;
+    }
+
+    let main_manifest = determine_manifest_file(main_name);
+    let mut main_toml: toml::Value =
+        toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
+
+    let features = main_toml
+        .get_mut("features")
+        .and_then(|v| v.as_table_mut())
+        .expect("Failed to get features table from main Cargo.toml");
+
+    let formatted = format!("dep:{}", to_drop);
+    let mut to_push = String::new();
+    for feat in feats {
+        if let Some(arr) = features.get_mut(feat).and_then(|v| v.as_array_mut()) {
+            arr.retain(|f| {
+                if let toml::Value::String(s) = f
+                    && (s == to_drop || *s == formatted)
+                {
+                    if s == &formatted {
+                        to_push = to_drop.clone();
+                    } else {
+                        to_push = formatted.clone();
+                    }
+                    debug!("Removing feature {} from main crate", s);
+                    return false;
+                }
+                true
+            });
+        }
+    }
+
+    add_feats_to_custom_feature(&mut main_toml, consts::CUSTOM_FEATURES_DISABLED, &[to_push]);
+
+    fs::write(
+        &main_manifest,
+        toml::to_string(&main_toml)
+            .context("Failed convert Value to string")
+            .unwrap(),
+    )
+    .unwrap();
 }
 
 /// Given a toml::Value representing the main Cargo.toml,
@@ -1375,25 +1429,56 @@ pub fn features_for_optional_deps(crate_info: &CrateInfo) -> Vec<(String, String
         .map(|(dep, _)| dep.name.clone())
         .collect();
 
-    let mut direct_feat_match: Vec<(String, String)> = optional_deps
+    // There are the two most common ways to enable an optional dependency
+    // via features. `somefeat = ["depname"]` or `somefeat = ["dep:depname"]`
+    // `read_local_features` function already handles parsing these correctly.
+    // Cargo by default generates an implicit `depname = ["dep:depname"]` feature
+    // for each optional dependency. But if the user has explicitly defined
+    // a feature with "dep:depname", then that will override the implicit one.
+    let common = |deps: &Vec<String>, implicit: bool| {
+        {
+            deps.iter().flat_map(|dep| {
+                main_feats.iter().filter_map(|(feat_name, dep_feats)| {
+                    let has_dep = dep_feats.iter().any(|f| {
+                        f.0 == dep.as_str()
+                            && if implicit {
+                                f.1 == "dep:"
+                            } else {
+                                f.1 == dep.as_str()
+                            }
+                    });
+                    if has_dep {
+                        Some((dep.clone(), feat_name.clone()))
+                    } else {
+                        None
+                    }
+                })
+            })
+        }
+        .collect::<Vec<_>>()
+    };
+
+    // We first find all optional dependencies that have the implicit feature
+    // overridden by the user.
+    let mut direct_feat_match: Vec<(String, String)> = common(&optional_deps, true);
+
+    let found: Vec<String> = direct_feat_match
         .iter()
-        .filter(|dep| main_feats.iter().any(|(feat, _)| feat == *dep))
-        .map(|dep| (dep.clone(), dep.clone()))
+        .map(|(dep, _)| dep.clone())
         .collect();
 
-    let indirect_feat_match: Vec<(String, String)> = optional_deps
+    // Now for the features that are not overridden, we find the implicit ones.
+    let not_found: Vec<String> = optional_deps
         .iter()
-        .filter_map(|dep| {
-            main_feats.iter().find_map(|(feat_name, dep_feats)| {
-                dep_feats
-                    .iter()
-                    .find(|f| f.0 == dep.as_str() && f.1 == "dep:")
-                    .map(|_| (dep.clone(), feat_name.clone()))
-            })
-        })
+        .filter(|dep| !found.contains(dep))
+        .cloned()
         .collect();
+
+    let indirect_feat_match: Vec<(String, String)> = common(&not_found, false);
 
     direct_feat_match.extend(indirect_feat_match);
+    direct_feat_match.sort();
+    direct_feat_match.dedup();
     direct_feat_match
 }
 
@@ -1404,40 +1489,84 @@ pub fn features_for_optional_deps(crate_info: &CrateInfo) -> Vec<(String, String
 /// If the dependency is optional and not enabled by any feature,
 /// it returns true, indicating that the dependency should be skipped.
 /// # Arguments
+/// * `main_name` - The name of the main crate.
 /// * `name` - The name of the dependency.
 /// * `crate_info` - The `CrateInfo` containing the crate's dependencies and features.
 /// * `deps_and_features` - A slice of tuples containing dependency names and the
 ///   features that enable them.
 /// * `enable_features` - A slice of features that are enabled in the main crate.
+/// * `disable_default` - A boolean indicating whether the default features are disabled.
 /// # Returns
 /// A boolean indicating whether the dependency should be skipped.
 pub fn should_skip_dep(
+    main_name: &str,
     name: &str,
     crate_info: &CrateInfo,
     deps_and_features: &[(String, String)],
     enable_features: &[String],
+    disable_default: bool,
 ) -> bool {
-    let dep_name = name.split(':').next().unwrap_or("").to_string();
-    let feat_of_dep = deps_and_features
-        .iter()
-        .find(|(dep, _)| dep == &dep_name)
-        .map(|(_, feat)| feat);
-
-    if let Some(feat) = feat_of_dep
-        && enable_features.contains(feat)
-    {
-        debug!("Dependency {} is enabled by feature {}", dep_name, feat);
-        return false;
-    }
-
-    if is_dep_optional(crate_info, &dep_name) {
-        debug!("Dependency {} is optional, skipping", dep_name);
+    if is_proc_macro(name) {
+        debug!("Dependency {} is a proc-macro, skipping", name);
         return true;
     }
 
-    debug!("Dependency {} is not optional, not skipping", dep_name);
+    let dep_name = name.split(':').next().unwrap_or("").to_string();
+    let feat_of_dep: Vec<String> = deps_and_features
+        .iter()
+        .filter(|(dep, _)| dep == &dep_name)
+        .map(|(_, feat)| feat.clone())
+        .collect();
 
-    false
+    let main_feats = &crate_info.features;
+    let mut worklist: Vec<String> = enable_features.to_vec();
+    if !disable_default {
+        worklist.push("default".to_string());
+    }
+    let mut all_enabled = HashSet::new();
+    all_enabled.extend(enable_features.iter().cloned());
+
+    while let Some(item) = worklist.pop() {
+        let enabled = main_feats
+            .iter()
+            .find(|(feat_name, _)| *feat_name == item)
+            .map(|(_, dep_feats)| dep_feats);
+        if let Some(dep_feats) = enabled {
+            let possible: Vec<String> = dep_feats
+                .iter()
+                .filter(|(dep, feat)| feat == dep)
+                .map(|(dep, _)| dep.clone())
+                .collect();
+            worklist.extend(
+                possible
+                    .iter()
+                    .filter(|f| !all_enabled.contains(*f))
+                    .cloned(),
+            );
+            all_enabled.extend(possible);
+        }
+    }
+
+    let cfg = z3::Config::new();
+    let ctx = z3::Context::new(&cfg);
+    let found = check_for_no_std(name, &ctx);
+
+    debug!(
+        "Dependency: {} is enabled by features: {:?}",
+        dep_name, feat_of_dep
+    );
+
+    if !found {
+        debug!(
+            "Dependency {} does not support no_std. Create a new feature for each of the above list",
+            dep_name
+        );
+        remove_feats_enabling_dep(main_name, &feat_of_dep, &dep_name);
+        true
+    } else {
+        debug!("Dependency {} supports no_std", dep_name);
+        false
+    }
 }
 
 /// Check if a dependency is optional in the given `CrateInfo`.
