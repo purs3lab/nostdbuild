@@ -64,7 +64,6 @@ fn main() -> anyhow::Result<()> {
     };
 
     let mut db_data = db::read_db_file()?;
-    let mut results = Vec::new();
     let mut telemetry = nostd::Telemetry::default();
 
     if let Some(url) = cli.url {
@@ -77,6 +76,8 @@ fn main() -> anyhow::Result<()> {
         name = downloader::clone_from_crates(&name, None)?;
         debug!("Downloaded crate: {}", name);
     }
+
+    let mut stats = nostd::AllStats::new(name.clone());
     downloader::init_worklist(
         &name,
         &mut crate_name_rename,
@@ -91,10 +92,12 @@ fn main() -> anyhow::Result<()> {
     let found = parser::check_for_no_std(&name, &ctx);
 
     if !found {
+        stats.shutdown();
         return Err(anyhow::anyhow!("Main crate does not support no_std build"));
     }
 
     let no_std = downloader::download_all_dependencies(&mut worklist, &mut crate_info, depth)?;
+    stats.crate_info = Some(&crate_info);
 
     let main_attributes = parser::parse_crate(&name, true);
 
@@ -129,10 +132,6 @@ fn main() -> anyhow::Result<()> {
     // TODO: There are some cleanup and refactoring to minimize the read -> mutate -> write pattern for the toml
     // TODO: Use better mechanism to get the .rs file to check for no_std (use metadata to get this).
     // TODO: Convert assertions to non fatal warnings and collect stats and dump at the end.
-    // TODO: IMPORTANT: Sometimes, enabling a feature enables an optional dependency. If this is the case, We need to check if the
-    // features required by the optional dependency are available. If not, we either add them to main crate or disable the optional dependency.
-    // Check `mech-core` for an example.
-    // TODO: IMPORTANT: `should_skip_dep` currently does not do a recursive check. If a feature enables another feature and so on, we need to check all the features in the chain.
     let mut deps_args = Vec::new();
     for dep in deps_attrs {
         if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {
@@ -246,7 +245,7 @@ fn main() -> anyhow::Result<()> {
 
     println!("Final args: {:?}", final_args);
     let one_succeeded = if no_std {
-        compiler::try_compile(&name, &target, &final_args, &mut results)
+        compiler::try_compile(&name, &target, &final_args, &mut stats)
     } else {
         Ok(false)
     }?;
@@ -263,11 +262,12 @@ fn main() -> anyhow::Result<()> {
     }
 
     db::write_db_file(db_data)?;
-    db::write_final_json(&name, &results);
     let dir = std::path::Path::new(consts::DOWNLOAD_PATH).join(name.replace(':', "-"));
     let manifest = parser::determine_manifest_file(&name);
     fs::copy(dir.join("Cargo.toml.bak"), &manifest)
         .context("Failed to restore original Cargo.toml")?;
     fs::remove_file(dir.join("Cargo.toml.bak")).context("Failed to remove backup Cargo.toml")?;
+
+    stats.shutdown();
     Ok(())
 }

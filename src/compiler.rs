@@ -1,13 +1,13 @@
 use anyhow::Context;
 use log::debug;
 
-use crate::{Results, Status, consts, parser};
+use crate::{AllStats, Results, Status, consts, parser};
 
 pub fn try_compile(
     name_with_version: &str,
     clitarget: &str,
     enable: &[String],
-    results: &mut Vec<Results>,
+    stats: &mut AllStats,
 ) -> anyhow::Result<bool> {
     let mut one_succeeded = false;
     if !clitarget.is_empty() {
@@ -15,20 +15,14 @@ pub fn try_compile(
             name_with_version,
             clitarget,
             enable,
-            results,
+            stats,
             &mut one_succeeded,
         )?;
         return Ok(one_succeeded);
     }
 
     for target in consts::TARGET_LIST.iter() {
-        try_compile_for_target(
-            name_with_version,
-            target,
-            enable,
-            results,
-            &mut one_succeeded,
-        )?;
+        try_compile_for_target(name_with_version, target, enable, stats, &mut one_succeeded)?;
     }
     Ok(one_succeeded)
 }
@@ -37,7 +31,7 @@ fn try_compile_for_target(
     name_with_version: &str,
     target: &str,
     enable: &[String],
-    results: &mut Vec<Results>,
+    stats: &mut AllStats,
     one_succeeded: &mut bool,
 ) -> anyhow::Result<()> {
     let manifest = parser::determine_manifest_file(name_with_version);
@@ -91,7 +85,7 @@ fn try_compile_for_target(
         },
     };
     debug!("Cargo build {:?} for target: {}", &result.status, target);
-    results.push(result);
+    stats.compilation_res.push(result);
     std::process::Command::new("cargo")
         .arg("+nightly")
         .arg("clean")

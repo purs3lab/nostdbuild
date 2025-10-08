@@ -3,9 +3,8 @@ use proc_macro2::Span;
 use std::{fs, path, process::Command};
 use which::which;
 
-use crate::ReadableSpan;
-use crate::consts;
-use crate::parser;
+use crate::{AllStats, ReadableSpan};
+use crate::{consts, parser};
 
 pub fn hir_visit(crate_name: &str) {
     if !is_cargo_hir_installed() {
@@ -53,11 +52,12 @@ pub fn hir_visit(crate_name: &str) {
     }
 }
 
-pub fn check_for_unguarded_std_usages(spans: &[ReadableSpan]) -> bool {
+pub fn check_for_unguarded_std_usages(spans: &[ReadableSpan], stats: &mut AllStats) -> bool {
     if !path::Path::new(consts::HIR_VISITOR_SPAN_DUMP).exists() {
-        panic!(
-            "HIR visitor span dump file does not exist. Please ensure that `cargo-hir` ran successfully."
+        debug!(
+            "ERROR:HIR visitor span dump file does not exist. Please ensure that `cargo-hir` ran successfully."
         );
+        return false;
     }
 
     let data = fs::read_to_string(consts::HIR_VISITOR_SPAN_DUMP)

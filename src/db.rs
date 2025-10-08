@@ -1,17 +1,13 @@
 use anyhow::Context;
 use bincode::config;
 use log::debug;
-use serde_json;
 use std::{
     fs::{self, File},
     io::Read,
     path::Path,
 };
 
-use crate::{
-    DBData, Results,
-    consts::{DB_FILE_NAME, RESULTS_JSON_PREFIX, RESULTS_JSON_SUFFIX},
-};
+use crate::{DBData, consts::DB_FILE_NAME};
 
 /// Read the db file and return the data
 /// # Returns
@@ -92,22 +88,4 @@ pub fn add_to_db_data(
         name_with_version: name.to_string(),
         features: (features.0.clone(), features.1.clone()),
     });
-}
-
-/// Write the final json file with the given name and results
-/// # Arguments
-/// * `name_with_version` - The name with version to write to the json file
-/// * `results` - The results to write to the json file
-pub fn write_final_json(name_with_version: &str, results: &Vec<Results>) {
-    let json_file_name = format!(
-        "{}{}{}",
-        RESULTS_JSON_PREFIX, name_with_version, RESULTS_JSON_SUFFIX
-    );
-
-    if let Some(parent) = Path::new(&json_file_name).parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-
-    let json_data = serde_json::to_string_pretty(&results).unwrap();
-    fs::write(json_file_name, json_data).unwrap();
 }
