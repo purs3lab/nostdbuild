@@ -255,7 +255,7 @@ fn main() -> anyhow::Result<()> {
         db::add_to_db_data(&mut db_data, &name, (&enable, &disable));
     } else {
         hir::hir_visit(&name);
-        if hir::check_for_unguarded_std_usages(&readable_spans) {
+        if hir::check_for_unguarded_std_usages(&readable_spans, &mut stats) {
             return Err(anyhow::anyhow!(
                 "Found unguarded std usage in the main crate"
             ));

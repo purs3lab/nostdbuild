@@ -67,7 +67,16 @@ pub fn check_for_unguarded_std_usages(spans: &[ReadableSpan]) -> bool {
 
     debug!("Hir spans: {:?}", hir_spans);
     debug!("Proc macro spans: {:?}", spans);
-    false
+
+    let found: Vec<ReadableSpan> = hir_spans
+        .iter()
+        .filter(|hir| spans.iter().all(|s| !s.contains(hir)))
+        .cloned()
+        .collect();
+
+    stats.std_usage_matches.extend(found.clone());
+
+    !found.is_empty()
 }
 
 pub fn proc_macro_span_to_readable(spans: &[(Span, Option<String>)]) -> Vec<ReadableSpan> {
