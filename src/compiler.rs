@@ -1,13 +1,14 @@
 use anyhow::Context;
 use log::debug;
 
-use crate::{AllStats, Results, Status, consts, parser};
+use crate::{AllStats, Results, Status, Telemetry, consts, parser};
 
 pub fn try_compile(
     name_with_version: &str,
     clitarget: &str,
     enable: &[String],
     stats: &mut AllStats,
+    telemetry: &mut Telemetry,
 ) -> anyhow::Result<bool> {
     let mut one_succeeded = false;
     if !clitarget.is_empty() {
@@ -17,12 +18,20 @@ pub fn try_compile(
             enable,
             stats,
             &mut one_succeeded,
+            telemetry,
         )?;
         return Ok(one_succeeded);
     }
 
     for target in consts::TARGET_LIST.iter() {
-        try_compile_for_target(name_with_version, target, enable, stats, &mut one_succeeded)?;
+        try_compile_for_target(
+            name_with_version,
+            target,
+            enable,
+            stats,
+            &mut one_succeeded,
+            telemetry,
+        )?;
     }
     Ok(one_succeeded)
 }
@@ -33,6 +42,7 @@ fn try_compile_for_target(
     enable: &[String],
     stats: &mut AllStats,
     one_succeeded: &mut bool,
+    telemetry: &mut Telemetry,
 ) -> anyhow::Result<()> {
     let manifest = parser::determine_manifest_file(name_with_version);
     let bin_target = parser::toml_has_bin_target(&manifest);
@@ -70,8 +80,11 @@ fn try_compile_for_target(
             if !*one_succeeded {
                 *one_succeeded = true;
             }
+            telemetry.build_success_targets.push(target.to_string());
+            telemetry.build_success_count += 1;
             Status::Success
         } else {
+            telemetry.build_fail_targets.push(target.to_string());
             Status::Failed
         },
         error: if output.status.success() {

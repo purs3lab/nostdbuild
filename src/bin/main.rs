@@ -1,9 +1,7 @@
 #![feature(rustc_private)]
 
-use anyhow::Context;
 use clap::Parser;
 use log::debug;
-use std::fs;
 
 use nostd::{CrateInfo, compiler, consts, db, downloader, hir, parser, solver};
 
@@ -78,12 +76,17 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut stats = nostd::AllStats::new(name.clone());
+    println!("Processing crate: {}", name);
+    let (temp_name, version) = name.split_once(':').unwrap_or((&name, "latest"));
+    telemetry.name = temp_name.to_string();
+    telemetry.version = version.to_string();
     downloader::init_worklist(
         &name,
         &mut crate_name_rename,
         &mut worklist,
         &mut crate_info,
     )?;
+    telemetry.num_deps = crate_info.deps_and_features.len();
 
     debug!("Dependencies: {:?}", crate_info);
 
@@ -92,12 +95,20 @@ fn main() -> anyhow::Result<()> {
     let found = parser::check_for_no_std(&name, &ctx);
 
     if !found {
-        stats.shutdown();
+        stats.telemetry = Some(telemetry);
+        stats.dump();
         return Err(anyhow::anyhow!("Main crate does not support no_std build"));
     }
 
-    let no_std = downloader::download_all_dependencies(&mut worklist, &mut crate_info, depth)?;
+    let no_std = downloader::download_all_dependencies(
+        &mut worklist,
+        &mut crate_info,
+        depth,
+        &mut telemetry,
+    )?;
     stats.crate_info = Some(&crate_info);
+    telemetry.no_std = found;
+    telemetry.dep_not_no_std = !no_std;
 
     let main_attributes = parser::parse_crate(&name, true);
 
@@ -110,6 +121,7 @@ fn main() -> anyhow::Result<()> {
         &mut db_data,
         &crate_info,
         true,
+        &mut telemetry,
     )?;
 
     if cli.dry_run {
@@ -118,7 +130,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let (disable_default, mut main_features) =
-        solver::final_feature_list_main(&crate_info, &enable, &disable);
+        solver::final_feature_list_main(&crate_info, &enable, &disable, &mut telemetry);
 
     let dep_and_feats = parser::features_for_optional_deps(&crate_info);
     debug!("Dependency and features: {:?}", dep_and_feats);
@@ -143,12 +155,13 @@ fn main() -> anyhow::Result<()> {
         }
 
         if parser::should_skip_dep(
-            &name,
             &dep.crate_name,
             &crate_info,
             &dep_and_feats,
             &main_features,
             disable_default,
+            &mut telemetry,
+            false,
         ) {
             debug!("Dependency {} is optional, skipping", dep.crate_name);
             skipped.push(dep);
@@ -164,6 +177,7 @@ fn main() -> anyhow::Result<()> {
             &mut db_data,
             &crate_info,
             &crate_name_rename,
+            &mut telemetry,
         )?;
         deps_args.extend(local_dep_args);
 
@@ -173,6 +187,7 @@ fn main() -> anyhow::Result<()> {
             &mut main_features,
             &dep.crate_name,
             &deps_args,
+            &mut telemetry,
         );
     }
 
@@ -184,12 +199,13 @@ fn main() -> anyhow::Result<()> {
     let mut dep_args_skipped = Vec::new();
     for dep in skipped {
         if !parser::should_skip_dep(
-            &name,
             &dep.crate_name,
             &crate_info,
             &dep_and_feats,
             &temp_combined,
             disable_default,
+            &mut telemetry,
+            true,
         ) {
             debug!(
                 "Dependency {} which was skipped previously is now required",
@@ -202,6 +218,7 @@ fn main() -> anyhow::Result<()> {
                 &mut db_data,
                 &crate_info,
                 &crate_name_rename,
+                &mut telemetry,
             )?;
 
             dep_args_skipped.extend(local_dep_args);
@@ -211,12 +228,15 @@ fn main() -> anyhow::Result<()> {
                 &mut main_features,
                 &dep.crate_name,
                 &dep_args_skipped,
+                &mut telemetry,
             );
         }
     }
+    deps_args.extend(dep_args_skipped);
 
     let mut final_args = Vec::new();
     let mut combined_features = Vec::new();
+    let mut final_features_len = main_features.len();
     main_features.extend(enable.clone());
     let main_feature_string = main_features.join(",");
 
@@ -227,6 +247,7 @@ fn main() -> anyhow::Result<()> {
         deps_args.sort();
         deps_args.dedup();
     }
+    final_features_len += deps_args.len();
 
     if disable_default {
         final_args.push("--no-default-features".to_string());
@@ -242,32 +263,30 @@ fn main() -> anyhow::Result<()> {
         final_args.push("--features".to_string());
         final_args.push(combined_features.join(","));
     }
+    telemetry.final_features_length = final_features_len;
 
     println!("Final args: {:?}", final_args);
     let one_succeeded = if no_std {
-        compiler::try_compile(&name, &target, &final_args, &mut stats)
+        compiler::try_compile(&name, &target, &final_args, &mut stats, &mut telemetry)
     } else {
         Ok(false)
     }?;
 
     if one_succeeded {
+        telemetry.build_success = true;
         db::add_to_db_data(&mut db_data, &name, (&enable, &disable));
     } else {
-        hir::hir_visit(&name);
+        hir::hir_visit(&name, &mut telemetry);
+        telemetry.hir_analysis_done = true;
         if hir::check_for_unguarded_std_usages(&readable_spans, &mut stats) {
-            return Err(anyhow::anyhow!(
-                "Found unguarded std usage in the main crate"
-            ));
+            telemetry.unguarded_std_usages = true;
+            debug!("ERROR: Found unguarded std usage in the main crate");
         }
     }
 
     db::write_db_file(db_data)?;
-    let dir = std::path::Path::new(consts::DOWNLOAD_PATH).join(name.replace(':', "-"));
-    let manifest = parser::determine_manifest_file(&name);
-    fs::copy(dir.join("Cargo.toml.bak"), &manifest)
-        .context("Failed to restore original Cargo.toml")?;
-    fs::remove_file(dir.join("Cargo.toml.bak")).context("Failed to remove backup Cargo.toml")?;
 
-    stats.shutdown();
+    stats.telemetry = Some(telemetry);
+    stats.dump();
     Ok(())
 }

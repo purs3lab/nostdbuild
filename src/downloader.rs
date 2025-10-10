@@ -5,13 +5,13 @@ use git2::Repository;
 use log::debug;
 use reqwest::blocking;
 use semver::VersionReq;
-use std::{collections::HashSet, fs, path::Path};
+use std::{collections::HashSet, fs, path::Path, time::Instant};
 use tar::Archive;
 use toml::{self, Value, map::Map};
 use walkdir::WalkDir;
 
 use crate::{
-    CrateInfo, DEPENDENCIES, Dependency,
+    CrateInfo, DEPENDENCIES, Dependency, Telemetry,
     consts::{CRATE_IO, DOWNLOAD_PATH},
     parser,
 };
@@ -98,6 +98,7 @@ pub fn download_all_dependencies(
     worklist: &mut Vec<(String, String)>,
     crate_info: &mut CrateInfo,
     depth: u32,
+    telemetry: &mut Telemetry,
 ) -> Result<bool, anyhow::Error> {
     debug!("Initial worklist length: {}", worklist.len());
     let mut initlist = Vec::new();
@@ -161,8 +162,12 @@ pub fn download_all_dependencies(
     let mut visited = HashSet::new();
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
-    parser::determine_n_depth_dep_no_std(initlist, depth, 0, &mut visited, &ctx);
-    Ok(true)
+    let now = Instant::now();
+    let (no_std, depth_traversed) =
+        parser::determine_n_depth_dep_no_std(initlist, depth, 0, &mut visited, &ctx);
+    telemetry.initial_dep_verification_time_ms = now.elapsed().as_millis();
+    telemetry.deps_depth_traversed = depth_traversed;
+    Ok(no_std)
 }
 
 /// Read the dependencies and their versions from the Cargo.toml file

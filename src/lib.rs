@@ -1,9 +1,10 @@
 #![feature(rustc_private)]
 
+use anyhow::Context;
 use bincode::{Decode, Encode};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::{fs, sync::Mutex};
 
 pub mod compiler;
 pub mod consts;
@@ -108,7 +109,7 @@ pub struct AllStats<'a> {
     pub crate_info: Option<&'a CrateInfo>,
     // Collects all unguarded std usages found by hir analysis
     pub std_usage_matches: Vec<ReadableSpan>,
-    // pub telemetry: Telemetry,
+    pub telemetry: Option<Telemetry>,
 }
 
 impl<'a> AllStats<'a> {
@@ -118,24 +119,40 @@ impl<'a> AllStats<'a> {
             compilation_res: Vec::new(),
             crate_info: None,
             std_usage_matches: Vec::new(),
-            // telemetry: Telemetry::default(),
+            telemetry: None,
         }
     }
 
     /// Save all the stats to the respective files.
-    pub fn shutdown(&mut self) {
+    /// Also restore the original Cargo.toml from the backup.
+    pub fn dump(&mut self) {
         let stats_dir = format!(
             "{}/{}",
             consts::RESULTS_PATH,
             self.name.replace("-", "_").replace(":", "_")
         );
+
+        let dir = std::path::Path::new(consts::DOWNLOAD_PATH).join(self.name.replace(':', "-"));
+        let manifest = parser::determine_manifest_file(&self.name);
+        fs::copy(dir.join("Cargo.toml.bak"), &manifest)
+            .context("Failed to restore original Cargo.toml")
+            .unwrap();
+        fs::remove_file(dir.join("Cargo.toml.bak"))
+            .context("Failed to remove backup Cargo.toml")
+            .unwrap();
+
         std::fs::create_dir_all(&stats_dir).unwrap();
         let crate_info_file = format!("{}/crate_info.json", stats_dir);
         let compilation_res_file = format!("{}/compilation_results.json", stats_dir);
         let std_usage_file = format!("{}/std_usages.json", stats_dir);
+        let telemetry_file = format!("{}/telemetry.json", stats_dir);
         if let Some(crate_info) = &self.crate_info {
             let crate_info_data = serde_json::to_string_pretty(crate_info).unwrap();
             std::fs::write(crate_info_file, crate_info_data).unwrap();
+        }
+        if let Some(telemetry) = &self.telemetry {
+            let telemetry_data = serde_json::to_string_pretty(telemetry).unwrap();
+            std::fs::write(telemetry_file, telemetry_data).unwrap();
         }
         let compilation_res_data = serde_json::to_string_pretty(&self.compilation_res).unwrap();
         let std_usage_data = serde_json::to_string_pretty(&self.std_usage_matches).unwrap();
@@ -160,9 +177,7 @@ pub struct Telemetry {
     /// Number of direct dependencies
     pub num_deps: usize,
     /// Total depth traversed in the dependency graph to verify no_std
-    pub deps_depth_traversed: usize,
-    /// Is the main crate not no_std
-    pub crate_not_no_std: bool,
+    pub deps_depth_traversed: u32,
     /// Did one of the dependencies not support no_std
     pub dep_not_no_std: bool,
     /// Is the main crate using conditional no_std
@@ -174,21 +189,53 @@ pub struct Telemetry {
     /// If the main crate is unconditional no_std, does it have a dependency which has `extern crate std;` statement
     pub indirect_extern_std_usage: bool,
     /// If the above is true, what is the depth of the dependency which has `extern crate std;` statement
-    pub indirect_extern_std_usage_depth: usize,
+    pub indirect_extern_std_usage_depth: u32,
+    /// If the above is true, what is the name of the dependency which has `extern crate std;` statement.
+    /// This will be None if the crate is using conditional no_std or is unconditional no_std without any extern crate std usage
+    pub indirect_extern_std_usage_crate: Option<String>,
     /// Does the main crate import files conditionally using `cfg` attributes
     pub conditional_file_import: bool,
+    /// List of files which are conditionally imported using `cfg` attributes
+    /// and contain `extern crate std;` statements in them
+    pub conditional_files_with_std: Vec<String>,
     /// Total number of features to enable for no_std build
     pub final_features_length: usize,
-    /// Did we have to modify the default features of the main crate
+    /// Did the main crate not have a feature that is rqeuired for it to compile in no_std mode
+    pub new_feats_added_to_main: bool,
+    /// What were the new features that we added to the main crate features list
+    /// Each entry is an array of features that were added for that particular dependency
+    pub new_feats_added_to_main_list: Vec<String>,
+    /// Did we have to add any features to the main crate features to enable some feature for a dependency
+    /// This is the dependency equivalent of `new_feats_added_to_main` field
+    pub custom_features_added: Vec<(String, bool)>,
+    /// What were the new features that we added to the main crate features list for dependencies
+    /// This is the dependency equivalent of `new_feats_added_to_main_list` field
+    pub custom_features_added_list: Vec<(String, Vec<String>)>,
+    /// Did we have to modify the default features that main set for any of its dependencies
     pub default_list_modified: bool,
-    /// Did we remove any unnecessary features from main crate features
-    pub unnecessary_features_removed: bool,
-    /// Did we have to add any features to the main crate features
-    pub custom_features_added: bool,
+    /// Which dependencies did we modify the default features for
+    pub default_list_modified_for: Vec<String>,
+    /// Did we change the default-features to false for any dependency
+    pub default_true_unset: bool,
+    /// Did we remove any unnecessary features from main crate features that main enabled for any of its dependencies
+    pub unnecessary_features_removed: Vec<(String, bool)>,
+    /// Features that were moved for the above case
+    pub unnecessary_features_removed_list: Vec<(String, Vec<String>)>,
+    /// List of optional dependencies that were enabled due to some other feature being enabled
+    pub optional_deps_enabled: Vec<String>,
+    /// List of optional dependencies that were enabled due to some other feature being enabled
+    /// along with the features that enabled them
+    pub optional_deps_enabled_features: Vec<(String, Vec<String>)>,
+    /// List of optional dependencies that were disabled after it got enabled due to some other feature being enabled.
+    /// This does not count optional dependencies that were never enabled
+    pub optional_deps_disabled: Vec<String>,
+    /// For the above list, the features that caused them to be enabled in the first place, that were then moved to
+    /// another list.
+    pub optional_deps_disabled_features_moved: Vec<(String, Vec<String>)>,
     /// Was the crate build successful for any target
     pub build_success: bool,
     /// Number of targets the crate built successfully for
-    pub build_success_count: usize,
+    pub build_success_count: u32,
     /// List of targets the crate built successfully for
     pub build_success_targets: Vec<String>,
     /// List of targets the crate failed to build for
@@ -202,6 +249,7 @@ pub struct Telemetry {
     /// Time taken for hir driver analysis in milliseconds
     pub hir_driver_time_ms: u128,
     /// Time taken for constraint solving in milliseconds
+    /// This includes the time taken to filter out possible equations
     pub constraint_solving_time_ms: u128,
     /// Time taken for initial recrusive visit to verify dependencies are no_std in milliseconds
     pub initial_dep_verification_time_ms: u128,

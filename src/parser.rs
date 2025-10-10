@@ -2,14 +2,14 @@ use anyhow::Context;
 use log::debug;
 use proc_macro2::{Span, TokenStream};
 // use quote::ToTokens;
-use std::{collections::HashSet, fs, path::Path};
+use std::{collections::HashSet, fs, path::Path, time::Instant};
 use syn::{
     Attribute, ExprBlock, Item, ItemExternCrate, Meta, Stmt, spanned::Spanned, visit::Visit,
 };
 use walkdir::WalkDir;
 use z3::{self, ast::Bool};
 
-use crate::{CrateInfo, DBData, DEPENDENCIES, consts, db, downloader, solver};
+use crate::{CrateInfo, DBData, DEPENDENCIES, Telemetry, consts, db, downloader, solver};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Logic {
@@ -444,23 +444,28 @@ pub fn process_crate(
     db_data: &mut [DBData],
     crate_info: &CrateInfo,
     is_main: bool,
+    telemetry: &mut Telemetry,
 ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
     let (mut enable, mut disable): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
 
     let (no_std, mut equation, mut parsed_attr) = parse_main_attributes(attrs, ctx);
+
+    telemetry.conditional_no_std = no_std;
+
     if !attrs.unconditional_no_std {
         if !no_std {
             debug!("No no_std found for the crate");
             return Ok((Vec::new(), Vec::new()));
         }
     } else {
+        telemetry.unconditional_no_std = true;
         debug!(
             "crate {} is an unconditional no_std crate",
             name_with_version
         );
         // If the crate is both conditional and unconditional no_std,
         // we will treat it as unconditional.
-        if !no_std {
+        if no_std {
             debug!(
                 "WARNING: Crate {} is both unconditional and conditional no_std, will consider only unconditional.",
                 name_with_version
@@ -477,6 +482,7 @@ pub fn process_crate(
         let std_attrs = get_item_extern_std(&items);
         if !std_attrs.is_empty() {
             debug!("Leaf level crate reached {}", name_with_version);
+            telemetry.direct_extern_std_usage = true;
             let features = db::get_from_db_data(db_data, name_with_version);
             if let Some(feats) = features {
                 debug!(
@@ -526,7 +532,7 @@ pub fn process_crate(
                     .map(|(dep, _)| (dep.name.clone(), dep.version.clone()))
                     .collect();
                 let externs = get_item_extern_dep(&items, &names_and_versions);
-                match parse_top_level_externs(ctx, &names_and_versions, &externs) {
+                match parse_top_level_externs(ctx, &names_and_versions, &externs, telemetry) {
                     Ok((eq, attr)) => {
                         if let Some(eq) = eq {
                             equation = Some(eq.not());
@@ -548,6 +554,9 @@ pub fn process_crate(
     // This part adds equations if there are attributes that conditionally include
     // files which might contain unguarded `extern crate std`.
     let files_and_equations = get_files_in_attributes(attrs, ctx);
+    if !files_and_equations.is_empty() {
+        telemetry.conditional_file_import = true;
+    }
     debug!("Files in attributes: {:?}", files_and_equations);
     let files_unguared = parse_item_extern_crates_for_files(name_with_version);
     debug!(
@@ -558,6 +567,7 @@ pub fn process_crate(
     for (file, eq) in files_and_equations {
         if files_unguared.contains(&file) {
             debug!("File {} contains unguarded extern crate std", file);
+            telemetry.conditional_files_with_std.push(file.clone());
             if let Some(e) = eq {
                 let neg = e.not();
                 if let Some(existing_eq) = &mut equation {
@@ -569,8 +579,11 @@ pub fn process_crate(
         }
     }
 
+    let now = Instant::now();
     // Finally, we solve the equations
-    let model = solver::solve(ctx, &equation, &filtered);
+    let (model, max_len) = solver::solve(ctx, &equation, &filtered);
+    telemetry.constraint_solving_time_ms = now.elapsed().as_millis();
+    telemetry.max_contraint_length = max_len;
     if enable.is_empty() && disable.is_empty() {
         (enable, disable) = solver::model_to_features(&model);
     }
@@ -598,12 +611,20 @@ pub fn process_dep_crate(
     db_data: &mut [DBData],
     crate_info: &CrateInfo,
     crate_name_rename: &[(String, String)],
+    telemetry: &mut Telemetry,
 ) -> Result<Vec<String>, anyhow::Error> {
     let (enable, disable) = match db::get_from_db_data(db_data, &dep.crate_name) {
         Some(dbdata) => (dbdata.features.0.clone(), dbdata.features.1.clone()),
         None => {
-            let (enable, disable) =
-                process_crate(ctx, dep, &dep.crate_name, db_data, crate_info, false)?;
+            let (enable, disable) = process_crate(
+                ctx,
+                dep,
+                &dep.crate_name,
+                db_data,
+                crate_info,
+                false,
+                telemetry,
+            )?;
             (enable, disable)
         }
     };
@@ -619,6 +640,7 @@ pub fn process_dep_crate(
         &enable,
         &disable,
         crate_name_rename,
+        telemetry,
     );
 
     debug!(
@@ -628,6 +650,7 @@ pub fn process_dep_crate(
 
     if update_default_config {
         update_main_crate_default_list(main_name, &dep.crate_name, crate_name_rename);
+        telemetry.default_true_unset = true;
     }
 
     debug!(
@@ -656,6 +679,7 @@ pub fn move_unnecessary_dep_feats(
     flexible_main_args: &mut Vec<String>,
     dep_name: &str,
     deps_args: &[String],
+    telemetry: &mut Telemetry,
 ) {
     let main_manifest = determine_manifest_file(main_name);
     let mut main_toml: toml::Value =
@@ -706,6 +730,19 @@ pub fn move_unnecessary_dep_feats(
         }
     }
 
+    if !removed.is_empty() {
+        telemetry
+            .unnecessary_features_removed
+            .push((dep_name.to_string(), true));
+        telemetry
+            .unnecessary_features_removed_list
+            .push((dep_name.to_string(), removed.iter().cloned().collect()));
+    } else {
+        telemetry
+            .unnecessary_features_removed
+            .push((dep_name.to_string(), false));
+    }
+
     add_feats_to_custom_feature(
         &mut main_toml,
         consts::DEP_UNNECESSARY_FEATURES,
@@ -729,16 +766,20 @@ pub fn move_unnecessary_dep_feats(
 /// * `current_depth` - The current depth in the recursion
 /// * `visited` - A set to keep track of visited dependencies
 /// * `ctx` - The Z3 context
+/// # Returns
+/// The maximum depth tested for no_std support. This can be less than
+/// the requested depth if there are no more dependencies to check or
+/// if a dependency does not support no_std.
 pub fn determine_n_depth_dep_no_std(
     initlist: Vec<(String, String)>,
     depth: u32,
     current_depth: u32,
     visited: &mut HashSet<(String, String)>,
     ctx: &z3::Context,
-) {
+) -> (bool, u32) {
     let mut local_initlist = Vec::new();
-    if current_depth >= depth {
-        return;
+    if current_depth >= depth || initlist.is_empty() {
+        return (true, current_depth);
     }
     for (name, version) in initlist {
         if !visited.insert((name.clone(), version.clone())) {
@@ -770,19 +811,19 @@ pub fn determine_n_depth_dep_no_std(
                 .split_once(':')
                 .unwrap_or((&name_with_version, ""));
 
-            assert!(
-                check_for_no_std(&name_with_version, ctx),
-                "Dependency {} of dependency {} does not support no_std build at depth {}",
-                name_with_version,
-                name,
-                current_depth
-            );
+            if !check_for_no_std(&name_with_version, ctx) {
+                debug!(
+                    "ERROR: Dependency {} of dependency {} does not support no_std build at depth {}",
+                    name_with_version, name, current_depth
+                );
+                return (false, current_depth);
+            }
 
             local_initlist.push((name_inner.to_string(), version.to_string()));
         }
     }
 
-    determine_n_depth_dep_no_std(local_initlist, depth - 1, current_depth + 1, visited, ctx);
+    determine_n_depth_dep_no_std(local_initlist, depth, current_depth + 1, visited, ctx)
 }
 
 /// Parse the attributes of a the main crate.
@@ -1489,22 +1530,25 @@ pub fn features_for_optional_deps(crate_info: &CrateInfo) -> Vec<(String, String
 /// If the dependency is optional and not enabled by any feature,
 /// it returns true, indicating that the dependency should be skipped.
 /// # Arguments
-/// * `main_name` - The name of the main crate.
 /// * `name` - The name of the dependency.
 /// * `crate_info` - The `CrateInfo` containing the crate's dependencies and features.
 /// * `deps_and_features` - A slice of tuples containing dependency names and the
 ///   features that enable them.
 /// * `enable_features` - A slice of features that are enabled in the main crate.
 /// * `disable_default` - A boolean indicating whether the default features are disabled.
+/// * `telemetry` - A mutable reference to the `Telemetry` struct for logging purposes.
+/// * `second_round` - A boolean indicating if this is the second set of calls made to
+///   this function.
 /// # Returns
 /// A boolean indicating whether the dependency should be skipped.
 pub fn should_skip_dep(
-    main_name: &str,
     name: &str,
     crate_info: &CrateInfo,
     deps_and_features: &[(String, String)],
     enable_features: &[String],
     disable_default: bool,
+    telemetry: &mut Telemetry,
+    second_round: bool,
 ) -> bool {
     if is_proc_macro(name) {
         debug!("Dependency {} is a proc-macro, skipping", name);
@@ -1512,7 +1556,7 @@ pub fn should_skip_dep(
     }
 
     let dep_name = name.split(':').next().unwrap_or("").to_string();
-    let feat_of_dep: Vec<String> = deps_and_features
+    let feats_of_dep: Vec<String> = deps_and_features
         .iter()
         .filter(|(dep, _)| dep == &dep_name)
         .map(|(_, feat)| feat.clone())
@@ -1523,10 +1567,17 @@ pub fn should_skip_dep(
     if !disable_default {
         worklist.push("default".to_string());
     }
+    // This is used to prevent going in circles.
     let mut all_enabled = HashSet::new();
-    all_enabled.extend(enable_features.iter().cloned());
+    all_enabled.extend(worklist.iter().cloned());
+
+    let mut features_for_dependency: Vec<String> = Vec::new();
 
     while let Some(item) = worklist.pop() {
+        if feats_of_dep.contains(&item) {
+            features_for_dependency.push(item.clone());
+        }
+
         let enabled = main_feats
             .iter()
             .find(|(feat_name, _)| *feat_name == item)
@@ -1547,26 +1598,46 @@ pub fn should_skip_dep(
         }
     }
 
-    let cfg = z3::Config::new();
-    let ctx = z3::Context::new(&cfg);
-    let found = check_for_no_std(name, &ctx);
+    if !features_for_dependency.is_empty() {
+        let cfg = z3::Config::new();
+        let ctx = z3::Context::new(&cfg);
+        let found = check_for_no_std(name, &ctx);
 
-    debug!(
-        "Dependency: {} is enabled by features: {:?}",
-        dep_name, feat_of_dep
-    );
-
-    if !found {
         debug!(
-            "Dependency {} does not support no_std. Create a new feature for each of the above list",
-            dep_name
+            "Dependency: {} is enabled by features: {:?} and currently enabled list enabled {:?} from that list",
+            dep_name, feats_of_dep, features_for_dependency
         );
-        remove_feats_enabling_dep(main_name, &feat_of_dep, &dep_name);
-        true
-    } else {
-        debug!("Dependency {} supports no_std", dep_name);
-        false
+
+        if !found {
+            debug!(
+                "Dependency {} does not support no_std. Creating a new feature and adding the conflicting features to it",
+                dep_name
+            );
+            let main_name = &format!(
+                "{}:{}", crate_info.name, crate_info.version
+            );
+            remove_feats_enabling_dep(main_name, &features_for_dependency, &dep_name);
+            if second_round {
+                telemetry.optional_deps_disabled.push(dep_name.clone());
+                telemetry
+                    .optional_deps_disabled_features_moved
+                    .push((dep_name, features_for_dependency));
+            }
+            return true;
+        } else {
+            debug!("Dependency {} supports no_std", dep_name);
+            if second_round {
+                telemetry.optional_deps_enabled.push(dep_name.clone());
+                telemetry
+                    .optional_deps_enabled_features
+                    .push((dep_name, features_for_dependency));
+            }
+            return false;
+        }
     }
+    // If the dependency is optional and not enabled by any feature,
+    // we skip it.
+    true
 }
 
 /// Check if a dependency is optional in the given `CrateInfo`.
@@ -1593,6 +1664,7 @@ fn parse_top_level_externs<'a>(
     ctx: &'a z3::Context,
     names_and_versions: &[(String, String)],
     externs: &Vec<ItemExternCrate>,
+    telemetry: &mut Telemetry,
 ) -> Result<(Option<Bool<'a>>, ParsedAttr), anyhow::Error> {
     let mut worklist = Vec::new();
     for ex in externs {
@@ -1616,22 +1688,28 @@ fn parse_top_level_externs<'a>(
         }
         let std_attrs = get_item_extern_std(&items);
         if !std_attrs.is_empty() {
+            telemetry.indirect_extern_std_usage_depth = 1;
+            telemetry.indirect_extern_std_usage_crate = Some(name_with_version.clone());
             return Ok((equation, parsed_attr));
         }
         worklist.push((name_with_version, equation, parsed_attr));
     }
-    Ok(parse_n_level_externs_entry(&mut worklist))
+
+    Ok(parse_n_level_externs_entry(&mut worklist, telemetry))
 }
 
 fn parse_n_level_externs_entry<'a>(
     worklist: &mut Vec<(String, Option<Bool<'a>>, ParsedAttr)>,
+    telemetry: &mut Telemetry,
 ) -> (Option<Bool<'a>>, ParsedAttr) {
     let mut worklists = Vec::new();
+    let mut depth = 2;
     worklist.iter().for_each(|(name_with_version, _, _)| {
         worklists.push((name_with_version.clone(), Vec::<String>::new()));
     });
     loop {
         if worklists.iter().all(|(_, remaining)| remaining.is_empty()) {
+            telemetry.indirect_extern_std_usage_depth = depth;
             return (None, ParsedAttr::default());
         }
         for (name_with_version, equation, parsed_attr) in worklist.iter() {
@@ -1639,14 +1717,16 @@ fn parse_n_level_externs_entry<'a>(
                 .iter_mut()
                 .find(|(name, _)| name == name_with_version)
                 .unwrap();
-            if parse_n_level_externs(&mut local_worklist.1) {
+            if parse_n_level_externs(&mut local_worklist.1, telemetry) {
+                telemetry.indirect_extern_std_usage_depth = depth;
                 return (equation.clone(), parsed_attr.clone());
             }
         }
+        depth += 1;
     }
 }
 
-fn parse_n_level_externs(worklist: &mut Vec<String>) -> bool {
+fn parse_n_level_externs(worklist: &mut Vec<String>, telemetry: &mut Telemetry) -> bool {
     let mut local_worklist = Vec::new();
     for name_with_version in worklist.drain(..) {
         let (mut name, version) = name_with_version.split_once(':').unwrap();
@@ -1660,6 +1740,7 @@ fn parse_n_level_externs(worklist: &mut Vec<String>) -> bool {
         let unfiltered = parse_item_extern_crates(&new_name_with_version);
         let std_attrs = get_item_extern_std(&unfiltered);
         if !std_attrs.is_empty() {
+            telemetry.indirect_extern_std_usage_crate = Some(new_name_with_version);
             return true;
         }
         let externs = get_item_extern_dep(&unfiltered, &names_and_versions);

@@ -1,12 +1,12 @@
 use log::debug;
 use proc_macro2::Span;
-use std::{fs, path, process::Command};
+use std::{fs, path, process::Command, time::Instant};
 use which::which;
 
-use crate::{AllStats, ReadableSpan};
+use crate::{AllStats, ReadableSpan, Telemetry};
 use crate::{consts, parser};
 
-pub fn hir_visit(crate_name: &str) {
+pub fn hir_visit(crate_name: &str, telemetry: &mut Telemetry) {
     if !is_cargo_hir_installed() {
         panic!(
             "cargo-hir is not installed. Please install it by running `cargo install --path . --bin cargo-hir --bin hir-driver --force` from the root of the repository"
@@ -37,10 +37,12 @@ pub fn hir_visit(crate_name: &str) {
     }
 
     let args = vec!["hir", "--", "--manifest-path", &manifest];
+    let now = Instant::now();
     let output = Command::new("cargo")
         .args(&args)
         .output()
         .expect("Failed to run cargo-hir");
+    telemetry.hir_driver_time_ms = now.elapsed().as_millis();
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

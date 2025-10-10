@@ -4,7 +4,7 @@ use std::fs;
 use toml;
 use z3::{self, ast::Bool};
 
-use crate::{CrateInfo, consts::CUSTOM_FEATURES_ENABLED, parser};
+use crate::{CrateInfo, Telemetry, consts::CUSTOM_FEATURES_ENABLED, parser};
 
 /// Given a context, a main equation and a list of
 /// filtered equations, solve for the main equation
@@ -19,11 +19,15 @@ pub fn solve<'a>(
     ctx: &'a z3::Context,
     main_equation: &Option<Bool>,
     filtered: &Vec<Bool>,
-) -> Option<z3::Model<'a>> {
+) -> (Option<z3::Model<'a>>, usize) {
     let solver = z3::Solver::new(ctx);
     let possible = find_possible_equations(ctx, main_equation, filtered);
+    let mut len = 0;
     if !possible.is_empty() {
         for p in possible {
+            if p.to_string().len() > len {
+                len = p.to_string().len();
+            }
             solver.assert(&p);
         }
     }
@@ -36,7 +40,7 @@ pub fn solve<'a>(
         _ => None,
     };
     assert_eq!(result, z3::SatResult::Sat);
-    model
+    (model, len)
 }
 
 /// Given a model, convert it to a list of features
@@ -76,6 +80,7 @@ pub fn final_feature_list_dep(
     enable: &[String],
     disable: &[String],
     crate_name_rename: &[(String, String)],
+    telemetry: &mut Telemetry,
 ) -> (Vec<String>, bool) {
     let mut update_default_config = false;
     let (dep_crate_info, dep_already_enabled) = crate_info
@@ -92,7 +97,7 @@ pub fn final_feature_list_dep(
 
     let main_available_features = &crate_info.features;
     let mut features_to_enable = Vec::new();
-    // We track that features that exist and are required by the dependency
+    // We track the features that exist and are required by the dependency
     // to make it no_std, but the main crate does not provide a way to enable them.
     let mut not_found = Vec::new();
     for to_enable in enable {
@@ -117,8 +122,23 @@ pub fn final_feature_list_dep(
         .cloned()
         .collect();
 
+    if !dep_feats_to_remove.is_empty() {
+        telemetry.default_list_modified = true;
+        telemetry.default_list_modified_for.push(name.to_string());
+    }
+
     if !not_found.is_empty() {
+        telemetry
+            .custom_features_added
+            .push((name.to_string(), true));
+        telemetry
+            .custom_features_added_list
+            .push((name.to_string(), not_found.clone()));
         features_to_enable.push(CUSTOM_FEATURES_ENABLED.to_string());
+    } else {
+        telemetry
+            .custom_features_added
+            .push((name.to_string(), false));
     }
 
     let main_name = format!("{}-{}", crate_info.name, crate_info.version);
@@ -130,7 +150,9 @@ pub fn final_feature_list_dep(
         crate_name_rename,
     );
 
-    parser::remove_conflicting_dep_feats(&main_name, name, disable);
+    // TODO IMPORTANT: Do we need this here? `move_unnecessary_dep_feats` seems to
+    // do the same thing.
+    // parser::remove_conflicting_dep_feats(&main_name, name, disable);
 
     (features_to_enable, update_default_config)
 }
@@ -150,6 +172,7 @@ pub fn final_feature_list_main(
     crate_info: &CrateInfo,
     enable: &[String],
     disable: &[String],
+    telemetry: &mut Telemetry,
 ) -> (bool, Vec<String>) {
     let mut disable_default = false;
     let mut enable_from_default = Vec::new();
@@ -177,7 +200,9 @@ pub fn final_feature_list_main(
     let main_manifest = parser::determine_manifest_file(&main_name);
     let mut main_toml: toml::Value =
         toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
+    telemetry.new_feats_added_to_main = !not_found.is_empty();
     for to_add in not_found {
+        telemetry.new_feats_added_to_main_list.push(to_add.clone());
         parser::add_feats_to_custom_feature(&mut main_toml, &to_add, &[]);
     }
     fs::write(
