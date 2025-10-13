@@ -1637,7 +1637,14 @@ pub fn should_skip_dep(
     }
     // If the dependency is optional and not enabled by any feature,
     // we skip it.
-    true
+    if is_dep_optional(crate_info, name) {
+        debug!(
+            "Dependency {} is optional and not enabled by any feature, skipping",
+            dep_name
+        );
+        return true;
+    }
+    false
 }
 
 /// Check if a dependency is optional in the given `CrateInfo`.
