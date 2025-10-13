@@ -19,14 +19,18 @@ pub fn solve<'a>(
     ctx: &'a z3::Context,
     main_equation: &Option<Bool>,
     filtered: &Vec<Bool>,
-) -> (Option<z3::Model<'a>>, usize) {
+) -> (Option<z3::Model<'a>>, usize, usize) {
     let solver = z3::Solver::new(ctx);
     let possible = find_possible_equations(ctx, main_equation, filtered);
-    let mut len = 0;
+    let (mut len, mut depth) = (0, 0);
     if !possible.is_empty() {
         for p in possible {
-            if p.to_string().len() > len {
-                len = p.to_string().len();
+            let (l, d) = length_and_depth(p.to_string());
+            if l > len {
+                len = l;
+            }
+            if d > depth {
+                depth = d;
             }
             solver.assert(&p);
         }
@@ -40,7 +44,25 @@ pub fn solve<'a>(
         _ => None,
     };
     assert_eq!(result, z3::SatResult::Sat);
-    (model, len)
+    (model, len, depth)
+}
+
+fn length_and_depth(ast: String) -> (usize, usize) {
+    let tokens: Vec<&str> = ast.split_whitespace().filter(|s| !s.is_empty()).collect();
+    let node_count = tokens.iter().filter(|s| **s != "(" && **s != ")").count();
+    let mut max_depth = 0;
+    let mut current_depth = 0;
+    for c in ast.chars() {
+        match c {
+            '(' => {
+                current_depth += 1;
+                max_depth = max_depth.max(current_depth);
+            }
+            ')' => current_depth -= 1,
+            _ => {}
+        }
+    }
+    (node_count, max_depth)
 }
 
 /// Given a model, convert it to a list of features

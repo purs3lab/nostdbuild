@@ -181,11 +181,17 @@ pub struct Telemetry {
     /// Did one of the dependencies not support no_std
     pub dep_not_no_std: bool,
     /// Is the main crate using conditional no_std
-    pub conditional_no_std: bool,
+    pub main_conditional_no_std: bool,
+    /// Does the dependency use conditional no_std
+    pub conditional_no_std_deps: Vec<(String, bool)>,
     /// Is the main crate using unconditional no_std
-    pub unconditional_no_std: bool,
+    pub main_unconditional_no_std: bool,
+    /// Does the dependency use unconditional no_std
+    pub unconditional_no_std_deps: Vec<(String, bool)>,
     /// If the main crate is unconditional no_std, does it have an `extern crate std;` statement
-    pub direct_extern_std_usage: bool,
+    pub direct_extern_std_usage_main: bool,
+    /// List of dependencies having `extern crate std;` statement
+    pub direct_extern_std_usage_deps: Vec<String>,
     /// If the main crate is unconditional no_std, does it have a dependency which has `extern crate std;` statement
     pub indirect_extern_std_usage: bool,
     /// If the above is true, what is the depth of the dependency which has `extern crate std;` statement
@@ -194,10 +200,14 @@ pub struct Telemetry {
     /// This will be None if the crate is using conditional no_std or is unconditional no_std without any extern crate std usage
     pub indirect_extern_std_usage_crate: Option<String>,
     /// Does the main crate import files conditionally using `cfg` attributes
-    pub conditional_file_import: bool,
+    pub conditional_file_import_main: bool,
+    /// List of files which are conditionally imported using `cfg` attributes
+    pub conditional_file_import_deps: Vec<(String, bool)>,
     /// List of files which are conditionally imported using `cfg` attributes
     /// and contain `extern crate std;` statements in them
-    pub conditional_files_with_std: Vec<String>,
+    pub conditional_files_with_std_main: Vec<String>,
+    /// Same as above but for dependencies
+    pub conditional_files_with_std_deps: Vec<(String, Vec<String>)>,
     /// Total number of features to enable for no_std build
     pub final_features_length: usize,
     /// Did the main crate not have a feature that is rqeuired for it to compile in no_std mode
@@ -245,12 +255,14 @@ pub struct Telemetry {
     /// Did we find any unguarded std usages
     pub unguarded_std_usages: bool,
     /// Maximum length of constraint string while solving features
-    pub max_contraint_length: usize,
+    pub max_contraint_length: Vec<(String, usize)>,
+    /// Maximum depth of constraint string while solving features
+    pub max_constrait_depth: Vec<(String, usize)>,
     /// Time taken for hir driver analysis in milliseconds
     pub hir_driver_time_ms: u128,
     /// Time taken for constraint solving in milliseconds
     /// This includes the time taken to filter out possible equations
-    pub constraint_solving_time_ms: u128,
+    pub constraint_solving_time_ms: Vec<(String, u128)>,
     /// Time taken for initial recrusive visit to verify dependencies are no_std in milliseconds
     pub initial_dep_verification_time_ms: u128,
 }

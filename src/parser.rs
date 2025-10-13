@@ -450,7 +450,13 @@ pub fn process_crate(
 
     let (no_std, mut equation, mut parsed_attr) = parse_main_attributes(attrs, ctx);
 
-    telemetry.conditional_no_std = no_std;
+    if is_main {
+        telemetry.main_conditional_no_std = no_std;
+    } else {
+        telemetry
+            .conditional_no_std_deps
+            .push((name_with_version.to_string(), no_std));
+    }
 
     if !attrs.unconditional_no_std {
         if !no_std {
@@ -458,7 +464,14 @@ pub fn process_crate(
             return Ok((Vec::new(), Vec::new()));
         }
     } else {
-        telemetry.unconditional_no_std = true;
+        if is_main {
+            telemetry.main_unconditional_no_std = true;
+        } else {
+            telemetry
+                .unconditional_no_std_deps
+                .push((name_with_version.to_string(), true));
+        }
+
         debug!(
             "crate {} is an unconditional no_std crate",
             name_with_version
@@ -482,7 +495,13 @@ pub fn process_crate(
         let std_attrs = get_item_extern_std(&items);
         if !std_attrs.is_empty() {
             debug!("Leaf level crate reached {}", name_with_version);
-            telemetry.direct_extern_std_usage = true;
+            if is_main {
+                telemetry.direct_extern_std_usage_main = true;
+            } else {
+                telemetry
+                    .direct_extern_std_usage_deps
+                    .push(name_with_version.to_string());
+            }
             let features = db::get_from_db_data(db_data, name_with_version);
             if let Some(feats) = features {
                 debug!(
@@ -555,7 +574,13 @@ pub fn process_crate(
     // files which might contain unguarded `extern crate std`.
     let files_and_equations = get_files_in_attributes(attrs, ctx);
     if !files_and_equations.is_empty() {
-        telemetry.conditional_file_import = true;
+        if is_main {
+            telemetry.conditional_file_import_main = true;
+        } else {
+            telemetry
+                .conditional_file_import_deps
+                .push((name_with_version.to_string(), true));
+        }
     }
     debug!("Files in attributes: {:?}", files_and_equations);
     let files_unguared = parse_item_extern_crates_for_files(name_with_version);
@@ -564,10 +589,11 @@ pub fn process_crate(
         files_unguared
     );
 
+    let mut imported_files: Vec<String> = Vec::new();
     for (file, eq) in files_and_equations {
         if files_unguared.contains(&file) {
             debug!("File {} contains unguarded extern crate std", file);
-            telemetry.conditional_files_with_std.push(file.clone());
+            imported_files.push(file.clone());
             if let Some(e) = eq {
                 let neg = e.not();
                 if let Some(existing_eq) = &mut equation {
@@ -579,11 +605,28 @@ pub fn process_crate(
         }
     }
 
+    if is_main {
+        telemetry
+            .conditional_files_with_std_main
+            .extend(imported_files);
+    } else {
+        telemetry
+            .conditional_files_with_std_deps
+            .push((name_with_version.to_string(), imported_files));
+    }
+
     let now = Instant::now();
     // Finally, we solve the equations
-    let (model, max_len) = solver::solve(ctx, &equation, &filtered);
-    telemetry.constraint_solving_time_ms = now.elapsed().as_millis();
-    telemetry.max_contraint_length = max_len;
+    let (model, len, depth) = solver::solve(ctx, &equation, &filtered);
+    telemetry
+        .constraint_solving_time_ms
+        .push((name_with_version.to_string(), now.elapsed().as_millis()));
+    telemetry
+        .max_contraint_length
+        .push((name_with_version.to_string(), len));
+    telemetry
+        .max_constrait_depth
+        .push((name_with_version.to_string(), depth));
     if enable.is_empty() && disable.is_empty() {
         (enable, disable) = solver::model_to_features(&model);
     }
@@ -990,6 +1033,7 @@ pub fn remove_table_from_toml(
 /// * `key` - The key of the table to remove features for
 /// * `toml` - The TOML value to modify
 /// * `filename` - The path to the Cargo.toml file
+/// * `common` - A list of deps that appear in both dependencies and dev-dependencies
 /// # Returns
 /// A Result indicating success or failure.
 /// This will also write the modified TOML back to the file.
@@ -997,6 +1041,7 @@ pub fn remove_features_of_deps(
     key: &str,
     toml: &mut toml::Value,
     filename: &str,
+    common: &[String]
 ) -> Result<(), anyhow::Error> {
     let table = match toml.get(key).and_then(toml::Value::as_table) {
         Some(table) => table.clone(),
@@ -1037,6 +1082,8 @@ pub fn remove_features_of_deps(
             dep_names.push(dep_name.clone());
         });
     }
+    
+    dep_names.retain(|d| !common.contains(d));
 
     debug!("Removing features for key: {}", key);
     for dep_name in dep_names {
@@ -1613,9 +1660,7 @@ pub fn should_skip_dep(
                 "Dependency {} does not support no_std. Creating a new feature and adding the conflicting features to it",
                 dep_name
             );
-            let main_name = &format!(
-                "{}:{}", crate_info.name, crate_info.version
-            );
+            let main_name = &format!("{}:{}", crate_info.name, crate_info.version);
             remove_feats_enabling_dep(main_name, &features_for_dependency, &dep_name);
             if second_round {
                 telemetry.optional_deps_disabled.push(dep_name.clone());
