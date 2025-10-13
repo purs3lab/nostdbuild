@@ -135,7 +135,7 @@ fn main() -> anyhow::Result<()> {
     let dep_and_feats = parser::features_for_optional_deps(&crate_info);
     debug!("Dependency and features: {:?}", dep_and_feats);
 
-    println!("Main crate arguments: {:?}", main_features,);
+    println!("Main crate arguments: {:?}", main_features);
 
     let deps_attrs = parser::parse_deps_crate();
     let mut skipped = Vec::new();

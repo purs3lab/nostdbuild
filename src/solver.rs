@@ -196,7 +196,7 @@ pub fn final_feature_list_main(
     disable: &[String],
     telemetry: &mut Telemetry,
 ) -> (bool, Vec<String>) {
-    let mut disable_default = false;
+    let mut disable_default = enable.is_empty();
     let mut enable_from_default = Vec::new();
 
     if disable_in_default(crate_info, disable) {
