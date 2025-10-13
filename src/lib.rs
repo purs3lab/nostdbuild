@@ -222,11 +222,9 @@ pub struct Telemetry {
     /// This is the dependency equivalent of `new_feats_added_to_main_list` field
     pub custom_features_added_list: Vec<(String, Vec<String>)>,
     /// Did we have to modify the default features that main set for any of its dependencies
-    pub default_list_modified: bool,
-    /// Which dependencies did we modify the default features for
-    pub default_list_modified_for: Vec<String>,
+    pub default_list_modified: Vec<(String, bool)>,
     /// Did we change the default-features to false for any dependency
-    pub default_true_unset: bool,
+    pub default_true_unset_deps: Vec<(String, bool)>,
     /// Did we remove any unnecessary features from main crate features that main enabled for any of its dependencies
     pub unnecessary_features_removed: Vec<(String, bool)>,
     /// Features that were moved for the above case

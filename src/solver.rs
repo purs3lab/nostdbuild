@@ -145,8 +145,13 @@ pub fn final_feature_list_dep(
         .collect();
 
     if !dep_feats_to_remove.is_empty() {
-        telemetry.default_list_modified = true;
-        telemetry.default_list_modified_for.push(name.to_string());
+        telemetry
+            .default_list_modified
+            .push((name.to_string(), true));
+    } else {
+        telemetry
+            .default_list_modified
+            .push((name.to_string(), false));
     }
 
     if !not_found.is_empty() {

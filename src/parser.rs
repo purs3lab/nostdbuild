@@ -693,7 +693,13 @@ pub fn process_dep_crate(
 
     if update_default_config {
         update_main_crate_default_list(main_name, &dep.crate_name, crate_name_rename);
-        telemetry.default_true_unset = true;
+        telemetry
+            .default_true_unset_deps
+            .push((dep.crate_name.clone(), true));
+    } else {
+        telemetry
+            .default_true_unset_deps
+            .push((dep.crate_name.clone(), false));
     }
 
     debug!(
