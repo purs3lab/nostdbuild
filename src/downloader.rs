@@ -259,14 +259,8 @@ pub fn init_worklist(
             Map::new()
         });
 
-    parser::remove_table_from_toml("workspace", &mut toml, &manifest)?;
-    parser::remove_table_from_toml("lints", &mut toml, &manifest)?;
-    parser::remove_features_of_deps("dev-dependencies", &mut toml, &manifest)?;
-    parser::remove_table_from_toml("dev-dependencies", &mut toml, &manifest)?;
-    parser::remove_features_of_deps("target", &mut toml, &manifest)?;
-    parser::remove_table_from_toml("target", &mut toml, &manifest)?;
-
-    crate_info.features = read_local_features(toml);
+    crate_info.features = read_local_features(&toml);
+    let mut non_dev_deps: Vec<String> = Vec::new();
     for (name, value) in dependencies {
         let mut local_crate_info = CrateInfo::default();
         let mut features_to_use: Vec<String> = Vec::new();
@@ -305,11 +299,21 @@ pub fn init_worklist(
             local_crate_info.name.clone(),
             local_crate_info.version.clone(),
         ));
+
+        non_dev_deps.push(name.clone());
+
         crate_name_rename.push((name, local_crate_info.name.clone()));
         crate_info
             .deps_and_features
             .push((local_crate_info, features_to_use));
     }
+
+    parser::remove_table_from_toml("workspace", &mut toml, &manifest)?;
+    parser::remove_table_from_toml("lints", &mut toml, &manifest)?;
+    parser::remove_features_of_deps("dev-dependencies", &mut toml, &manifest, &non_dev_deps)?;
+    parser::remove_table_from_toml("dev-dependencies", &mut toml, &manifest)?;
+    parser::remove_features_of_deps("target", &mut toml, &manifest, &non_dev_deps)?;
+    parser::remove_table_from_toml("target", &mut toml, &manifest)?;
 
     Ok(())
 }
@@ -329,7 +333,7 @@ pub fn contains_one_rs_file(path: &str) -> bool {
     false
 }
 
-fn read_local_features(toml: toml::Value) -> Vec<(String, Vec<(String, String)>)> {
+fn read_local_features(toml: &toml::Value) -> Vec<(String, Vec<(String, String)>)> {
     let features = toml
         .get("features")
         .and_then(Value::as_table)
@@ -409,7 +413,7 @@ fn traverse_and_add_local_features(
         debug!("Reading Cargo.toml from {}", manifest);
         let toml = fs::read_to_string(&manifest).context("Failed to read Cargo.toml")?;
         let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
-        crate_info.features = read_local_features(toml);
+        crate_info.features = read_local_features(&toml);
         // Once we find the crate, we don't need to traverse further.
         return Ok(());
     }

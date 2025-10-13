@@ -1041,7 +1041,7 @@ pub fn remove_features_of_deps(
     key: &str,
     toml: &mut toml::Value,
     filename: &str,
-    common: &[String]
+    common: &[String],
 ) -> Result<(), anyhow::Error> {
     let table = match toml.get(key).and_then(toml::Value::as_table) {
         Some(table) => table.clone(),
@@ -1082,7 +1082,7 @@ pub fn remove_features_of_deps(
             dep_names.push(dep_name.clone());
         });
     }
-    
+
     dep_names.retain(|d| !common.contains(d));
 
     debug!("Removing features for key: {}", key);
