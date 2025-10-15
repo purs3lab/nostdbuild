@@ -283,7 +283,7 @@ pub fn init_worklist(
                 default_features,
                 features,
                 optional,
-                ..
+                git,
             } => {
                 features_to_use = features.unwrap_or_default();
                 local_crate_info = CrateInfo {
@@ -291,6 +291,7 @@ pub fn init_worklist(
                     default_features: default_features.unwrap_or(true),
                     optional: optional.unwrap_or(false),
                     name: package.unwrap_or(name.clone()),
+                    git,
                     ..local_crate_info
                 };
             }

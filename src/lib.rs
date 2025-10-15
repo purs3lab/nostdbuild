@@ -33,6 +33,7 @@ pub enum Dependency {
         optional: Option<bool>,
         #[serde(rename = "default-features")]
         default_features: Option<bool>,
+        git: Option<String>,
     },
     // We use this to match weird patterns.
     Special {
@@ -73,6 +74,7 @@ pub struct CrateInfo {
     pub features: Vec<(String, Vec<(String, String)>)>,
     pub default_features: bool,
     pub optional: bool,
+    pub git: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
