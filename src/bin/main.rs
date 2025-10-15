@@ -18,6 +18,9 @@ struct Cli {
     target: Option<String>,
 
     #[arg(long)]
+    version: Option<String>,
+
+    #[arg(long)]
     dry_run: bool,
 
     #[arg(long)]
@@ -71,7 +74,7 @@ fn main() -> anyhow::Result<()> {
         }
     } else {
         debug!("Downloading from crates.io");
-        name = downloader::clone_from_crates(&name, None)?;
+        name = downloader::clone_from_crates(&name, cli.version.as_ref())?;
         debug!("Downloaded crate: {}", name);
     }
 
@@ -143,7 +146,8 @@ fn main() -> anyhow::Result<()> {
     // TODO: Some dependencies are from git instead of crates.io. Handle those cases.
     // TODO: There are some cleanup and refactoring to minimize the read -> mutate -> write pattern for the toml
     // TODO: Use better mechanism to get the .rs file to check for no_std (use metadata to get this).
-    // TODO: Convert assertions to non fatal warnings and collect stats and dump at the end.
+    // TODO: Add checks to make sure all deps at all depths actually can be compiled with the given set of features in the
+    // crate that depends on them.
     let mut deps_args = Vec::new();
     for dep in deps_attrs {
         if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {
@@ -276,6 +280,8 @@ fn main() -> anyhow::Result<()> {
         telemetry.build_success = true;
         db::add_to_db_data(&mut db_data, &name, (&enable, &disable));
     } else {
+        // DO THE RECURSIVE CHECK HERE TO MAKE SURE ALL DEPENDENCIES SET THE 
+        // FEATURES CORRECTLY FOR ITS DEPENDENCIES
         hir::hir_visit(&name, &mut telemetry);
         telemetry.hir_analysis_done = true;
         if hir::check_for_unguarded_std_usages(&readable_spans, &mut stats) {
