@@ -1,5 +1,5 @@
 use anyhow::Context;
-use crates_io_api::SyncClient;
+use crates_io_api::{CrateResponse, SyncClient};
 use flate2::read::GzDecoder;
 use git2::Repository;
 use log::debug;
@@ -456,25 +456,7 @@ fn get_download_url(
 ) -> Result<(String, String, String), anyhow::Error> {
     let crate_data = client.get_crate(name)?;
 
-    let resolved_version = match version {
-        None => crate_data.versions[0].num.clone(),
-        Some(version) => {
-            if *version == "latest" {
-                crate_data.versions[0].num.clone()
-            } else {
-                let ver = VersionReq::parse(version).context("Known: Failed to parse version")?;
-                let resolved_versions = crate_data
-                    .versions
-                    .iter()
-                    .filter(|v| ver.matches(&semver::Version::parse(&v.num).unwrap()))
-                    .collect::<Vec<_>>();
-                if resolved_versions.is_empty() {
-                    return Err(anyhow::anyhow!("Known: No matching version found"));
-                }
-                resolved_versions.first().unwrap().num.clone()
-            }
-        }
-    };
+    let resolved_version = resolve_version(version, &crate_data)?;
 
     let dl_path = crate_data
         .versions
@@ -490,6 +472,37 @@ fn get_download_url(
         resolved_version,
         crate_data.crate_data.name.clone(),
     ))
+}
+
+/// Resolve the version of a crate given a version requirement
+/// # Arguments
+/// * `version` - The version requirement as a string
+/// * `crate_data` - The crate data from crates.io
+/// # Returns
+/// * `Result` - The resolved version as a string if successful, an `Error` otherwise
+pub fn resolve_version(
+    version: &Option<&String>,
+    crate_data: &CrateResponse,
+) -> Result<String, anyhow::Error> {
+    match version {
+        None => Ok(crate_data.versions[0].num.clone()),
+        Some(version) => {
+            if *version == "latest" {
+                Ok(crate_data.versions[0].num.clone())
+            } else {
+                let ver = VersionReq::parse(version).context("Known: Failed to parse version")?;
+                let resolved_versions = crate_data
+                    .versions
+                    .iter()
+                    .filter(|v| ver.matches(&semver::Version::parse(&v.num).unwrap()))
+                    .collect::<Vec<_>>();
+                if resolved_versions.is_empty() {
+                    return Err(anyhow::anyhow!("Known: No matching version found"));
+                }
+                Ok(resolved_versions.first().unwrap().num.clone())
+            }
+        }
+    }
 }
 
 fn download_crate(url: &str, filename: &str) -> Result<(), anyhow::Error> {
