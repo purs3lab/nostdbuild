@@ -22,6 +22,9 @@ lazy_static! {
     pub static ref DEPENDENCIES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 }
 
+/// A vector of (String, String) tuples.
+pub type TupleVec = Vec<(String, String)>;
+
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum Dependency {
@@ -70,8 +73,10 @@ pub struct DBData {
 pub struct CrateInfo {
     pub name: String,
     pub version: String,
+    /// Dependencies of the crate along with the features that are enabled for them
+    /// by the main crate during the dependency inclusion.
     pub deps_and_features: Vec<(CrateInfo, Vec<String>)>,
-    pub features: Vec<(String, Vec<(String, String)>)>,
+    pub features: Vec<(String, TupleVec)>,
     pub default_features: bool,
     pub optional: bool,
     pub git: Option<String>,

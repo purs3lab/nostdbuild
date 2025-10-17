@@ -9,7 +9,7 @@ use syn::{
 use walkdir::WalkDir;
 use z3::{self, ast::Bool};
 
-use crate::{CrateInfo, DBData, DEPENDENCIES, Telemetry, consts, db, downloader, solver};
+use crate::{CrateInfo, DBData, DEPENDENCIES, Telemetry, TupleVec, consts, db, downloader, solver};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Logic {
@@ -365,7 +365,6 @@ pub fn get_item_extern_std(itemexterncrates: &ItemExternCrates) -> Vec<Attribute
 
 /// Parse the main crate and return the attributes
 /// # Arguments
-/// * `path` - The path to the main crate
 /// * `crate_name` - The name of the main crate
 /// # Returns
 /// The attributes of the main crate
@@ -432,7 +431,9 @@ pub fn parse_deps_crate() -> Vec<Attributes> {
 /// * `attrs` - The attributes of the crate
 /// * `name` - The name of the crate
 /// * `db_data` - The database data
+/// * `crate_info` - The crate info of the main crate
 /// * `is_main` - A boolean indicating whether the crate is the main crate
+/// * `telemetry` - The global telemetry data
 /// # Returns
 /// A tuple containing the features to enable, the features to disable,
 /// a boolean indicating whether `no_std` was found, and a boolean indicating
@@ -441,7 +442,7 @@ pub fn process_crate(
     ctx: &z3::Context,
     attrs: &Attributes,
     name_with_version: &str,
-    db_data: &mut [DBData],
+    db_data: &[DBData],
     crate_info: &CrateInfo,
     is_main: bool,
     telemetry: &mut Telemetry,
@@ -546,7 +547,7 @@ pub fn process_crate(
             debug!("Leaf level crate reached {}", name_with_version);
             let (name, version) = name_with_version.split_once(':').unwrap();
             if let Some(dep_and_features) = get_deps_and_features(name, version, crate_info) {
-                let names_and_versions: Vec<(String, String)> = dep_and_features
+                let names_and_versions: TupleVec = dep_and_features
                     .iter()
                     .map(|(dep, _)| (dep.name.clone(), dep.version.clone()))
                     .collect();
@@ -820,7 +821,7 @@ pub fn move_unnecessary_dep_feats(
 /// the requested depth if there are no more dependencies to check or
 /// if a dependency does not support no_std.
 pub fn determine_n_depth_dep_no_std(
-    initlist: Vec<(String, String)>,
+    initlist: TupleVec,
     depth: u32,
     current_depth: u32,
     visited: &mut HashSet<(String, String)>,
@@ -1536,7 +1537,7 @@ pub fn add_feats_to_custom_feature(
 /// * `crate_info` - The `CrateInfo` containing dependencies and features.
 /// # Returns
 /// A vector of tuples, each containing the dependency name and the feature name.
-pub fn features_for_optional_deps(crate_info: &CrateInfo) -> Vec<(String, String)> {
+pub fn features_for_optional_deps(crate_info: &CrateInfo) -> TupleVec {
     let deps_and_feats = &crate_info.deps_and_features;
     let main_feats = &crate_info.features;
 
@@ -1577,7 +1578,7 @@ pub fn features_for_optional_deps(crate_info: &CrateInfo) -> Vec<(String, String
 
     // We first find all optional dependencies that have the implicit feature
     // overridden by the user.
-    let mut direct_feat_match: Vec<(String, String)> = common(&optional_deps, true);
+    let mut direct_feat_match: TupleVec = common(&optional_deps, true);
 
     let found: Vec<String> = direct_feat_match
         .iter()
@@ -1591,7 +1592,7 @@ pub fn features_for_optional_deps(crate_info: &CrateInfo) -> Vec<(String, String
         .cloned()
         .collect();
 
-    let indirect_feat_match: Vec<(String, String)> = common(&not_found, false);
+    let indirect_feat_match: TupleVec = common(&not_found, false);
 
     direct_feat_match.extend(indirect_feat_match);
     direct_feat_match.sort();
@@ -1722,8 +1723,6 @@ pub fn should_skip_dep(
 /// Check if a dependency is optional in the given `CrateInfo`.
 /// This also checks the enabled features to determine if enabling that
 /// feature caused an optional dependency to be included.
-/// TODO: Do recursive check on the feature list to see if some feature deep
-/// in the chain enables the optional dependency.
 /// # Arguments
 /// * `crate_info` - The `CrateInfo` containing the crate's dependencies and
 ///   features.

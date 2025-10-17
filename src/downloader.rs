@@ -11,7 +11,7 @@ use toml::{self, Value, map::Map};
 use walkdir::WalkDir;
 
 use crate::{
-    CrateInfo, DEPENDENCIES, Dependency, Telemetry,
+    CrateInfo, DEPENDENCIES, Dependency, Telemetry, TupleVec,
     consts::{CRATE_IO, DOWNLOAD_PATH},
     parser,
 };
@@ -95,7 +95,7 @@ pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String,
 /// # Returns
 /// * `Result` - An empty `Result` if successful, an `Error` otherwise
 pub fn download_all_dependencies(
-    worklist: &mut Vec<(String, String)>,
+    worklist: &mut TupleVec,
     crate_info: &mut CrateInfo,
     depth: u32,
     telemetry: &mut Telemetry,
@@ -181,7 +181,7 @@ pub fn read_dep_names_and_versions(
     name: &str,
     version: &str,
     skip_optional: bool,
-) -> Result<Vec<(String, String)>, anyhow::Error> {
+) -> Result<TupleVec, anyhow::Error> {
     let manifest = parser::determine_manifest_file(&format!("{}-{}", name, version));
     let mut dep_names = Vec::new();
     let toml = fs::read_to_string(&manifest).context("Failed to read Cargo.toml")?;
@@ -334,7 +334,7 @@ pub fn contains_one_rs_file(path: &str) -> bool {
     false
 }
 
-fn read_local_features(toml: &toml::Value) -> Vec<(String, Vec<(String, String)>)> {
+fn read_local_features(toml: &toml::Value) -> Vec<(String, TupleVec)> {
     let features = toml
         .get("features")
         .and_then(Value::as_table)
@@ -383,7 +383,7 @@ fn traverse_and_add_dep_names(
     name: &str,
     version: &str,
     crate_info: &mut CrateInfo,
-    dep_names: &Vec<(String, String)>,
+    dep_names: &TupleVec,
 ) -> anyhow::Result<(), anyhow::Error> {
     if crate_info.name == name && crate_info.version == version {
         let deps_and_features = &mut crate_info.deps_and_features;

@@ -121,7 +121,7 @@ fn main() -> anyhow::Result<()> {
         &ctx,
         &main_attributes,
         &name,
-        &mut db_data,
+        &db_data,
         &crate_info,
         true,
         &mut telemetry,
