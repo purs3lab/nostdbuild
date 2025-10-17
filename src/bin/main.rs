@@ -3,7 +3,7 @@
 use clap::Parser;
 use log::debug;
 
-use nostd::{CrateInfo, compiler, consts, db, downloader, hir, parser, solver};
+use nostd::{compiler, consts, db, downloader, hir, parser, solver};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -30,9 +30,6 @@ struct Cli {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     env_logger::init();
-    let mut worklist: Vec<(String, String)> = Vec::new();
-    let mut crate_name_rename: Vec<(String, String)> = Vec::new();
-    let mut crate_info: CrateInfo = CrateInfo::default();
 
     let mut name = match cli.name {
         Some(name) => name,
@@ -83,12 +80,8 @@ fn main() -> anyhow::Result<()> {
     let (temp_name, version) = name.split_once(':').unwrap_or((&name, "latest"));
     telemetry.name = temp_name.to_string();
     telemetry.version = version.to_string();
-    downloader::init_worklist(
-        &name,
-        &mut crate_name_rename,
-        &mut worklist,
-        &mut crate_info,
-    )?;
+    let (mut worklist, crate_name_rename, mut crate_info) =
+        downloader::gather_crate_info(&name, false)?;
     telemetry.num_deps = crate_info.deps_and_features.len();
 
     debug!("Dependencies: {:?}", crate_info);

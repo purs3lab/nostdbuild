@@ -222,24 +222,25 @@ pub fn read_dep_names_and_versions(
 /// features that will be used later.
 /// # Arguments
 /// * `name` - The name of the crate to get dependencies for
-/// * `crate_name_rename` - A mutable vector to store the renamed crate names
-/// * `worklist` - The worklist to add the dependencies to
-/// * `crate_info` - Detailed information about the crate, including its dependencies and features.
+/// * `only_gather` - If true, only gather dependencies without modifying Cargo.toml
 /// # Returns
-/// * `Result` - An empty `Result` if successful, an `Error` otherwise
-pub fn init_worklist(
+/// * `Result` - A tuple containing the worklist, crate name renames, and crate info
+pub fn gather_crate_info(
     name: &str,
-    crate_name_rename: &mut Vec<(String, String)>,
-    worklist: &mut Vec<(String, String)>,
-    crate_info: &mut CrateInfo,
-) -> Result<(), anyhow::Error> {
+    only_gather: bool,
+) -> Result<(TupleVec, TupleVec, CrateInfo), anyhow::Error> {
     let dir = Path::new(DOWNLOAD_PATH).join(name.replace(':', "-"));
     let manifest = parser::determine_manifest_file(name);
+    let mut worklist: TupleVec = Vec::new();
+    let mut crate_name_rename: TupleVec = Vec::new();
+    let mut crate_info: CrateInfo = CrateInfo::default();
 
-    // Since we are making modifications to the Cargo.toml file,
-    // we need to back it up first.
-    fs::copy(&manifest, dir.join("Cargo.toml.bak")).context("Failed to copy Cargo.toml")?;
-    debug!("Reading Cargo.toml from {}", manifest);
+    if !only_gather {
+        // Since we are making modifications to the Cargo.toml file,
+        // we need to back it up first.
+        fs::copy(&manifest, dir.join("Cargo.toml.bak")).context("Failed to copy Cargo.toml")?;
+        debug!("Reading Cargo.toml from {}", manifest);
+    }
 
     let (name, version) = name.split_once(':').unwrap();
     crate_info.name = name.to_string();
@@ -309,14 +310,16 @@ pub fn init_worklist(
             .push((local_crate_info, features_to_use));
     }
 
-    parser::remove_table_from_toml("workspace", &mut toml, &manifest)?;
-    parser::remove_table_from_toml("lints", &mut toml, &manifest)?;
-    parser::remove_features_of_deps("dev-dependencies", &mut toml, &manifest, &non_dev_deps)?;
-    parser::remove_table_from_toml("dev-dependencies", &mut toml, &manifest)?;
-    parser::remove_features_of_deps("target", &mut toml, &manifest, &non_dev_deps)?;
-    parser::remove_table_from_toml("target", &mut toml, &manifest)?;
+    if !only_gather {
+        parser::remove_table_from_toml("workspace", &mut toml, &manifest)?;
+        parser::remove_table_from_toml("lints", &mut toml, &manifest)?;
+        parser::remove_features_of_deps("dev-dependencies", &mut toml, &manifest, &non_dev_deps)?;
+        parser::remove_table_from_toml("dev-dependencies", &mut toml, &manifest)?;
+        parser::remove_features_of_deps("target", &mut toml, &manifest, &non_dev_deps)?;
+        parser::remove_table_from_toml("target", &mut toml, &manifest)?;
+    }
 
-    Ok(())
+    Ok((worklist, crate_name_rename, crate_info))
 }
 
 /// Check if the given path contains at least one .rs file
@@ -371,7 +374,8 @@ fn read_local_features(toml: &toml::Value) -> Vec<(String, TupleVec)> {
         .collect()
 }
 
-fn create_client() -> Result<SyncClient, anyhow::Error> {
+/// Create a new crates.io API client
+pub fn create_client() -> Result<SyncClient, anyhow::Error> {
     SyncClient::new(
         "downloader (contact@sourag.com)",
         std::time::Duration::from_secs(1),
