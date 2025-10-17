@@ -1020,7 +1020,30 @@ pub fn remove_table_from_toml(
         && table.contains_key(key)
     {
         debug!("{} found in Cargo.toml, removing it", key);
-        table.remove(key);
+
+        if key == "target" {
+            let target_table = table
+                .get_mut(key)
+                .and_then(toml::Value::as_table_mut)
+                .unwrap();
+
+            for (inner_key, inner_value) in target_table.iter_mut() {
+                if let toml::Value::Table(inner_table) = inner_value {
+                    let to_remove: Vec<String> = inner_table
+                        .keys()
+                        .filter(|&k| k != "dependencies")
+                        .cloned()
+                        .collect();
+
+                    for k in to_remove {
+                        inner_table.remove(&k);
+                        debug!("Removed {} from {}.{}", k, key, inner_key);
+                    }
+                }
+            }
+        } else {
+            table.remove(key);
+        }
         fs::write(
             filename,
             toml::to_string(&toml).context("Failed to write Cargo.toml")?,
@@ -1070,7 +1093,7 @@ pub fn remove_features_of_deps(
     if key == "target" {
         table.iter().for_each(|(_, value)| {
             if let toml::Value::Table(table) = value {
-                for dep_type in ["dev-dependencies", "build-dependencies", "dependencies"] {
+                for dep_type in ["dev-dependencies", "build-dependencies"] {
                     if let Some(inner_deps) = table.get(dep_type).and_then(toml::Value::as_table) {
                         for (dep_name, _) in inner_deps.iter() {
                             debug!("Found dependency: {}", dep_name);
