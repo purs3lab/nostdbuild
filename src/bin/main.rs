@@ -110,7 +110,7 @@ fn main() -> anyhow::Result<()> {
 
     let readable_spans = hir::proc_macro_span_to_readable(&main_attributes.spans);
 
-    let (enable, disable) = parser::process_crate(
+    let (mut enable, disable) = parser::process_crate(
         &ctx,
         &main_attributes,
         &name,
@@ -126,7 +126,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let (disable_default, mut main_features) =
-        solver::final_feature_list_main(&crate_info, &enable, &disable, &mut telemetry);
+        solver::final_feature_list_main(&crate_info, &mut enable, &disable, &mut telemetry);
 
     let dep_and_feats = parser::features_for_optional_deps(&crate_info);
     debug!("Dependency and features: {:?}", dep_and_feats);

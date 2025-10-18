@@ -1799,7 +1799,7 @@ pub fn recursive_dep_requirement_check(crate_info: &CrateInfo, db_data: &[DBData
 
             let (.., dep_crate_info) =
                 downloader::gather_crate_info(&dep_name_with_version, true).unwrap();
-            let (enable, disable): (Vec<String>, Vec<String>) = if let Some(reqs) =
+            let (mut enable, disable): (Vec<String>, Vec<String>) = if let Some(reqs) =
                 visited_dep_require
                     .iter()
                     .find(|(visited_name, _)| visited_name == &dep_name_with_version)
@@ -1833,6 +1833,8 @@ pub fn recursive_dep_requirement_check(crate_info: &CrateInfo, db_data: &[DBData
                 );
                 (enable, disable)
             };
+
+            solver::new_feats_to_add(&dep_crate_info, &Vec::new(), &mut enable);
 
             println!(
                 "Dependency: {} requires features: {:?} to be enabled and features: {:?} to be disabled to support no_std",
