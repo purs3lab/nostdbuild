@@ -197,7 +197,7 @@ pub fn final_feature_list_dep(
 /// containing the final feature list for the main crate.
 pub fn final_feature_list_main(
     crate_info: &CrateInfo,
-    enable: &[String],
+    enable: &mut Vec<String>,
     disable: &[String],
     telemetry: &mut Telemetry,
 ) -> (bool, Vec<String>) {
@@ -208,6 +208,51 @@ pub fn final_feature_list_main(
         disable_default = true;
         enable_from_default = get_features_not_disabled(crate_info, disable);
     }
+
+    let kept = new_feats_to_add(crate_info, &enable_from_default, enable);
+
+    debug!("Main crate does not have features: {:?}", kept);
+    let main_name = format!("{}-{}", crate_info.name, crate_info.version);
+    let main_manifest = parser::determine_manifest_file(&main_name);
+    let mut main_toml: toml::Value =
+        toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
+    telemetry.new_feats_added_to_main = !kept.is_empty();
+    for to_add in kept {
+        telemetry.new_feats_added_to_main_list.push(to_add.clone());
+        parser::add_feats_to_custom_feature(&mut main_toml, &to_add, &[]);
+    }
+    fs::write(
+        &main_manifest,
+        toml::to_string(&main_toml)
+            .context("Failed convert Value to string")
+            .unwrap(),
+    )
+    .unwrap();
+
+    (disable_default, enable_from_default)
+}
+
+/// This returns the list of features that need to be added to the main crate's
+/// manifest file. It also removes features that are implicitly added by cargo
+/// for optional dependencies.
+/// # Arguments
+/// * `crate_info` - The crate info
+/// * `enable_from_default` - The list of features to enable from default list that are not disabled
+///   explicitly by the disable list.
+/// * `enable` - The list of features to enable
+/// # Returns
+/// * `Vec<String>` - The list of features to add to the main crate's manifest file
+pub fn new_feats_to_add(
+    crate_info: &CrateInfo,
+    enable_from_default: &[String],
+    enable: &mut Vec<String>,
+) -> Vec<String> {
+    let optional_deps: Vec<String> = crate_info
+        .deps_and_features
+        .iter()
+        .filter(|(dep, _)| dep.optional)
+        .map(|(dep, _)| dep.name.clone())
+        .collect();
 
     let main_available_features = &crate_info.features;
     let mut not_found = Vec::new();
@@ -222,25 +267,16 @@ pub fn final_feature_list_main(
                 not_found.push(to_enable.clone());
             }
         });
-    debug!("Main crate does not have features: {:?}", not_found);
-    let main_name = format!("{}-{}", crate_info.name, crate_info.version);
-    let main_manifest = parser::determine_manifest_file(&main_name);
-    let mut main_toml: toml::Value =
-        toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
-    telemetry.new_feats_added_to_main = !not_found.is_empty();
-    for to_add in not_found {
-        telemetry.new_feats_added_to_main_list.push(to_add.clone());
-        parser::add_feats_to_custom_feature(&mut main_toml, &to_add, &[]);
-    }
-    fs::write(
-        &main_manifest,
-        toml::to_string(&main_toml)
-            .context("Failed convert Value to string")
-            .unwrap(),
-    )
-    .unwrap();
 
-    (disable_default, enable_from_default)
+    // We don't want to add features that are implicitly added by cargo for
+    // optional dependencies.
+    let (removed, kept): (Vec<String>, Vec<String>) = not_found
+        .into_iter()
+        .partition(|feat| optional_deps.iter().any(|dep| feat == dep));
+
+    enable.retain(|feat| !removed.contains(feat));
+
+    kept
 }
 
 fn get_features_not_disabled(crate_info: &CrateInfo, disable: &[String]) -> Vec<String> {
