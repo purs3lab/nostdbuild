@@ -1632,12 +1632,13 @@ pub fn should_skip_dep(
         return true;
     }
 
-    if !is_dep_optional(crate_info, name) {
+    let dep_name = name.split(':').next().unwrap_or("").to_string();
+
+    if !is_dep_optional(crate_info, &dep_name) {
         debug!("Dependency {} is not optional, not skipping", name);
         return false;
     }
 
-    let dep_name = name.split(':').next().unwrap_or("").to_string();
     let feats_of_dep: Vec<String> = deps_and_features
         .iter()
         .filter(|(dep, _)| dep == &dep_name)
