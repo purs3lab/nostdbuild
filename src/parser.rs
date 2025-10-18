@@ -446,6 +446,8 @@ pub fn process_crate(
     crate_info: &CrateInfo,
     is_main: bool,
     telemetry: &mut Telemetry,
+    minimize: bool,
+    optional_dep_feats: &TupleVec,
 ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
     let (mut enable, mut disable): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
 
@@ -632,6 +634,10 @@ pub fn process_crate(
         (enable, disable) = solver::model_to_features(&model);
     }
 
+    if minimize {
+        enable.retain(|f| optional_dep_feats.iter().all(|(_, feat)| feat != f));
+    }
+
     Ok((enable, disable))
 }
 
@@ -656,6 +662,7 @@ pub fn process_dep_crate(
     crate_info: &CrateInfo,
     crate_name_rename: &[(String, String)],
     telemetry: &mut Telemetry,
+    minimize: bool,
 ) -> Result<Vec<String>, anyhow::Error> {
     let (enable, disable) = match db::get_from_db_data(db_data, &dep.crate_name) {
         Some(dbdata) => (dbdata.features.0.clone(), dbdata.features.1.clone()),
@@ -668,6 +675,8 @@ pub fn process_dep_crate(
                 crate_info,
                 false,
                 telemetry,
+                minimize,
+                &TupleVec::new(),
             )?;
             (enable, disable)
         }
@@ -1799,6 +1808,9 @@ pub fn recursive_dep_requirement_check(crate_info: &CrateInfo, db_data: &[DBData
 
             let (.., dep_crate_info) =
                 downloader::gather_crate_info(&dep_name_with_version, true).unwrap();
+
+            let optional_dep_feats = features_for_optional_deps(&dep_crate_info);
+
             let (mut enable, disable): (Vec<String>, Vec<String>) = if let Some(reqs) =
                 visited_dep_require
                     .iter()
@@ -1820,6 +1832,8 @@ pub fn recursive_dep_requirement_check(crate_info: &CrateInfo, db_data: &[DBData
                     &dep_crate_info,
                     true,
                     &mut telemetry,
+                    true,
+                    &optional_dep_feats,
                 )
                 .unwrap();
 

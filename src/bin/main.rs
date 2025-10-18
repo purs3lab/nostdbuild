@@ -25,6 +25,12 @@ struct Cli {
 
     #[arg(long)]
     depth: Option<u32>,
+
+    #[arg(long)]
+    /// Enabling this will cause the tool to try minimizing the number of features enabled
+    /// to achieve a successful no_std build. Currently it only does so by removing features
+    /// for optional dependencies.
+    minimize: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -109,7 +115,7 @@ fn main() -> anyhow::Result<()> {
     let main_attributes = parser::parse_crate(&name, true);
 
     let readable_spans = hir::proc_macro_span_to_readable(&main_attributes.spans);
-
+    let dep_and_feats = parser::features_for_optional_deps(&crate_info);
     let (mut enable, disable) = parser::process_crate(
         &ctx,
         &main_attributes,
@@ -118,6 +124,8 @@ fn main() -> anyhow::Result<()> {
         &crate_info,
         true,
         &mut telemetry,
+        cli.minimize,
+        &dep_and_feats,
     )?;
 
     if cli.dry_run {
@@ -128,7 +136,6 @@ fn main() -> anyhow::Result<()> {
     let (disable_default, mut main_features) =
         solver::final_feature_list_main(&crate_info, &mut enable, &disable, &mut telemetry);
 
-    let dep_and_feats = parser::features_for_optional_deps(&crate_info);
     debug!("Dependency and features: {:?}", dep_and_feats);
 
     println!("Main crate arguments: {:?}", main_features);
@@ -177,6 +184,7 @@ fn main() -> anyhow::Result<()> {
             &crate_info,
             &crate_name_rename,
             &mut telemetry,
+            cli.minimize,
         )?;
         deps_args.extend(local_dep_args);
 
@@ -218,6 +226,7 @@ fn main() -> anyhow::Result<()> {
                 &crate_info,
                 &crate_name_rename,
                 &mut telemetry,
+                cli.minimize,
             )?;
 
             dep_args_skipped.extend(local_dep_args);
