@@ -1738,6 +1738,186 @@ pub fn is_dep_optional(crate_info: &CrateInfo, name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// This function checks at each level of dependencies, whether all its
+/// dependencies have the required features set/have a way to set it.
+/// If not, that means the crate author made a mistake and the crate cannot
+/// be compiled in no_std even if it claims to be no_std.
+/// # Arguments
+/// * `crate_info` - The `CrateInfo` of the main crate.
+/// * `db_data` - A slice of `DBData` containing database information.
+/// # Returns
+/// A boolean indicating whether all dependencies can satisfy their
+/// no_std requirements.
+pub fn recursive_dep_requirement_check(crate_info: &CrateInfo, db_data: &[DBData]) -> bool {
+    println!("Starting recursive dependency requirement check...");
+    let top_level_deps: TupleVec = crate_info
+        .deps_and_features
+        .iter()
+        .map(|(dep, _)| (dep.name.clone(), dep.version.clone()))
+        .collect();
+
+    let ctx = z3::Context::new(&z3::Config::new());
+    // Throwaway telemetry
+    let mut telemetry = Telemetry::default();
+
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut worklist: TupleVec = top_level_deps.clone();
+
+    println!("Original worklist: {:?}", worklist);
+
+    let client = downloader::create_client().unwrap();
+    // For the crates that we already processed, save the requirements
+    // so that we don't have to recompute them.
+    let mut visited_dep_require: Vec<(String, (Vec<String>, Vec<String>))> = Vec::new();
+
+    while let Some((name, version)) = worklist.pop() {
+        println!("Checking dependency: {}:{}", name, version);
+        let crate_data = client.get_crate(&name).unwrap();
+        let resolved_version = downloader::resolve_version(&Some(&version), &crate_data).unwrap();
+        let name_with_version = format!("{}:{}", name, resolved_version);
+
+        // Current crate's CrateInfo. We will use this to check the features the the current crate exposes.
+        let (.., crate_info) = downloader::gather_crate_info(&name_with_version, true).unwrap();
+
+        for (dep, _) in crate_info.deps_and_features.iter() {
+            let dep_crate_data = client.get_crate(&dep.name).unwrap();
+            let dep_resolved_version =
+                downloader::resolve_version(&Some(&dep.version), &dep_crate_data).unwrap();
+            let dep_name_with_version = format!("{}:{}", dep.name.clone(), dep_resolved_version);
+
+            if is_dep_optional(&crate_info, &dep.name) || is_proc_macro(&dep_name_with_version) {
+                println!(
+                    "Dependency: {} is optional or a proc-macro crate: {}, skipping requirement check",
+                    dep.name, name_with_version
+                );
+                continue;
+            }
+
+            println!("Processing dependency: {}", dep_name_with_version);
+            println!("Seen so far: {:?}", seen);
+
+            let (.., dep_crate_info) =
+                downloader::gather_crate_info(&dep_name_with_version, true).unwrap();
+            let (enable, disable): (Vec<String>, Vec<String>) = if let Some(reqs) =
+                visited_dep_require
+                    .iter()
+                    .find(|(visited_name, _)| visited_name == &dep_name_with_version)
+                    .map(|(_, reqs)| reqs)
+            {
+                println!(
+                    "Already visited dependency requirements for crate: {}",
+                    dep_name_with_version
+                );
+                reqs.clone()
+            } else {
+                let crate_attrs = parse_crate(&dep_name_with_version, false);
+                let (enable, disable) = process_crate(
+                    &ctx,
+                    &crate_attrs,
+                    &dep_name_with_version,
+                    db_data,
+                    &dep_crate_info,
+                    true,
+                    &mut telemetry,
+                )
+                .unwrap();
+
+                visited_dep_require.push((
+                    dep_name_with_version.clone(),
+                    (enable.clone(), disable.clone()),
+                ));
+                println!(
+                    "Already visited dependencies requirements: {:?}",
+                    visited_dep_require
+                );
+                (enable, disable)
+            };
+
+            println!(
+                "Dependency: {} requires features: {:?} to be enabled and features: {:?} to be disabled to support no_std",
+                dep_name_with_version, enable, disable
+            );
+
+            // We use the resolved version here because multiple versions of the same crate
+            // can resolve to the same version and are required by different dependencies.
+            // In that case, we don't want to check the same crate multiple times.
+            if seen.insert((dep.name.clone(), dep_resolved_version.clone())) {
+                println!(
+                    "Adding dependency: {} to worklist for requirement check with version: {}",
+                    dep.name, dep_resolved_version
+                );
+                worklist.push((dep.name.clone(), dep_resolved_version.clone()));
+            }
+
+            if !dependency_requirement_possible(
+                &crate_info,
+                &dep_crate_info,
+                &dep.name,
+                &enable,
+                &disable,
+            ) {
+                println!(
+                    "Dependency: {} cannot satisfy its no_std requirements, failing",
+                    dep_name_with_version
+                );
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+fn dependency_requirement_possible(
+    main_crate_info: &CrateInfo,
+    dep_crate_info: &CrateInfo,
+    dep_name: &str,
+    enable: &[String],
+    disable: &[String],
+) -> bool {
+    if solver::disable_in_default(dep_crate_info, disable)
+        && let Some((dep, _)) = main_crate_info
+            .deps_and_features
+            .iter()
+            .find(|(dep, _)| dep.name == dep_name)
+        && dep.default_features
+    {
+        println!(
+            "Dependency: {} has default features enabled in main crate, cannot disable required features: {:?}",
+            dep_name, disable
+        );
+        return false;
+    }
+
+    let dep_default_feats: Vec<String> = main_crate_info
+        .deps_and_features
+        .iter()
+        .find(|(dep, _)| dep.name == dep_name)
+        .map(|(_, feats)| feats.clone())
+        .unwrap_or(Vec::new());
+
+    for feat in enable {
+        if !dep_default_feats.contains(feat)
+            && !feat_available_for_dep(main_crate_info, dep_name, feat)
+        {
+            println!(
+                "Dependency: {} cannot enable required feature: {}",
+                dep_name, feat
+            );
+            return false;
+        }
+    }
+    true
+}
+
+fn feat_available_for_dep(main_crate_info: &CrateInfo, dep_name: &str, feat: &str) -> bool {
+    main_crate_info.features.iter().any(|(_, dep_feats)| {
+        dep_feats
+            .iter()
+            .any(|(dep, f)| dep == dep_name && f == feat)
+    })
+}
+
 fn parse_top_level_externs<'a>(
     ctx: &'a z3::Context,
     names_and_versions: &[(String, String)],

@@ -259,7 +259,15 @@ fn get_features_not_disabled(crate_info: &CrateInfo, disable: &[String]) -> Vec<
     feats
 }
 
-fn disable_in_default(crate_info: &CrateInfo, disable: &[String]) -> bool {
+/// Given the crate info, the list of features to disable,
+/// return a boolean indicating if any of the disabled features
+/// are part of the default feature list.
+/// # Arguments
+/// * `crate_info` - The crate info
+/// * `disable` - The list of features to disable
+/// # Returns
+/// * `bool` - True if any of the disabled features are part of the default feature list
+pub fn disable_in_default(crate_info: &CrateInfo, disable: &[String]) -> bool {
     crate_info
         .features
         .iter()

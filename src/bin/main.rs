@@ -140,7 +140,9 @@ fn main() -> anyhow::Result<()> {
     // TODO: There are some cleanup and refactoring to minimize the read -> mutate -> write pattern for the toml
     // TODO: Use better mechanism to get the .rs file to check for no_std (use metadata to get this).
     // TODO: Add checks to make sure all deps at all depths actually can be compiled with the given set of features in the
-    // crate that depends on them.
+    // crate that depends on them. -> This is currently implemented and only checks if
+    // the feature requirements can be met, not if they are actually met with the set of features enabled by that crate for
+    // no_std compilation.
     let mut deps_args = Vec::new();
     for dep in deps_attrs {
         if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {
@@ -272,9 +274,11 @@ fn main() -> anyhow::Result<()> {
     if one_succeeded {
         telemetry.build_success = true;
         db::add_to_db_data(&mut db_data, &name, (&enable, &disable));
+    } else if !parser::recursive_dep_requirement_check(&crate_info, &db_data) {
+        debug!(
+            "ERROR: Some dependency at some level does not have a way to enable all its required features in no_std mode"
+        );
     } else {
-        // DO THE RECURSIVE CHECK HERE TO MAKE SURE ALL DEPENDENCIES SET THE 
-        // FEATURES CORRECTLY FOR ITS DEPENDENCIES
         hir::hir_visit(&name, &mut telemetry);
         telemetry.hir_analysis_done = true;
         if hir::check_for_unguarded_std_usages(&readable_spans, &mut stats) {
