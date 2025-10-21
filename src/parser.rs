@@ -635,7 +635,13 @@ pub fn process_crate(
     }
 
     if minimize {
+        let optional_deps: Vec<String> = crate_info.deps_and_features
+            .iter()
+            .filter(|(dep, _)| dep.optional)
+            .map(|(dep, _)| dep.name.clone())
+            .collect();
         enable.retain(|f| optional_dep_feats.iter().all(|(_, feat)| feat != f));
+        enable.retain(|f| !optional_deps.contains(f));
     }
 
     Ok((enable, disable))
@@ -667,16 +673,18 @@ pub fn process_dep_crate(
     let (enable, disable) = match db::get_from_db_data(db_data, &dep.crate_name) {
         Some(dbdata) => (dbdata.features.0.clone(), dbdata.features.1.clone()),
         None => {
+            let (.., dep_crate_info) = downloader::gather_crate_info(&dep.crate_name, true)?;
+            let optional_dep_feats = features_for_optional_deps(&dep_crate_info);
             let (enable, disable) = process_crate(
                 ctx,
                 dep,
                 &dep.crate_name,
                 db_data,
-                crate_info,
+                &dep_crate_info,
                 false,
                 telemetry,
                 minimize,
-                &TupleVec::new(),
+                &optional_dep_feats,
             )?;
             (enable, disable)
         }
@@ -1785,6 +1793,14 @@ pub fn recursive_dep_requirement_check(crate_info: &CrateInfo, db_data: &[DBData
         let crate_data = client.get_crate(&name).unwrap();
         let resolved_version = downloader::resolve_version(&Some(&version), &crate_data).unwrap();
         let name_with_version = format!("{}:{}", name, resolved_version);
+
+        if is_proc_macro(&name_with_version) {
+            println!(
+                "Dependency: {} is a proc-macro crate, skipping requirement check",
+                name_with_version
+            );
+            continue;
+        }
 
         // Current crate's CrateInfo. We will use this to check the features the the current crate exposes.
         let (.., crate_info) = downloader::gather_crate_info(&name_with_version, true).unwrap();
