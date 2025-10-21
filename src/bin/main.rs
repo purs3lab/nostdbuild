@@ -30,6 +30,8 @@ struct Cli {
     /// Enabling this will cause the tool to try minimizing the number of features enabled
     /// to achieve a successful no_std build. Currently it only does so by removing features
     /// for optional dependencies.
+    /// By default also, we don't find the maximal set of features that can be enabled. But this
+    /// flag will try to minimize from the default behavior as well.
     minimize: bool,
 }
 
@@ -56,7 +58,7 @@ fn main() -> anyhow::Result<()> {
             target
         }
         None => {
-            debug!("No target provided, will use either crates target or all targets");
+            debug!("No target provided, will use all targets");
             "".to_string()
         }
     };
@@ -283,16 +285,17 @@ fn main() -> anyhow::Result<()> {
     if one_succeeded {
         telemetry.build_success = true;
         db::add_to_db_data(&mut db_data, &name, (&enable, &disable));
-    } else if !parser::recursive_dep_requirement_check(&crate_info, &db_data) {
-        debug!(
-            "ERROR: Some dependency at some level does not have a way to enable all its required features in no_std mode"
-        );
     } else {
         hir::hir_visit(&name, &mut telemetry);
         telemetry.hir_analysis_done = true;
         if hir::check_for_unguarded_std_usages(&readable_spans, &mut stats) {
             telemetry.unguarded_std_usages = true;
             debug!("ERROR: Found unguarded std usage in the main crate");
+        } else if !parser::recursive_dep_requirement_check(&crate_info, &db_data) {
+            // This is the last resort since this has a high chance of false positives
+            debug!(
+                "ERROR: Some dependency at some level does not have a way to enable all its required features in no_std mode"
+            );
         }
     }
 

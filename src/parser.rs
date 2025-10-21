@@ -635,7 +635,8 @@ pub fn process_crate(
     }
 
     if minimize {
-        let optional_deps: Vec<String> = crate_info.deps_and_features
+        let optional_deps: Vec<String> = crate_info
+            .deps_and_features
             .iter()
             .filter(|(dep, _)| dep.optional)
             .map(|(dep, _)| dep.name.clone())
