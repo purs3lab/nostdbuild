@@ -63,8 +63,8 @@ fn main() -> anyhow::Result<()> {
 
     let depth = match cli.depth {
         Some(depth) if depth > 0 => depth,
-        Some(_) => 4,
-        None => 4,
+        Some(_) => u32::MAX,
+        None => u32::MAX,
     };
 
     let mut db_data = db::read_db_file()?;
