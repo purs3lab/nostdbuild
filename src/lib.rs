@@ -270,4 +270,12 @@ pub struct Telemetry {
     pub constraint_solving_time_ms: Vec<(String, u128)>,
     /// Time taken for initial recrusive visit to verify dependencies are no_std in milliseconds
     pub initial_dep_verification_time_ms: u128,
+    /// Did we do a recursive requirement check for dependencies at the end
+    pub recursive_requirement_check_done: bool,
+    /// Time taken for recursive requirement check in milliseconds
+    pub recursive_requirement_check_time_ms: u128,
+    /// Did the recursive requirement check fail
+    pub recursive_requirement_check_failed: bool,
+    /// If the above is true, which dependency caused it to fail
+    pub recursive_requirement_check_failed_dep: Option<String>,
 }

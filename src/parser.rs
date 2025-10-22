@@ -1771,7 +1771,9 @@ pub fn recursive_dep_requirement_check(
     crate_info: &CrateInfo,
     db_data: &[DBData],
     depth: u32,
+    telemetry: &mut Telemetry,
 ) -> bool {
+    telemetry.recursive_requirement_check_done = true;
     println!("Starting recursive dependency requirement check...");
     let top_level_deps: TupleVec = crate_info
         .deps_and_features
@@ -1789,12 +1791,13 @@ pub fn recursive_dep_requirement_check(
     let mut current_threshold = 0;
     let mut current_depth = 1;
 
-    println!("Original worklist: {:?}", worklist);
+    debug!("Original worklist: {:?}", worklist);
 
     let client = downloader::create_client().unwrap();
     // For the crates that we already processed, save the requirements
     // so that we don't have to recompute them.
     let mut visited_dep_require: Vec<(String, (Vec<String>, Vec<String>))> = Vec::new();
+    let instant = std::time::Instant::now();
 
     while let Some((name, version)) = worklist.pop() {
         current_threshold += 1;
@@ -1802,7 +1805,7 @@ pub fn recursive_dep_requirement_check(
             current_depth += 1;
             threshold = worklist.len();
             current_threshold = 0;
-            println!("Recursion depth increased to: {}", depth);
+            debug!("Recursion depth increased to: {}", depth);
         }
         println!("Checking dependency: {}:{}", name, version);
         let crate_data = client.get_crate(&name).unwrap();
@@ -1810,7 +1813,7 @@ pub fn recursive_dep_requirement_check(
         let name_with_version = format!("{}:{}", name, resolved_version);
 
         if is_proc_macro(&name_with_version) {
-            println!(
+            debug!(
                 "Dependency: {} is a proc-macro crate, skipping requirement check",
                 name_with_version
             );
@@ -1827,7 +1830,7 @@ pub fn recursive_dep_requirement_check(
             let dep_name_with_version = format!("{}:{}", dep.name.clone(), dep_resolved_version);
 
             if is_dep_optional(&crate_info, &dep.name) || is_proc_macro(&dep_name_with_version) {
-                println!(
+                debug!(
                     "Dependency: {} is optional or a proc-macro crate: {}, skipping requirement check",
                     dep.name, name_with_version
                 );
@@ -1835,7 +1838,7 @@ pub fn recursive_dep_requirement_check(
             }
 
             println!("Processing dependency: {}", dep_name_with_version);
-            println!("Seen so far: {:?}", seen);
+            debug!("Seen so far: {:?}", seen);
 
             let (.., dep_crate_info) =
                 downloader::gather_crate_info(&dep_name_with_version, true).unwrap();
@@ -1848,7 +1851,7 @@ pub fn recursive_dep_requirement_check(
                     .find(|(visited_name, _)| visited_name == &dep_name_with_version)
                     .map(|(_, reqs)| reqs)
             {
-                println!(
+                debug!(
                     "Already visited dependency requirements for crate: {}",
                     dep_name_with_version
                 );
@@ -1872,7 +1875,7 @@ pub fn recursive_dep_requirement_check(
                     dep_name_with_version.clone(),
                     (enable.clone(), disable.clone()),
                 ));
-                println!(
+                debug!(
                     "Already visited dependencies requirements: {:?}",
                     visited_dep_require
                 );
@@ -1881,7 +1884,7 @@ pub fn recursive_dep_requirement_check(
 
             solver::new_feats_to_add(&dep_crate_info, &Vec::new(), &mut enable);
 
-            println!(
+            debug!(
                 "Dependency: {} requires features: {:?} to be enabled and features: {:?} to be disabled to support no_std",
                 dep_name_with_version, enable, disable
             );
@@ -1892,7 +1895,7 @@ pub fn recursive_dep_requirement_check(
             if current_depth <= depth
                 && seen.insert((dep.name.clone(), dep_resolved_version.clone()))
             {
-                println!(
+                debug!(
                     "Adding dependency: {} to worklist for requirement check with version: {}",
                     dep.name, dep_resolved_version
                 );
@@ -1906,15 +1909,19 @@ pub fn recursive_dep_requirement_check(
                 &enable,
                 &disable,
             ) {
-                println!(
+                debug!(
                     "Dependency: {} cannot satisfy its no_std requirements, failing",
                     dep_name_with_version
                 );
+                telemetry.recursive_requirement_check_time_ms = instant.elapsed().as_millis();
+                telemetry.recursive_requirement_check_failed = true;
+                telemetry.recursive_requirement_check_failed_dep =
+                    Some(dep_name_with_version.clone());
                 return false;
             }
         }
     }
-
+    telemetry.recursive_requirement_check_time_ms = instant.elapsed().as_millis();
     true
 }
 
