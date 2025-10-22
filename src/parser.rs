@@ -1767,7 +1767,11 @@ pub fn is_dep_optional(crate_info: &CrateInfo, name: &str) -> bool {
 /// # Returns
 /// A boolean indicating whether all dependencies can satisfy their
 /// no_std requirements.
-pub fn recursive_dep_requirement_check(crate_info: &CrateInfo, db_data: &[DBData]) -> bool {
+pub fn recursive_dep_requirement_check(
+    crate_info: &CrateInfo,
+    db_data: &[DBData],
+    depth: u32,
+) -> bool {
     println!("Starting recursive dependency requirement check...");
     let top_level_deps: TupleVec = crate_info
         .deps_and_features
@@ -1781,6 +1785,9 @@ pub fn recursive_dep_requirement_check(crate_info: &CrateInfo, db_data: &[DBData
 
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut worklist: TupleVec = top_level_deps.clone();
+    let mut threshold = top_level_deps.len();
+    let mut current_threshold = 0;
+    let mut current_depth = 1;
 
     println!("Original worklist: {:?}", worklist);
 
@@ -1790,6 +1797,13 @@ pub fn recursive_dep_requirement_check(crate_info: &CrateInfo, db_data: &[DBData
     let mut visited_dep_require: Vec<(String, (Vec<String>, Vec<String>))> = Vec::new();
 
     while let Some((name, version)) = worklist.pop() {
+        current_threshold += 1;
+        if current_threshold > threshold {
+            current_depth += 1;
+            threshold = worklist.len();
+            current_threshold = 0;
+            println!("Recursion depth increased to: {}", depth);
+        }
         println!("Checking dependency: {}:{}", name, version);
         let crate_data = client.get_crate(&name).unwrap();
         let resolved_version = downloader::resolve_version(&Some(&version), &crate_data).unwrap();
@@ -1875,7 +1889,9 @@ pub fn recursive_dep_requirement_check(crate_info: &CrateInfo, db_data: &[DBData
             // We use the resolved version here because multiple versions of the same crate
             // can resolve to the same version and are required by different dependencies.
             // In that case, we don't want to check the same crate multiple times.
-            if seen.insert((dep.name.clone(), dep_resolved_version.clone())) {
+            if current_depth <= depth
+                && seen.insert((dep.name.clone(), dep_resolved_version.clone()))
+            {
                 println!(
                     "Adding dependency: {} to worklist for requirement check with version: {}",
                     dep.name, dep_resolved_version

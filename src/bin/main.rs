@@ -291,7 +291,7 @@ fn main() -> anyhow::Result<()> {
         if hir::check_for_unguarded_std_usages(&readable_spans, &mut stats) {
             telemetry.unguarded_std_usages = true;
             debug!("ERROR: Found unguarded std usage in the main crate");
-        } else if !parser::recursive_dep_requirement_check(&crate_info, &db_data) {
+        } else if !parser::recursive_dep_requirement_check(&crate_info, &db_data, depth) {
             // This is the last resort since this has a high chance of false positives
             debug!(
                 "ERROR: Some dependency at some level does not have a way to enable all its required features in no_std mode"
