@@ -289,12 +289,18 @@ fn main() -> anyhow::Result<()> {
         if hir::check_for_unguarded_std_usages(&readable_spans, &mut stats) {
             telemetry.unguarded_std_usages = true;
             debug!("ERROR: Found unguarded std usage in the main crate");
-        } else if !parser::recursive_dep_requirement_check(
-            &crate_info,
-            &db_data,
-            depth,
-            &mut telemetry,
-        ) {
+        }
+        // We add no_std here but not for the previous condition becase, we want to know
+        // even if some deps are not no_std compatible, whether the main would have built successfully
+        // if not for the unsupported deps.
+        else if no_std
+            && !parser::recursive_dep_requirement_check(
+                &crate_info,
+                &db_data,
+                depth,
+                &mut telemetry,
+            )
+        {
             // This is the last resort since this has a high chance of false positives
             debug!(
                 "ERROR: Some dependency at some level does not have a way to enable all its required features in no_std mode"
