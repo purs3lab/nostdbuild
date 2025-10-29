@@ -186,7 +186,6 @@ fn main() -> anyhow::Result<()> {
             &crate_info,
             &crate_name_rename,
             &mut telemetry,
-            cli.minimize,
         )?;
         deps_args.extend(local_dep_args);
 
@@ -228,7 +227,6 @@ fn main() -> anyhow::Result<()> {
                 &crate_info,
                 &crate_name_rename,
                 &mut telemetry,
-                cli.minimize,
             )?;
 
             dep_args_skipped.extend(local_dep_args);

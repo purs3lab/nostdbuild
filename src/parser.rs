@@ -669,7 +669,6 @@ pub fn process_dep_crate(
     crate_info: &CrateInfo,
     crate_name_rename: &[(String, String)],
     telemetry: &mut Telemetry,
-    minimize: bool,
 ) -> Result<Vec<String>, anyhow::Error> {
     let (enable, disable) = match db::get_from_db_data(db_data, &dep.crate_name) {
         Some(dbdata) => (dbdata.features.0.clone(), dbdata.features.1.clone()),
@@ -684,7 +683,7 @@ pub fn process_dep_crate(
                 &dep_crate_info,
                 false,
                 telemetry,
-                minimize,
+                true,
                 &optional_dep_feats,
             )?;
             (enable, disable)
