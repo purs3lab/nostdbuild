@@ -1778,6 +1778,7 @@ pub fn recursive_dep_requirement_check(
     let top_level_deps: TupleVec = crate_info
         .deps_and_features
         .iter()
+        .filter(|(info, _)| !info.optional)
         .map(|(dep, _)| (dep.name.clone(), dep.version.clone()))
         .collect();
 
@@ -1829,6 +1830,7 @@ pub fn recursive_dep_requirement_check(
                 downloader::resolve_version(&Some(&dep.version), &dep_crate_data).unwrap();
             let dep_name_with_version = format!("{}:{}", dep.name.clone(), dep_resolved_version);
 
+            println!("Processing dependency: {}", dep_name_with_version);
             if is_dep_optional(&crate_info, &dep.name) || is_proc_macro(&dep_name_with_version) {
                 debug!(
                     "Dependency: {} is optional or a proc-macro crate: {}, skipping requirement check",
@@ -1837,7 +1839,6 @@ pub fn recursive_dep_requirement_check(
                 continue;
             }
 
-            println!("Processing dependency: {}", dep_name_with_version);
             debug!("Seen so far: {:?}", seen);
 
             let (.., dep_crate_info) =
