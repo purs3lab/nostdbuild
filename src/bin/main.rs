@@ -79,7 +79,12 @@ fn main() -> anyhow::Result<()> {
         }
     } else {
         debug!("Downloading from crates.io");
-        name = downloader::clone_from_crates(&name, cli.version.as_ref())?;
+        let version = if let Some(version) = cli.version {
+            Some(format!("={}", version))
+        } else {
+            None
+        };
+        name = downloader::clone_from_crates(&name, version.as_ref())?;
         debug!("Downloaded crate: {}", name);
     }
 
