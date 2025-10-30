@@ -2341,11 +2341,11 @@ fn get_all_rs_files(path: &str, recurse: bool) -> Vec<String> {
                 toml::Value::Table(toml::map::Map::new())
             });
 
-        if let Some(lib) = toml.get("lib").and_then(|l| l.as_table()) {
-            if let Some(path_value) = lib.get("path").and_then(|p| p.as_str()) {
-                let lib_path = Path::new(path).join(path_value);
-                push_to_files_vec(&lib_path, &mut files);
-            }
+        if let Some(lib) = toml.get("lib").and_then(|l| l.as_table())
+            && let Some(path_value) = lib.get("path").and_then(|p| p.as_str())
+        {
+            let lib_path = Path::new(path).join(path_value);
+            push_to_files_vec(&lib_path, &mut files);
         }
         if let Some(bin_array) = toml.get("bin").and_then(|b| b.as_array()) {
             for bin_target in bin_array {
@@ -2355,27 +2355,25 @@ fn get_all_rs_files(path: &str, recurse: bool) -> Vec<String> {
                 }
             }
         }
-        if files.is_empty() {
-            let src_path = Path::new(path).join("src");
-            let entries = if !src_path.exists() {
-                debug!("No src directory found in {}", path);
-                fs::read_dir(path).unwrap()
-            } else {
-                let mut push_if_path_exist = |sub_path: &str| {
-                    let full_path = src_path.join(sub_path);
-                    if full_path.exists() {
-                        for entry in fs::read_dir(&full_path).unwrap() {
-                            push_to_files_vec(&entry.unwrap().path(), &mut files);
-                        }
+        let src_path = Path::new(path).join("src");
+        let entries = if !src_path.exists() {
+            debug!("No src directory found in {}", path);
+            fs::read_dir(path).unwrap()
+        } else {
+            let mut push_if_path_exist = |sub_path: &str| {
+                let full_path = src_path.join(sub_path);
+                if full_path.exists() {
+                    for entry in fs::read_dir(&full_path).unwrap() {
+                        push_to_files_vec(&entry.unwrap().path(), &mut files);
                     }
-                };
-                push_if_path_exist("bin");
-                push_if_path_exist("lib");
-                fs::read_dir(&src_path).unwrap()
+                }
             };
-            for entry in entries {
-                push_to_files_vec(&entry.unwrap().path(), &mut files);
-            }
+            push_if_path_exist("bin");
+            push_if_path_exist("lib");
+            fs::read_dir(&src_path).unwrap()
+        };
+        for entry in entries {
+            push_to_files_vec(&entry.unwrap().path(), &mut files);
         }
     }
     files
