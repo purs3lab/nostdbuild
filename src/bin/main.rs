@@ -25,14 +25,6 @@ struct Cli {
 
     #[arg(long)]
     depth: Option<u32>,
-
-    #[arg(long)]
-    /// Enabling this will cause the tool to try minimizing the number of features enabled
-    /// to achieve a successful no_std build. Currently it only does so by removing features
-    /// for optional dependencies.
-    /// By default also, we don't find the maximal set of features that can be enabled. But this
-    /// flag will try to minimize from the default behavior as well.
-    minimize: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -131,7 +123,6 @@ fn main() -> anyhow::Result<()> {
         &crate_info,
         true,
         &mut telemetry,
-        cli.minimize,
         &dep_and_feats,
     )?;
 
@@ -142,6 +133,7 @@ fn main() -> anyhow::Result<()> {
 
     let (disable_default, mut main_features) =
         solver::final_feature_list_main(&crate_info, &mut enable, &disable, &mut telemetry);
+    parser::minimize(&crate_info, &dep_and_feats, &mut main_features);
 
     debug!("Dependency and features: {:?}", dep_and_feats);
 

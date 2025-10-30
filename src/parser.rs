@@ -446,7 +446,6 @@ pub fn process_crate(
     crate_info: &CrateInfo,
     is_main: bool,
     telemetry: &mut Telemetry,
-    minimize: bool,
     optional_dep_feats: &TupleVec,
 ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
     let (mut enable, mut disable): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
@@ -634,18 +633,27 @@ pub fn process_crate(
         (enable, disable) = solver::model_to_features(&model);
     }
 
-    if minimize {
-        let optional_deps: Vec<String> = crate_info
-            .deps_and_features
-            .iter()
-            .filter(|(dep, _)| dep.optional)
-            .map(|(dep, _)| dep.name.clone())
-            .collect();
-        enable.retain(|f| optional_dep_feats.iter().all(|(_, feat)| feat != f));
-        enable.retain(|f| !optional_deps.contains(f));
-    }
+    minimize(crate_info, optional_dep_feats, &mut enable);
 
     Ok((enable, disable))
+}
+
+/// If there are features that got enabled, but are the only reason an optional
+/// dependency is included, we can drop those features from the main crate's
+/// feature list.
+/// # Arguments
+/// * `crate_info` - The crate info of the main crate
+/// * `optional_dep_feats` - The list of features that enable optional dependencies
+/// * `enable` - The list of features to enable for the main crate
+pub fn minimize(crate_info: &CrateInfo, optional_dep_feats: &TupleVec, enable: &mut Vec<String>) {
+    let optional_deps: Vec<String> = crate_info
+        .deps_and_features
+        .iter()
+        .filter(|(dep, _)| dep.optional)
+        .map(|(dep, _)| dep.name.clone())
+        .collect();
+    enable.retain(|f| optional_dep_feats.iter().all(|(_, feat)| feat != f));
+    enable.retain(|f| !optional_deps.contains(f));
 }
 
 /// Process the dependency crate.
@@ -683,7 +691,6 @@ pub fn process_dep_crate(
                 &dep_crate_info,
                 false,
                 telemetry,
-                true,
                 &optional_dep_feats,
             )?;
             (enable, disable)
@@ -1866,7 +1873,6 @@ pub fn recursive_dep_requirement_check(
                     &dep_crate_info,
                     true,
                     &mut telemetry,
-                    true,
                     &optional_dep_feats,
                 )
                 .unwrap();
