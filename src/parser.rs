@@ -577,8 +577,13 @@ pub fn process_crate(
     let equations = parse_attributes(attrs, ctx);
     let mut filtered = filter_equations(&equations, &parsed_attr.features);
 
+    let mut non_minimalizable_features: HashSet<String> = HashSet::new();
+
+    // All the negated compile_error attributes should be added to the filtered list
+    // This might add duplicate equations, but that is fine since Z3 will handle it.
     for negated_attr in attrs.compile_error_attrs.iter() {
         let (neg_eq, neg_parsed_attr) = parse_main_attributes_direct(negated_attr, ctx);
+        non_minimalizable_features.extend(neg_parsed_attr.features);
         if let Some(neg_eq) = neg_eq {
             filtered.push(neg_eq);
         }
@@ -645,7 +650,12 @@ pub fn process_crate(
         (enable, disable) = solver::model_to_features(&model);
     }
 
-    minimize(crate_info, optional_dep_feats, &mut enable);
+    minimize(
+        crate_info,
+        optional_dep_feats,
+        &mut enable,
+        &non_minimalizable_features,
+    );
 
     Ok((enable, disable))
 }
@@ -657,15 +667,32 @@ pub fn process_crate(
 /// * `crate_info` - The crate info of the main crate
 /// * `optional_dep_feats` - The list of features that enable optional dependencies
 /// * `enable` - The list of features to enable for the main crate
-pub fn minimize(crate_info: &CrateInfo, optional_dep_feats: &TupleVec, enable: &mut Vec<String>) {
+/// * `non_minimalizable_features` - The set of features that should not be removed
+pub fn minimize(
+    crate_info: &CrateInfo,
+    optional_dep_feats: &TupleVec,
+    enable: &mut Vec<String>,
+    non_minimalizable_features: &HashSet<String>,
+) {
     let optional_deps: Vec<String> = crate_info
         .deps_and_features
         .iter()
         .filter(|(dep, _)| dep.optional)
         .map(|(dep, _)| dep.name.clone())
         .collect();
+
+    let common: Vec<String> = enable
+        .iter()
+        .filter(|f| non_minimalizable_features.contains(*f))
+        .cloned()
+        .collect();
+
     enable.retain(|f| optional_dep_feats.iter().all(|(_, feat)| feat != f));
     enable.retain(|f| !optional_deps.contains(f));
+
+    enable.extend(common);
+    enable.sort();
+    enable.dedup();
 }
 
 /// Process the dependency crate.

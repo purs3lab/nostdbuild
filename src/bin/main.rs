@@ -1,5 +1,7 @@
 #![feature(rustc_private)]
 
+use std::collections::HashSet;
+
 use clap::Parser;
 use log::debug;
 
@@ -129,7 +131,12 @@ fn main() -> anyhow::Result<()> {
 
     let (disable_default, mut main_features) =
         solver::final_feature_list_main(&crate_info, &mut enable, &disable, &mut telemetry);
-    parser::minimize(&crate_info, &dep_and_feats, &mut main_features);
+    parser::minimize(
+        &crate_info,
+        &dep_and_feats,
+        &mut main_features,
+        &HashSet::new(),
+    );
 
     debug!("Dependency and features: {:?}", dep_and_feats);
 
