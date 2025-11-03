@@ -30,6 +30,10 @@ pub struct ParsedAttr {
 #[derive(Default, Clone, Debug)]
 pub struct Attributes {
     attributes: Vec<Attribute>,
+    // This will be a list of attributes associated with
+    // compiler_error macros. Note that the attributes present
+    // here will also be present in `attributes` field.
+    compile_error_attrs: Vec<Attribute>,
     pub crate_name: String,
     pub unconditional_no_std: bool,
     // Stores the filename as well since we can't recover
@@ -193,6 +197,7 @@ impl<'a> Visit<'a> for Attributes {
                         let negated: Attribute = syn::parse_quote!(
                         #[cfg(not(#tokens))]
                         );
+                        self.compile_error_attrs.push(negated.clone());
                         self.attributes.push(negated);
                     }
                 }
@@ -570,7 +575,14 @@ pub fn process_crate(
         }
     }
     let equations = parse_attributes(attrs, ctx);
-    let filtered = filter_equations(&equations, &parsed_attr.features);
+    let mut filtered = filter_equations(&equations, &parsed_attr.features);
+
+    for negated_attr in attrs.compile_error_attrs.iter() {
+        let (neg_eq, neg_parsed_attr) = parse_main_attributes_direct(negated_attr, ctx);
+        if let Some(neg_eq) = neg_eq {
+            filtered.push(neg_eq);
+        }
+    }
 
     // This part adds equations if there are attributes that conditionally include
     // files which might contain unguarded `extern crate std`.
