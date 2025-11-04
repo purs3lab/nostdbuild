@@ -152,6 +152,7 @@ fn main() -> anyhow::Result<()> {
     // crate that depends on them. -> This is currently implemented and only checks if
     // the feature requirements can be met, not if they are actually met with the set of features enabled by that crate for
     // no_std compilation.
+    // TODO: IMPORTANT: If modules are imported with some attribute, we can ignore the direct std usages in those modules.
     let mut deps_args = Vec::new();
     for dep in deps_attrs {
         if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {

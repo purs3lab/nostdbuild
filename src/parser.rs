@@ -218,6 +218,20 @@ impl<'a> Visit<'a> for Attributes {
         }
     }
 
+    fn visit_variant(&mut self, i: &'a syn::Variant) {
+        let attrs: &Vec<Attribute> = &i.attrs;
+        let span: Span = i.span();
+        check_attr_save_span(self, attrs, span);
+        syn::visit::visit_variant(self, i);
+    }
+
+    fn visit_field(&mut self, i: &'a syn::Field) {
+        let attrs: &Vec<Attribute> = &i.attrs;
+        let span: Span = i.span();
+        check_attr_save_span(self, attrs, span);
+        syn::visit::visit_field(self, i);
+    }
+
     // All visitors that collect Span
     fn visit_item(&mut self, i: &'a Item) {
         let attrs: &Vec<Attribute>;
