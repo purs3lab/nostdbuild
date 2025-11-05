@@ -36,9 +36,22 @@ pub struct Attributes {
     compile_error_attrs: Vec<Attribute>,
     pub crate_name: String,
     pub unconditional_no_std: bool,
-    // Stores the filename as well since we can't recover
-    // it later from the Span.
+    /// Stores the filename as well since we can't recover
+    /// it later from the Span.
     pub spans: Vec<(Span, Option<String>)>,
+    /// We also collect modules whose imports is conditional
+    /// on cfg attributes.
+    /// ```
+    /// #[cfg(feature = "my_mod")]
+    /// mod my_mod;
+    /// ```
+    /// In this case, we don't consider direct usages of `std`
+    /// in `my_mod` because it is possible to build the crate
+    /// without enabling `my_mod` feature.
+    pub mods: Vec<String>,
+    /// Rust allows including files conditionally using
+    /// `cfg_attr` attribute.
+    pub files_in_cfg_attrs: Vec<String>,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -276,6 +289,10 @@ impl<'a> Visit<'a> for Attributes {
             Item::Mod(m) => {
                 attrs = &m.attrs;
                 span = m.span();
+                if attrs.iter().any(|a| a.path().is_ident("cfg")) {
+                    debug!("Found cfg attribute for module: {}", m.ident);
+                    self.mods.push(m.ident.to_string());
+                }
             }
             Item::Use(u) => {
                 attrs = &u.attrs;
@@ -459,7 +476,7 @@ pub fn parse_deps_crate() -> Vec<Attributes> {
 /// whether to recurse further if it was the main crate.
 pub fn process_crate(
     ctx: &z3::Context,
-    attrs: &Attributes,
+    attrs: &mut Attributes,
     name_with_version: &str,
     db_data: &[DBData],
     crate_info: &CrateInfo,
@@ -606,6 +623,11 @@ pub fn process_crate(
     // This part adds equations if there are attributes that conditionally include
     // files which might contain unguarded `extern crate std`.
     let files_and_equations = get_files_in_attributes(attrs, ctx);
+    if is_main {
+        files_and_equations.iter().for_each(|(f, _)| {
+            attrs.files_in_cfg_attrs.push(f.clone());
+        });
+    }
     if !files_and_equations.is_empty() {
         if is_main {
             telemetry.conditional_file_import_main = true;
@@ -724,7 +746,7 @@ pub fn minimize(
 /// A Result indicating success or failure.
 pub fn process_dep_crate(
     ctx: &z3::Context,
-    dep: &Attributes,
+    dep: &mut Attributes,
     main_name: &str,
     db_data: &mut [DBData],
     crate_info: &CrateInfo,
@@ -736,10 +758,11 @@ pub fn process_dep_crate(
         None => {
             let (.., dep_crate_info) = downloader::gather_crate_info(&dep.crate_name, true)?;
             let optional_dep_feats = features_for_optional_deps(&dep_crate_info);
+            let dep_crate_name = dep.crate_name.clone();
             let (enable, disable) = process_crate(
                 ctx,
                 dep,
-                &dep.crate_name,
+                &dep_crate_name,
                 db_data,
                 &dep_crate_info,
                 false,
@@ -1917,10 +1940,10 @@ pub fn recursive_dep_requirement_check(
                 );
                 reqs.clone()
             } else {
-                let crate_attrs = parse_crate(&dep_name_with_version, false);
+                let mut crate_attrs = parse_crate(&dep_name_with_version, false);
                 let (enable, disable) = process_crate(
                     &ctx,
-                    &crate_attrs,
+                    &mut crate_attrs,
                     &dep_name_with_version,
                     db_data,
                     &dep_crate_info,

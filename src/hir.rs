@@ -4,7 +4,10 @@ use std::{fs, path, process::Command, time::Instant};
 use which::which;
 
 use crate::{AllStats, ReadableSpan, Telemetry};
-use crate::{consts, parser};
+use crate::{
+    consts,
+    parser::{self, Attributes},
+};
 
 pub fn hir_visit(crate_name: &str, telemetry: &mut Telemetry) {
     if !is_cargo_hir_installed() {
@@ -54,7 +57,11 @@ pub fn hir_visit(crate_name: &str, telemetry: &mut Telemetry) {
     }
 }
 
-pub fn check_for_unguarded_std_usages(spans: &[ReadableSpan], stats: &mut AllStats) -> bool {
+pub fn check_for_unguarded_std_usages(
+    spans: &[ReadableSpan],
+    main_attributes: &Attributes,
+    stats: &mut AllStats,
+) -> bool {
     if !path::Path::new(consts::HIR_VISITOR_SPAN_DUMP).exists() {
         debug!(
             "ERROR:HIR visitor span dump file does not exist. Please ensure that `cargo-hir` ran successfully."
@@ -62,10 +69,22 @@ pub fn check_for_unguarded_std_usages(spans: &[ReadableSpan], stats: &mut AllSta
         return false;
     }
 
+    let mut patterns: Vec<String> = main_attributes
+        .mods
+        .iter()
+        .flat_map(|m| [format!("/{m}.rs"), format!("/{m}/mod.rs")])
+        .collect();
+
+    main_attributes.files_in_cfg_attrs.iter().for_each(|f| {
+        patterns.push(format!("/{f}"));
+    });
+
     let data = fs::read_to_string(consts::HIR_VISITOR_SPAN_DUMP)
         .expect("Unable to read HIR visitor span dump file");
-    let hir_spans: Vec<ReadableSpan> =
+    let mut hir_spans: Vec<ReadableSpan> =
         serde_json::from_str(&data).expect("Unable to parse HIR visitor span dump file");
+
+    hir_spans.retain(|span| !patterns.iter().any(|p| span.file.ends_with(p)));
 
     debug!("Hir spans: {:?}", hir_spans);
     debug!("Proc macro spans: {:?}", spans);

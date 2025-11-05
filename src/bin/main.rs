@@ -109,13 +109,13 @@ fn main() -> anyhow::Result<()> {
     telemetry.no_std = found;
     telemetry.dep_not_no_std = !no_std;
 
-    let main_attributes = parser::parse_crate(&name, true);
+    let mut main_attributes = parser::parse_crate(&name, true);
 
     let readable_spans = hir::proc_macro_span_to_readable(&main_attributes.spans);
     let dep_and_feats = parser::features_for_optional_deps(&crate_info);
     let (mut enable, disable) = parser::process_crate(
         &ctx,
-        &main_attributes,
+        &mut main_attributes,
         &name,
         &db_data,
         &crate_info,
@@ -154,7 +154,7 @@ fn main() -> anyhow::Result<()> {
     // no_std compilation.
     // TODO: IMPORTANT: If modules are imported with some attribute, we can ignore the direct std usages in those modules.
     let mut deps_args = Vec::new();
-    for dep in deps_attrs {
+    for mut dep in deps_attrs {
         if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {
             debug!(
                 "Dependency {} has known syntex failure, skipping",
@@ -181,7 +181,7 @@ fn main() -> anyhow::Result<()> {
 
         let local_dep_args = parser::process_dep_crate(
             &ctx,
-            &dep,
+            &mut dep,
             &name,
             &mut db_data,
             &crate_info,
@@ -206,7 +206,7 @@ fn main() -> anyhow::Result<()> {
     temp_combined.extend(main_features.clone());
 
     let mut dep_args_skipped = Vec::new();
-    for dep in skipped {
+    for mut dep in skipped {
         if !parser::should_skip_dep(
             &dep.crate_name,
             &crate_info,
@@ -222,7 +222,7 @@ fn main() -> anyhow::Result<()> {
             );
             let local_dep_args = parser::process_dep_crate(
                 &ctx,
-                &dep,
+                &mut dep,
                 &name,
                 &mut db_data,
                 &crate_info,
@@ -287,7 +287,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         hir::hir_visit(&name, &mut telemetry);
         telemetry.hir_analysis_done = true;
-        if hir::check_for_unguarded_std_usages(&readable_spans, &mut stats) {
+        if hir::check_for_unguarded_std_usages(&readable_spans, &main_attributes, &mut stats) {
             telemetry.unguarded_std_usages = true;
             debug!("ERROR: Found unguarded std usage in the main crate");
         }
