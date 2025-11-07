@@ -287,10 +287,17 @@ fn get_features_not_disabled(crate_info: &CrateInfo, disable: &[String]) -> Vec<
         .find(|(name, _)| name == "default")
     {
         for feature in features {
-            let mut all_enabled = vec![feature.1.clone()];
+            let current_feat = if feature.0 == feature.1 {
+                feature.1.clone()
+            } else {
+                // If the feature is to enable a feature from a dependency, then we
+                // don't need to worry about it enabling other features in the main crate.
+                continue;
+            };
+            let mut all_enabled = vec![current_feat.clone()];
             all_enabled_for_feat(&mut all_enabled, crate_info);
             if all_enabled.iter().all(|f| !disable.contains(f)) {
-                feats.push(feature.1.clone());
+                feats.push(current_feat);
             }
         }
     };
@@ -337,10 +344,15 @@ fn all_enabled_for_feat(all_enabled: &mut Vec<String>, crate_info: &CrateInfo) {
 
     while let Some(f) = to_check.pop() {
         if let Some((_, features)) = crate_info.features.iter().find(|(name, _)| name == &f) {
-            for (_, feature) in features {
-                if !all_enabled.contains(feature) {
-                    all_enabled.push(feature.clone());
-                    to_check.push(feature.clone());
+            for (k, v) in features {
+                let full = if k == v {
+                    v.clone()
+                } else {
+                    format!("{}/{}", k, v)
+                };
+                if !all_enabled.contains(&full) {
+                    all_enabled.push(full.clone());
+                    to_check.push(full);
                 }
             }
         }
