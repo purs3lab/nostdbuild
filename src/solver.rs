@@ -204,7 +204,7 @@ pub fn final_feature_list_main(
     let mut disable_default = enable.is_empty();
     let mut enable_from_default = Vec::new();
 
-    if disable_in_default(crate_info, disable) {
+    if disable_in_default(crate_info, disable) || disable_in_default_indirect(crate_info, disable) {
         disable_default = true;
         enable_from_default = get_features_not_disabled(crate_info, disable);
     }
@@ -286,11 +286,13 @@ fn get_features_not_disabled(crate_info: &CrateInfo, disable: &[String]) -> Vec<
         .iter()
         .find(|(name, _)| name == "default")
     {
-        features.iter().for_each(|feature| {
-            if !disable.contains(&feature.1) {
+        for feature in features {
+            let mut all_enabled = vec![feature.1.clone()];
+            all_enabled_for_feat(&mut all_enabled, crate_info);
+            if all_enabled.iter().all(|f| !disable.contains(f)) {
                 feats.push(feature.1.clone());
             }
-        });
+        }
     };
     feats
 }
@@ -309,6 +311,40 @@ pub fn disable_in_default(crate_info: &CrateInfo, disable: &[String]) -> bool {
         .iter()
         .find(|(name, _)| name == "default")
         .is_some_and(|(_, features)| features.iter().any(|feature| disable.contains(&feature.1)))
+}
+
+fn disable_in_default_indirect(crate_info: &CrateInfo, disable: &[String]) -> bool {
+    let default_feats = crate_info
+        .features
+        .iter()
+        .find(|(name, _)| name == "default")
+        .map(|(_, features)| {
+            features
+                .iter()
+                .map(|(_, feature)| feature.clone())
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
+
+    let mut all_enabled = default_feats.clone();
+    all_enabled_for_feat(&mut all_enabled, crate_info);
+
+    disable.iter().any(|feat| all_enabled.contains(feat))
+}
+
+fn all_enabled_for_feat(all_enabled: &mut Vec<String>, crate_info: &CrateInfo) {
+    let mut to_check = all_enabled.clone();
+
+    while let Some(f) = to_check.pop() {
+        if let Some((_, features)) = crate_info.features.iter().find(|(name, _)| name == &f) {
+            for (_, feature) in features {
+                if !all_enabled.contains(feature) {
+                    all_enabled.push(feature.clone());
+                    to_check.push(feature.clone());
+                }
+            }
+        }
+    }
 }
 
 fn model_to_enabled_features(model: &z3::Model) -> Vec<String> {
