@@ -152,7 +152,6 @@ fn main() -> anyhow::Result<()> {
     // crate that depends on them. -> This is currently implemented and only checks if
     // the feature requirements can be met, not if they are actually met with the set of features enabled by that crate for
     // no_std compilation.
-    // TODO: IMPORTANT: If modules are imported with some attribute, we can ignore the direct std usages in those modules.
     let mut deps_args = Vec::new();
     for mut dep in deps_attrs {
         if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {
@@ -179,7 +178,7 @@ fn main() -> anyhow::Result<()> {
 
         debug!("Processing dependency: {}", dep.crate_name);
 
-        let local_dep_args = parser::process_dep_crate(
+        let (local_dep_args, dep_disable, dep_enable) = parser::process_dep_crate(
             &ctx,
             &mut dep,
             &name,
@@ -195,7 +194,7 @@ fn main() -> anyhow::Result<()> {
             &enable,
             &mut main_features,
             &dep.crate_name,
-            &deps_args,
+            &dep_enable,
             &mut telemetry,
         );
     }
@@ -220,7 +219,7 @@ fn main() -> anyhow::Result<()> {
                 "Dependency {} which was skipped previously is now required",
                 dep.crate_name
             );
-            let local_dep_args = parser::process_dep_crate(
+            let (local_dep_args, dep_disable, dep_enable) = parser::process_dep_crate(
                 &ctx,
                 &mut dep,
                 &name,
@@ -236,7 +235,7 @@ fn main() -> anyhow::Result<()> {
                 &enable,
                 &mut main_features,
                 &dep.crate_name,
-                &dep_args_skipped,
+                &dep_enable,
                 &mut telemetry,
             );
         }

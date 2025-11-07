@@ -42,6 +42,9 @@ pub const CUSTOM_FEATURES_DISABLED: &str = "custom_default_features";
 /// When a dependency is required to enable a feature but main crate does
 /// not provide a feature  that enables that feature, we add it to this
 /// custom feature and enable it while in no_std mode.
+/// Or if a main feature got disable since it was enabling something that
+/// was not required, and if that feature also enabled something required
+/// by a dependency, we add it here.
 pub const CUSTOM_FEATURES_ENABLED: &str = "custom_no_std_feature_enabled";
 
 /// If after processing a dependency, we find that main enables some

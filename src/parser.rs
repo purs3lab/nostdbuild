@@ -752,7 +752,7 @@ pub fn process_dep_crate(
     crate_info: &CrateInfo,
     crate_name_rename: &[(String, String)],
     telemetry: &mut Telemetry,
-) -> Result<Vec<String>, anyhow::Error> {
+) -> Result<(Vec<String>, Vec<String>, Vec<String>), anyhow::Error> {
     let (enable, disable) = match db::get_from_db_data(db_data, &dep.crate_name) {
         Some(dbdata) => (dbdata.features.0.clone(), dbdata.features.1.clone()),
         None => {
@@ -808,7 +808,12 @@ pub fn process_dep_crate(
         dep.crate_name, args
     );
 
-    Ok(args)
+    let formatted_disable: Vec<String> = disable
+        .iter()
+        .map(|f| format!("{}/{}", dep.crate_name, f))
+        .collect();
+
+    Ok((args, formatted_disable, enable))
 }
 
 /// Sometimes main might enable a feature that enables a dependency feature
@@ -822,7 +827,8 @@ pub fn process_dep_crate(
 /// * `fixed_main_args` - The fixed features of the main crate
 /// * `flexible_main_args` - The list of features whihc are not necessary for main
 /// * `dep_name` - The name of the dependency
-/// * `deps_args` - The features required for the dependency
+/// * `deps_args` - The features required for the dependency. This is the list of features
+///   that are enabled for a dependency.
 pub fn move_unnecessary_dep_feats(
     main_name: &str,
     fixed_main_args: &[String],
@@ -845,16 +851,28 @@ pub fn move_unnecessary_dep_feats(
     let prefix1 = format!("{}/", dep_name);
     let prefix2 = format!("{}?/", dep_name);
 
+    let mut needed_dropped: HashSet<String> = HashSet::new();
     flexible_main_args.retain(|feature| {
         main_features
             .get_mut(feature)
             .and_then(|f| f.as_array_mut())
             .is_some_and(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .filter(|&f| f.starts_with(&prefix1) || f.starts_with(&prefix2))
-                    .map(extract_key)
-                    .any(|f| !deps_args.contains(&f.to_string()))
+                let mut has_mismatch = false;
+                let mut local_needed_dropped: HashSet<String> = HashSet::new();
+                for f in arr.iter().filter_map(|v| v.as_str()) {
+                    if f.starts_with(&prefix1) || f.starts_with(&prefix2) {
+                        let key = extract_key(f);
+                        if deps_args.contains(&key.to_string()) {
+                            local_needed_dropped.insert(f.to_string());
+                        } else {
+                            has_mismatch = true;
+                        }
+                    }
+                }
+                if has_mismatch {
+                    needed_dropped.extend(local_needed_dropped);
+                }
+                !has_mismatch
             })
     });
 
@@ -871,7 +889,7 @@ pub fn move_unnecessary_dep_feats(
                     let key = extract_key(s);
                     if !deps_args.contains(&key.to_string()) {
                         debug!("Removing unnecessary feature {} from main crate", s);
-                        removed.insert(feature.to_string());
+                        removed.insert(s.to_string());
                         return false;
                     }
                 }
@@ -897,6 +915,12 @@ pub fn move_unnecessary_dep_feats(
         &mut main_toml,
         consts::DEP_UNNECESSARY_FEATURES,
         &removed.iter().cloned().collect::<Vec<_>>(),
+    );
+
+    add_feats_to_custom_feature(
+        &mut main_toml,
+        consts::CUSTOM_FEATURES_ENABLED,
+        &needed_dropped.iter().cloned().collect::<Vec<_>>(),
     );
 
     fs::write(
@@ -2191,12 +2215,7 @@ fn get_deps_and_features<'a>(
 }
 
 fn extract_key(s: &str) -> &str {
-    s.split('/')
-        .collect::<Vec<_>>()
-        .first()
-        .unwrap_or(&"")
-        .strip_suffix("?")
-        .unwrap_or(s)
+    s.split_once("/").map_or(s, |(_, value)| value)
 }
 
 fn get_files_in_attributes<'a>(
