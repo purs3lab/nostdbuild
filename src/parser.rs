@@ -778,9 +778,11 @@ pub fn process_dep_crate(
         dep.crate_name, enable, disable
     );
 
+    let dep_original_name = dep.crate_name.split(":").next().unwrap_or("").to_string();
+
     let (args, update_default_config) = solver::final_feature_list_dep(
         crate_info,
-        dep.crate_name.split(":").next().unwrap_or(""),
+        &dep_original_name,
         &enable,
         &disable,
         crate_name_rename,
@@ -808,9 +810,15 @@ pub fn process_dep_crate(
         dep.crate_name, args
     );
 
+    let dep_name = crate_name_rename
+        .iter()
+        .find(|(_, name)| *name == dep_original_name)
+        .map(|(renamed, _)| renamed)
+        .unwrap_or(&dep_original_name);
+
     let formatted_disable: Vec<String> = disable
         .iter()
-        .map(|f| format!("{}/{}", dep.crate_name, f))
+        .map(|f| format!("{}/{}", dep_name, f))
         .collect();
 
     Ok((args, formatted_disable, enable))

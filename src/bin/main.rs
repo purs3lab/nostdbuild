@@ -129,7 +129,7 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let (disable_default, mut main_features) =
+    let (mut disable_default, mut main_features) =
         solver::final_feature_list_main(&crate_info, &mut enable, &disable, &mut telemetry);
     parser::minimize(
         &crate_info,
@@ -187,7 +187,15 @@ fn main() -> anyhow::Result<()> {
             &crate_name_rename,
             &mut telemetry,
         )?;
-        deps_args.extend(local_dep_args);
+        deps_args.extend(local_dep_args.clone());
+
+        let (temp_disable_default, temp_flexible) =
+            solver::final_feature_list_main(&crate_info, &mut enable, &dep_disable, &mut telemetry);
+
+        disable_default = disable_default || temp_disable_default;
+        main_features.extend(temp_flexible);
+        main_features.sort();
+        main_features.dedup();
 
         parser::move_unnecessary_dep_feats(
             &name,
@@ -229,7 +237,20 @@ fn main() -> anyhow::Result<()> {
                 &mut telemetry,
             )?;
 
-            dep_args_skipped.extend(local_dep_args);
+            dep_args_skipped.extend(local_dep_args.clone());
+
+            let (temp_disable_default, temp_flexible) = solver::final_feature_list_main(
+                &crate_info,
+                &mut enable,
+                &dep_disable,
+                &mut telemetry,
+            );
+            disable_default = disable_default || temp_disable_default;
+
+            main_features.extend(temp_flexible);
+            main_features.sort();
+            main_features.dedup();
+
             parser::move_unnecessary_dep_feats(
                 &name,
                 &enable,

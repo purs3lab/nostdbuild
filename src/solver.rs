@@ -201,7 +201,7 @@ pub fn final_feature_list_main(
     disable: &[String],
     telemetry: &mut Telemetry,
 ) -> (bool, Vec<String>) {
-    let mut disable_default = enable.is_empty();
+    let mut disable_default = false;
     let mut enable_from_default = Vec::new();
 
     if disable_in_default(crate_info, disable) || disable_in_default_indirect(crate_info, disable) {
@@ -320,7 +320,17 @@ pub fn disable_in_default(crate_info: &CrateInfo, disable: &[String]) -> bool {
         .is_some_and(|(_, features)| features.iter().any(|feature| disable.contains(&feature.1)))
 }
 
-fn disable_in_default_indirect(crate_info: &CrateInfo, disable: &[String]) -> bool {
+/// Given the crate info, the list of features to disable,
+/// return a boolean indicating if any of the disabled features
+/// are part of the enabled list of features at any level of
+/// feature chain.
+/// # Arguments
+/// * `crate_info` - The crate info
+/// * `disable` - The list of features to disable
+/// # Returns
+/// * `bool` - True if any of the disabled features are part of the enabled list
+///   of features at any level of feature chain
+pub fn disable_in_default_indirect(crate_info: &CrateInfo, disable: &[String]) -> bool {
     let default_feats = crate_info
         .features
         .iter()
