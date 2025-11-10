@@ -83,6 +83,16 @@ fn main() -> anyhow::Result<()> {
     let (temp_name, version) = name.split_once(':').unwrap_or((&name, "latest"));
     telemetry.name = temp_name.to_string();
     telemetry.version = version.to_string();
+
+    if parser::is_proc_macro(&name) {
+        telemetry.is_proc_macro = true;
+        stats.telemetry = Some(telemetry);
+        stats.dump();
+        return Err(anyhow::anyhow!(
+            "Main crate is a proc-macro crate, which is not supported"
+        ));
+    }
+
     let (mut worklist, crate_name_rename, mut crate_info) =
         downloader::gather_crate_info(&name, false)?;
     telemetry.num_deps = crate_info.deps_and_features.len();
