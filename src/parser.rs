@@ -2312,11 +2312,7 @@ fn is_any_logic(logic: &str) -> Option<Logic> {
 }
 
 fn is_no_std(parsed: &ParsedAttr) -> bool {
-    if let Some(last) = parsed.constants.last() {
-        last == "no_std"
-    } else {
-        false
-    }
+    parsed.constants.iter().any(|c| c == "no_std")
 }
 
 fn parse_token_stream<'a>(

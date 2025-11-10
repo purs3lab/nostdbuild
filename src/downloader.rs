@@ -139,7 +139,7 @@ pub fn download_all_dependencies(
 
         let cfg = z3::Config::new();
         let ctx = z3::Context::new(&cfg);
-        let found = parser::check_for_no_std(&name_with_version, &ctx);
+        let found = parser::check_for_no_std(&name_with_version, &ctx, None);
         if !parser::is_dep_optional(crate_info, &name) {
             if !found {
                 debug!(

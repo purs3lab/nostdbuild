@@ -181,6 +181,10 @@ pub struct Telemetry {
     pub version: String,
     /// Whether the crate is no_std or not
     pub no_std: bool,
+    /// Is the crate a proc-macro crate
+    pub is_proc_macro: bool,
+    /// Did the crate have `#[no_std]` instead of `#![no_std]`
+    pub wrong_unconditional_setup: bool,
     /// Number of direct dependencies
     pub num_deps: usize,
     /// Total depth traversed in the dependency graph to verify no_std
