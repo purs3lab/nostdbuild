@@ -36,6 +36,9 @@ pub struct Attributes {
     compile_error_attrs: Vec<Attribute>,
     pub crate_name: String,
     pub unconditional_no_std: bool,
+    /// Sometimes, crate authors put `#[no_std]` instead of
+    /// `#![no_std]`. This field will help track such cases.
+    pub wrong_unconditional_setup: bool,
     /// Stores the filename as well since we can't recover
     /// it later from the Span.
     pub spans: Vec<(Span, Option<String>)>,
@@ -182,7 +185,15 @@ impl<'a> Visit<'a> for Attributes {
                 self.attributes.push(i.clone());
             }
             if ident == "no_std" {
-                self.unconditional_no_std = true;
+                match i.style {
+                    syn::AttrStyle::Outer => {
+                        self.wrong_unconditional_setup = true;
+                        debug!("Error: no_std attribute should be inner attribute");
+                    }
+                    _ => {
+                        self.unconditional_no_std = true;
+                    }
+                }
             }
         }
     }
@@ -423,7 +434,7 @@ pub fn parse_crate(crate_name: &str, recurse: bool) -> Attributes {
 /// * `ctx` - The Z3 context
 /// # Returns
 /// A boolean indicating whether the crate has a no_std attribute.
-pub fn check_for_no_std(name: &str, ctx: &z3::Context) -> bool {
+pub fn check_for_no_std(name: &str, ctx: &z3::Context, telemetry: Option<&mut Telemetry>) -> bool {
     // This is the list of known syn failure crates which are no_std
     if consts::KNOWN_SYN_FAILURES.contains(&name) {
         debug!("Skipping known syn failure crate: {}", name);
@@ -434,6 +445,10 @@ pub fn check_for_no_std(name: &str, ctx: &z3::Context) -> bool {
     // since files in non root directory might have `no_std` attribute
     // and we don't want to include those.
     let base_attrs = parse_crate(name, false);
+
+    if let Some(telemetry) = telemetry {
+        telemetry.wrong_unconditional_setup = base_attrs.wrong_unconditional_setup;
+    }
 
     if !parse_main_attributes(&base_attrs, ctx).0 && !base_attrs.unconditional_no_std {
         debug!("No no_std found for the crate {}", name);
@@ -993,7 +1008,7 @@ pub fn determine_n_depth_dep_no_std(
                 .split_once(':')
                 .unwrap_or((&name_with_version, ""));
 
-            if !check_for_no_std(&name_with_version, ctx) {
+            if !check_for_no_std(&name_with_version, ctx, None) {
                 debug!(
                     "ERROR: Dependency {} of dependency {} does not support no_std build at depth {}",
                     name_with_version, name, current_depth
@@ -1816,7 +1831,7 @@ pub fn should_skip_dep(
     if !features_for_dependency.is_empty() {
         let cfg = z3::Config::new();
         let ctx = z3::Context::new(&cfg);
-        let found = check_for_no_std(name, &ctx);
+        let found = check_for_no_std(name, &ctx, None);
 
         debug!(
             "Dependency: {} is enabled by features: {:?} and currently enabled list enabled {:?} from that list",

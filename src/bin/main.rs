@@ -91,12 +91,18 @@ fn main() -> anyhow::Result<()> {
 
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
-    let found = parser::check_for_no_std(&name, &ctx);
+    let found = parser::check_for_no_std(&name, &ctx, Some(&mut telemetry));
 
-    if !found {
+    if !found || telemetry.wrong_unconditional_setup {
         stats.telemetry = Some(telemetry);
         stats.dump();
-        return Err(anyhow::anyhow!("Main crate does not support no_std build"));
+        if !found {
+            return Err(anyhow::anyhow!("Main crate does not support no_std build"));
+        } else {
+            return Err(anyhow::anyhow!(
+                "Main crate has incorrect unconditional no_std setup"
+            ));
+        }
     }
 
     let no_std = downloader::download_all_dependencies(
