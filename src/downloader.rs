@@ -195,7 +195,7 @@ pub fn read_dep_names_and_versions(
             debug!("No dependencies found in Cargo.toml");
             Map::new()
         });
-    for (name, value) in deps {
+    for (mut name, value) in deps {
         let dep: Dependency = value
             .clone()
             .try_into()
@@ -204,8 +204,16 @@ pub fn read_dep_names_and_versions(
             Dependency::Simple(version) => (version, false),
             Dependency::Special { optional } => ("latest".to_string(), optional.unwrap_or(false)),
             Dependency::Detailed {
-                version, optional, ..
-            } => (version, optional.unwrap_or(false)),
+                version,
+                optional,
+                package,
+                ..
+            } => {
+                if let Some(pkg) = package {
+                    name = pkg;
+                }
+                (version, optional.unwrap_or(false))
+            }
         };
         if skip_optional && optional {
             debug!("Skipping optional dependency: {}", name);
