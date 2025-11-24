@@ -87,7 +87,8 @@ fn main() -> anyhow::Result<()> {
     if parser::is_proc_macro(&name) {
         telemetry.is_proc_macro = true;
         stats.telemetry = Some(telemetry);
-        stats.dump();
+        // At this point, we still did not modify any files, so no need to restore Cargo.toml
+        stats.dump(false);
         return Err(anyhow::anyhow!(
             "Main crate is a proc-macro crate, which is not supported"
         ));
@@ -105,7 +106,7 @@ fn main() -> anyhow::Result<()> {
 
     if !found || telemetry.wrong_unconditional_setup {
         stats.telemetry = Some(telemetry);
-        stats.dump();
+        stats.dump(true);
         if !found {
             return Err(anyhow::anyhow!("Main crate does not support no_std build"));
         } else {
@@ -348,6 +349,6 @@ fn main() -> anyhow::Result<()> {
     db::write_db_file(db_data)?;
 
     stats.telemetry = Some(telemetry);
-    stats.dump();
+    stats.dump(true);
     Ok(())
 }

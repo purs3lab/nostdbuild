@@ -132,7 +132,9 @@ impl<'a> AllStats<'a> {
 
     /// Save all the stats to the respective files.
     /// Also restore the original Cargo.toml from the backup.
-    pub fn dump(&mut self) {
+    /// # Arguments
+    /// * `manifest` - If true, restore the original Cargo.toml file.
+    pub fn dump(&mut self, manifest: bool) {
         let stats_dir = format!(
             "{}/{}",
             consts::RESULTS_PATH,
@@ -140,13 +142,15 @@ impl<'a> AllStats<'a> {
         );
 
         let dir = std::path::Path::new(consts::DOWNLOAD_PATH).join(self.name.replace(':', "-"));
-        let manifest = parser::determine_manifest_file(&self.name);
-        fs::copy(dir.join("Cargo.toml.bak"), &manifest)
-            .context("Failed to restore original Cargo.toml")
-            .unwrap();
-        fs::remove_file(dir.join("Cargo.toml.bak"))
-            .context("Failed to remove backup Cargo.toml")
-            .unwrap();
+        if manifest {
+            let manifest = parser::determine_manifest_file(&self.name);
+            fs::copy(dir.join("Cargo.toml.bak"), &manifest)
+                .context("Failed to restore original Cargo.toml")
+                .unwrap();
+            fs::remove_file(dir.join("Cargo.toml.bak"))
+                .context("Failed to remove backup Cargo.toml")
+                .unwrap();
+        }
 
         std::fs::create_dir_all(&stats_dir).unwrap();
         let crate_info_file = format!("{}/crate_info.json", stats_dir);
