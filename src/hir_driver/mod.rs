@@ -13,7 +13,7 @@ use rustc_hir::{
 use rustc_interface::interface;
 use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::TyCtxt;
-use rustc_span::{FileNameDisplayPreference, Span};
+use rustc_span::{ExpnKind, FileNameDisplayPreference, MacroKind, Span};
 
 use rustc_plugin::{CrateFilter, RustcPlugin, RustcPluginArgs, Utf8Path};
 
@@ -68,6 +68,14 @@ impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
             };
             let def_path = self.tcx.def_path_debug_str(*def_id);
             debug!("Path resolved to definition: {}", def_path);
+            let expn = path.span.ctxt().outer_expn_data();
+            match expn.kind {
+                ExpnKind::Macro(MacroKind::Derive, _) => {
+                    debug!("Ignoring path from derive macro");
+                    return;
+                }
+                _ => { /* continue */ }
+            }
             let span = path.span.source_callsite();
             if self.skipped_spans.iter().any(|&s| s.contains(span)) {
                 debug!("Ignoring path in skipped span");
