@@ -1,19 +1,27 @@
+extern crate rustc_ast;
 extern crate rustc_driver;
 extern crate rustc_hir;
 extern crate rustc_interface;
 extern crate rustc_middle;
+extern crate rustc_resolve;
 extern crate rustc_session;
 extern crate rustc_span;
 
-use rustc_driver::Compilation;
-use rustc_hir::{
-    self as hir, Item, def,
-    intravisit::{self, Visitor},
+use rustc_ast::{
+    node_id::NodeId,
+    visit::{self, Visitor as AstVisitor},
 };
+use rustc_driver::Compilation;
+// use rustc_hir::{
+//     self as hir, Item, def,
+// intravisit::{self, Visitor},
+// };
+use rustc_hir::def;
 use rustc_interface::interface;
-use rustc_middle::hir::nested_filter;
-use rustc_middle::ty::TyCtxt;
-use rustc_span::{ExpnKind, FileNameDisplayPreference, MacroKind, Span};
+// use rustc_middle::hir::nested_filter;
+use rustc_middle::ty::{ResolverAstLowering, TyCtxt};
+// use rustc_span::{ExpnKind, FileNameDisplayPreference, MacroKind, Span, def_id::DefId};
+use rustc_span::{FileNameDisplayPreference, Span, def_id::DefId};
 
 use rustc_plugin::{CrateFilter, RustcPlugin, RustcPluginArgs, Utf8Path};
 
@@ -28,68 +36,82 @@ use serde::{Deserialize, Serialize};
 use crate::ReadableSpan;
 use crate::consts;
 
-struct MyVisitor<'tcx> {
-    tcx: TyCtxt<'tcx>,
-    spans: HashSet<ReadableSpan>,
+// struct MyVisitor<'tcx> {
+//     tcx: TyCtxt<'tcx>,
+//     spans: HashSet<ReadableSpan>,
+//     skipped_spans: Vec<Span>,
+// }
+
+// impl<'tcx> MyVisitor<'tcx> {
+//     fn new(tcx: TyCtxt<'tcx>) -> Self {
+//         MyVisitor {
+//             tcx,
+//             spans: HashSet::new(),
+//             skipped_spans: Vec::new(),
+//         }
+//     }
+// }
+
+struct PathResolutionInfo {
+    path_text: String,
+    // final_def_id: DefId,
+    // The DefId of the first segment (e.g., 'std' or 'core')
+    root_segment_def_id: Option<DefId>,
+    // is_macro: bool,
+    span: Span,
+}
+
+struct MyVisitor<'r> {
+    // We hold a reference to the data struct
+    resolver: &'r ResolverAstLowering,
+    results: Vec<PathResolutionInfo>,
     skipped_spans: Vec<Span>,
 }
 
-impl<'tcx> MyVisitor<'tcx> {
-    fn new(tcx: TyCtxt<'tcx>) -> Self {
-        MyVisitor {
-            tcx,
-            spans: HashSet::new(),
-            skipped_spans: Vec::new(),
-        }
+fn res_to_def_id(res: &def::Res<NodeId>) -> Option<DefId> {
+    match res {
+        def::Res::Def(_, def_id) => Some(*def_id),
+        def::Res::SelfTyAlias { alias_to, .. } => Some(*alias_to),
+        def::Res::SelfTyParam { trait_ } => Some(*trait_),
+        _ => None,
     }
 }
 
-impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
-    type MaybeTyCtxt = TyCtxt<'tcx>;
-    type NestedFilter = nested_filter::All;
-
-    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
-        self.tcx
-    }
-
-    fn visit_path(&mut self, path: &hir::Path<'tcx>, _id: hir::HirId) {
-        let segment = path.segments.last();
-        if let Some(segment) = segment {
-            let def_id = match &segment.res {
-                def::Res::Def(_, def_id) => def_id,
-                def::Res::Local(hir_id) => &hir_id.owner.to_def_id(),
-                def::Res::SelfTyAlias { alias_to, .. } => alias_to,
-                def::Res::SelfTyParam { trait_ } => trait_,
-                _ => {
-                    debug!("Not a definition or local");
-                    intravisit::walk_path(self, path);
-                    return;
-                }
-            };
-            let def_path = self.tcx.def_path_debug_str(*def_id);
-            debug!("Path resolved to definition: {}", def_path);
-            let expn = path.span.ctxt().outer_expn_data();
-            match expn.kind {
-                ExpnKind::Macro(MacroKind::Derive, _) => {
-                    debug!("Ignoring path from derive macro");
-                    return;
-                }
-                _ => { /* continue */ }
-            }
-            let span = path.span.source_callsite();
-            if self.skipped_spans.iter().any(|&s| s.contains(span)) {
-                debug!("Ignoring path in skipped span");
-                return;
-            }
-            if def_path_string_with_std(&def_path) {
-                self.spans.insert(get_readable_span(&self.tcx, span));
-            }
+impl<'r, 'a> AstVisitor<'a> for MyVisitor<'r> {
+    fn visit_path(&mut self, path: &'a rustc_ast::Path) -> Self::Result {
+        // println!("AST Path: {:?}", path);
+        // let is_macro = path.span.from_expansion();
+        let span = path.span.source_callsite();
+        // if let Some(last_segment) = path.segments.last()
+        // && let Some(partial_res) = self.resolver.partial_res_map.get(&last_segment.id)
+        // && let Some(final_def_id) = res_to_def_id(&partial_res.base_res())
+        // {
+        let mut root_def_id = None;
+        if let Some(first_segment) = path.segments.first()
+            && let Some(root_res) = self.resolver.partial_res_map.get(&first_segment.id)
+        {
+            root_def_id = res_to_def_id(&root_res.base_res());
         }
-        intravisit::walk_path(self, path);
+        let path_text = path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+
+        self.results.push(PathResolutionInfo {
+            path_text,
+            // final_def_id,
+            root_segment_def_id: root_def_id,
+            // is_macro,
+            span,
+        });
+        // }
+        visit::walk_path(self, path);
     }
 
-    fn visit_item(&mut self, item: &'tcx Item) {
-        if let hir::ItemKind::Mod(ident, _) = item.kind {
+    fn visit_item(&mut self, item: &'a rustc_ast::Item) {
+        if let rustc_ast::ItemKind::Mod(_, ident, _) = &item.kind {
             debug!("Found module: {}", ident.name);
             if ident.name.as_str() == "test" {
                 debug!("Ignoring test module");
@@ -97,24 +119,86 @@ impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
                 return;
             }
         }
-        intravisit::walk_item(self, item);
+        visit::walk_item(self, item);
     }
 }
 
-fn def_path_string_with_std(def_path: &str) -> bool {
-    if let Some((left, right)) = def_path.split_once(" as ") {
-        let left = left.strip_prefix("<").unwrap_or(left);
-        let right = right.strip_suffix(">").unwrap_or(right);
-        starts_with_std(left) || starts_with_std(right)
-    } else {
-        starts_with_std(def_path)
-    }
-}
+// impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
+//     type MaybeTyCtxt = TyCtxt<'tcx>;
+//     type NestedFilter = nested_filter::All;
 
-fn starts_with_std(def_path: &str) -> bool {
-    let def_path = def_path.strip_prefix("::").unwrap_or(def_path);
-    def_path.starts_with("std[") || def_path.starts_with("std::")
-}
+//     fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+//         self.tcx
+//     }
+
+//     fn visit_path(&mut self, path: &hir::Path<'tcx>, _id: hir::HirId) {
+//         // println!("Visiting path: {:?}", path);
+//         // let segment = path.segments.last();
+//         for segment in path.segments.iter() {
+//             let def_id = match &segment.res {
+//                 def::Res::Def(_, def_id) => def_id,
+//                 def::Res::Local(hir_id) => &hir_id.owner.to_def_id(),
+//                 def::Res::SelfTyAlias { alias_to, .. } => alias_to,
+//                 def::Res::SelfTyParam { trait_ } => trait_,
+//                 _ => {
+//                     debug!("Not a definition or local");
+//                     intravisit::walk_path(self, path);
+//                     return;
+//                 }
+//             };
+//             let expn = path.span.ctxt().outer_expn_data();
+//             println!("Expr expansion kind: {:?}", expn.kind);
+//             // println!("Segment {:#?}", segment);
+//             match expn.kind {
+//                 ExpnKind::Macro(MacroKind::Derive, _) => {
+//                     println!("Ignoring path from derive macro");
+//                     return;
+//                 }
+//                 _ => { /* continue */ }
+//             }
+//             let def_path_debug = self.tcx.def_path_debug_str(*def_id);
+//             // let def_path = self.tcx.def_path_str(*def_id);
+//             println!("Path resolved to definition {}", def_path_debug);
+//             println!("Path span: {:?}", path.span);
+//             let span = path.span.source_callsite();
+//             if self.skipped_spans.iter().any(|&s| s.contains(span)) {
+//                 debug!("Ignoring path in skipped span");
+//                 return;
+//             }
+//             if def_path_string_with_std(&def_path_debug) {
+//                 self.spans.insert(get_readable_span(&self.tcx, span));
+//             }
+//         }
+//         intravisit::walk_path(self, path);
+//     }
+
+//     fn visit_item(&mut self, item: &'tcx Item) {
+//         if let hir::ItemKind::Mod(ident, _) = item.kind {
+//             debug!("Found module: {}", ident.name);
+//             if ident.name.as_str() == "test" {
+//                 debug!("Ignoring test module");
+//                 self.skipped_spans.push(item.span);
+//                 return;
+//             }
+//         }
+//         intravisit::walk_item(self, item);
+//     }
+// }
+
+// fn def_path_string_with_std(def_path: &str) -> bool {
+//     if let Some((left, right)) = def_path.split_once(" as ") {
+//         let left = left.strip_prefix("<").unwrap_or(left);
+//         let right = right.strip_suffix(">").unwrap_or(right);
+//         starts_with_std(left) || starts_with_std(right)
+//     } else {
+//         starts_with_std(def_path)
+//     }
+// }
+
+// fn starts_with_std(def_path: &str) -> bool {
+//     let def_path = def_path.strip_prefix("::").unwrap_or(def_path);
+//     def_path.starts_with("std[") || def_path.starts_with("std::")
+// }
 
 fn get_readable_span(tcx: &TyCtxt, span: Span) -> ReadableSpan {
     let source_map = tcx.sess.source_map();
@@ -146,7 +230,7 @@ struct MyCompilerCalls {
 }
 
 impl rustc_driver::Callbacks for MyCompilerCalls {
-    fn after_analysis<'tcx>(
+    fn after_expansion<'tcx>(
         &mut self,
         _compiler: &interface::Compiler,
         tcx: TyCtxt<'tcx>,
@@ -155,24 +239,90 @@ impl rustc_driver::Callbacks for MyCompilerCalls {
             return self.compilation;
         }
 
-        debug!("Starting analysis...");
+        let mut skipped_spans: Vec<Span> = Vec::new();
+        let mut spans = HashSet::new();
 
-        let mut visitor = MyVisitor::new(tcx);
-        let module_items = tcx.hir_crate_items(());
-        for item_id in module_items.free_items() {
-            visitor.visit_item(tcx.hir_item(item_id));
-        }
-        for item_id in module_items.impl_items() {
-            visitor.visit_impl_item(tcx.hir_impl_item(item_id));
-        }
-        for item_id in module_items.trait_items() {
-            visitor.visit_trait_item(tcx.hir_trait_item(item_id));
+        let results = {
+            let resolver_wrapper = tcx.resolver_for_lowering().borrow();
+            let (resolver, krate) = &*resolver_wrapper;
+
+            let mut visitor = MyVisitor {
+                resolver,
+                results: Vec::new(),
+                skipped_spans: Vec::new(),
+            };
+
+            skipped_spans.extend(visitor.skipped_spans.iter());
+            visitor.visit_crate(krate);
+            visitor.results
+        };
+
+        // println!("=== Resolved Paths ===");
+        // println!(
+        //     "{:<30} | {:<15} | {:<15}",
+        //     "User Path", "Used Via (Crate)", "Defined In (Crate)"
+        // );
+        // println!("{:-<30} | {:-<15} | {:-<15}", "", "", "");
+
+        for info in results {
+            // The crate where the item *actually* lives (e.g., core)
+            // let definition_crate = tcx.crate_name(info.final_def_id.krate);
+
+            // The crate the user *referenced* (e.g., std)
+            let usage_crate = if let Some(root_id) = info.root_segment_def_id {
+                tcx.crate_name(root_id.krate)
+            } else {
+                rustc_span::symbol::Symbol::intern("LOCAL")
+            };
+
+            if skipped_spans.iter().any(|&s| s.contains(info.span)) {
+                debug!("Ignoring path in skipped span: {:?}", info.path_text);
+                continue;
+            }
+
+            if usage_crate.as_str() == "std" {
+                spans.insert(get_readable_span(&tcx, info.span));
+            }
+
+            // println!(
+            //     "{:<30} | {:<15} | {:<15}",
+            //     info.path_text, usage_crate, definition_crate
+            // );
         }
 
-        println!("Found spans: {:?}", visitor.spans);
-        dump_spans_as_json(consts::HIR_VISITOR_SPAN_DUMP, &visitor.spans);
+        println!("Found spans: {:?}", spans);
+        dump_spans_as_json(consts::HIR_VISITOR_SPAN_DUMP, &spans);
+
         self.compilation
     }
+
+    // fn after_analysis<'tcx>(
+    //     &mut self,
+    //     _compiler: &interface::Compiler,
+    //     tcx: TyCtxt<'tcx>,
+    // ) -> Compilation {
+    //     if self.compilation == Compilation::Continue {
+    //         return self.compilation;
+    //     }
+
+    //     println!("=== Starting analysis... ===");
+
+    //     let mut visitor = MyVisitor::new(tcx);
+    //     let module_items = tcx.hir_crate_items(());
+    //     for item_id in module_items.free_items() {
+    //         visitor.visit_item(tcx.hir_item(item_id));
+    //     }
+    //     for item_id in module_items.impl_items() {
+    //         visitor.visit_impl_item(tcx.hir_impl_item(item_id));
+    //     }
+    //     for item_id in module_items.trait_items() {
+    //         visitor.visit_trait_item(tcx.hir_trait_item(item_id));
+    //     }
+
+    //     println!("Found spans: {:?}", visitor.spans);
+    //     dump_spans_as_json(consts::HIR_VISITOR_SPAN_DUMP, &visitor.spans);
+    //     self.compilation
+    // }
 }
 
 pub struct Plugin;
