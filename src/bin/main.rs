@@ -126,6 +126,9 @@ fn main() -> anyhow::Result<()> {
     telemetry.no_std = found;
     telemetry.dep_not_no_std = !no_std;
 
+    // We need to do it here because our features retension logic relies on this
+    hir::hir_visit(&name, None, true, Some(&crate_info));
+
     let mut main_attributes = parser::parse_crate(&name, true);
 
     let readable_spans = hir::proc_macro_span_to_readable(&main_attributes.spans);
@@ -336,9 +339,10 @@ fn main() -> anyhow::Result<()> {
         telemetry.build_success = true;
         db::add_to_db_data(&mut db_data, &name, (&enable, &disable));
     } else {
-        hir::hir_visit(&name, &mut telemetry);
+        hir::hir_visit(&name, Some(&mut telemetry), false, None);
         telemetry.hir_analysis_done = true;
-        if hir::check_for_unguarded_std_usages(&readable_spans, &main_attributes, &mut stats) {
+        if hir::check_for_unguarded_std_usages(&name, &readable_spans, &main_attributes, &mut stats)
+        {
             telemetry.unguarded_std_usages = true;
             debug!("ERROR: Found unguarded std usage in the main crate");
         }

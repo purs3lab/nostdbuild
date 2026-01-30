@@ -9,7 +9,10 @@ use syn::{
 use walkdir::WalkDir;
 use z3::{self, ast::Bool};
 
-use crate::{CrateInfo, DBData, DEPENDENCIES, Telemetry, TupleVec, consts, db, downloader, solver};
+use crate::{
+    CrateInfo, DBData, DEPENDENCIES, ReadableSpan, Telemetry, TupleVec, consts, db, downloader,
+    hir, solver,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Logic {
@@ -43,15 +46,16 @@ pub struct Attributes {
     /// it later from the Span.
     pub spans: Vec<(Span, Option<String>)>,
     /// We also collect modules whose imports is conditional
-    /// on cfg attributes.
+    /// on cfg attributes along with the attribute.
     /// ```
     /// #[cfg(feature = "my_mod")]
     /// mod my_mod;
     /// ```
     /// In this case, we don't consider direct usages of `std`
     /// in `my_mod` because it is possible to build the crate
-    /// without enabling `my_mod` feature.
-    pub mods: Vec<String>,
+    /// without enabling `my_mod` feature. But we need to ensure
+    /// that the `cfg` is negated when solving the equations.
+    pub mods: Vec<(String, Attribute)>,
     /// Rust allows including files conditionally using
     /// `cfg_attr` attribute.
     pub files_in_cfg_attrs: Vec<String>,
@@ -302,7 +306,9 @@ impl<'a> Visit<'a> for Attributes {
                 span = m.span();
                 if attrs.iter().any(|a| a.path().is_ident("cfg")) {
                     debug!("Found cfg attribute for module: {}", m.ident);
-                    self.mods.push(m.ident.to_string());
+                    // Get the first `cfg` attribute
+                    let attr = attrs.iter().find(|a| a.path().is_ident("cfg")).unwrap();
+                    self.mods.push((m.ident.to_string(), attr.clone()));
                 }
             }
             Item::Use(u) => {
@@ -337,7 +343,7 @@ pub fn parse_item_extern_crates(crate_name: &str) -> ItemExternCrates {
         itemexterncrates: Vec::new(),
     };
 
-    if let Err(err) = visit(&mut itemexterncrates, crate_name, true) {
+    if let Err(err) = visit(&mut itemexterncrates, crate_name, true, false) {
         debug!(
             "Failed to parse crate {} with error:{}. Will continue...",
             crate_name, err
@@ -364,8 +370,8 @@ pub fn parse_item_extern_crates_for_files(crate_name: &str) -> Vec<String> {
             itemexterncrates: Vec::new(),
         };
 
-        let filename = file.replace(consts::DOWNLOAD_PATH, "");
-        if let Err(err) = visit(&mut itemexterncrates, &filename, true) {
+        let filename = file.replace(&(consts::DOWNLOAD_PATH.to_owned() + "/"), "");
+        if let Err(err) = visit(&mut itemexterncrates, &filename, true, true) {
             debug!(
                 "Failed to parse file {} with error:{}. Will continue...",
                 file, err
@@ -632,6 +638,34 @@ pub fn process_crate(
         non_minimalizable_features.extend(neg_parsed_attr.features);
         if let Some(neg_eq) = neg_eq {
             filtered.push(neg_eq);
+        }
+    }
+
+    // Now we check for `mod my_mod;` statements that are guarded by
+    // cfg attributes. If any of those modules contains direct std usages,
+    // we need to add the negated cfg attribute to the equations while also
+    // removing the original attribute from the list (Currently in equation form).
+    let hir_spans = hir::read_hir_spans(name_with_version);
+    for (mod_name, attr) in attrs.mods.iter() {
+        let pat1 = format!("{}.rs", mod_name);
+        let pat2 = format!("{}/mod.rs", mod_name);
+        let file_contains_std = hir_spans.iter().any(|span| {
+            span.file.ends_with(&pat1) || span.file.ends_with(&pat2)
+        });
+        if file_contains_std {
+            debug!(
+                "Module {} contains direct std usage, adding negated cfg attribute",
+                mod_name
+            );
+            let (neg_eq, neg_parsed_attr) = parse_main_attributes_direct(attr, ctx);
+            non_minimalizable_features.extend(neg_parsed_attr.features);
+            if let Some(neg_eq) = neg_eq {
+                let neg = neg_eq.not();
+                // Remove the original attribute equation from the list
+                // since we are adding the negated one.
+                filtered.retain(|e| e != &neg_eq);
+                filtered.push(neg);
+            }
         }
     }
 
