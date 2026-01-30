@@ -197,7 +197,7 @@ pub fn final_feature_list_dep(
 /// containing the final feature list for the main crate.
 pub fn final_feature_list_main(
     crate_info: &CrateInfo,
-    enable: &mut Vec<String>,
+    enable: &mut [String],
     disable: &[String],
     telemetry: &mut Telemetry,
 ) -> (bool, Vec<String>) {
@@ -206,6 +206,7 @@ pub fn final_feature_list_main(
 
     if disable_in_default(crate_info, disable) || disable_in_default_indirect(crate_info, disable) {
         disable_default = true;
+        // TODO: Do we need to redo this for each dependency?
         enable_from_default = get_features_not_disabled(crate_info, disable);
     }
 
@@ -245,7 +246,7 @@ pub fn final_feature_list_main(
 pub fn new_feats_to_add(
     crate_info: &CrateInfo,
     enable_from_default: &[String],
-    enable: &mut Vec<String>,
+    enable: &mut [String],
 ) -> Vec<String> {
     let optional_deps: Vec<String> = crate_info
         .deps_and_features
@@ -274,7 +275,7 @@ pub fn new_feats_to_add(
         .into_iter()
         .partition(|feat| optional_deps.iter().any(|dep| feat == dep));
 
-    enable.retain(|feat| !removed.contains(feat));
+    // enable.retain(|feat| !removed.contains(feat));
 
     kept
 }

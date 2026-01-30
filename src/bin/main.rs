@@ -210,6 +210,7 @@ fn main() -> anyhow::Result<()> {
             &mut telemetry,
         )?;
         deps_args.extend(local_dep_args.clone());
+        let (.., dep_crate_info) = downloader::gather_crate_info(&dep.crate_name, true)?;
 
         let (temp_disable_default, temp_flexible) =
             solver::final_feature_list_main(&crate_info, &mut enable, &dep_disable, &mut telemetry);
@@ -283,6 +284,14 @@ fn main() -> anyhow::Result<()> {
             );
         }
     }
+
+    parser::minimize(
+        &crate_info,
+        &dep_and_feats,
+        &mut main_features,
+        &enable.iter().cloned().collect(),
+    );
+
     deps_args.extend(dep_args_skipped);
 
     let mut final_args = Vec::new();
