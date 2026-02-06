@@ -57,10 +57,7 @@ pub const DEP_UNNECESSARY_FEATURES: &str = "dep_unnecessary_features";
 /// We need to ignore these crates to prevent false negatives.
 pub const KNOWN_SYN_FAILURES: [&str; 1] = ["nb:0.1.3"];
 
-/// We do hir analysis once. It is done if the crate fails
-/// to build for all targets. This determines if the tool made a mistake and
-/// accidentally included std usages.
-/// The results of the hir visit are stored in this file.
+/// We do hir analysis once per crate and store the results in this file.
 pub const HIR_VISITOR_SPAN_DUMP: &str = concatcp!(RESULTS_PATH, "hir_visitor_span_dump.json");
 
 /// Once the hir analysis is done for a crate, the results are moved to a crate

@@ -33,10 +33,14 @@ pub struct ParsedAttr {
 #[derive(Default, Clone, Debug)]
 pub struct Attributes {
     attributes: Vec<Attribute>,
-    // This will be a list of attributes associated with
-    // compiler_error macros. Note that the attributes present
-    // here will also be present in `attributes` field.
+    /// This will be a list of attributes associated with
+    /// compiler_error macros. Note that the attributes present
+    /// here will also be present in `attributes` field.
+    /// This also does the double duty of storing negated
+    /// attributes where the attribute would have included
+    /// some direct usage of `std`.
     compile_error_attrs: Vec<Attribute>,
+    /// This holds both name and version seperated by `:`
     pub crate_name: String,
     pub unconditional_no_std: bool,
     /// Sometimes, crate authors put `#[no_std]` instead of
@@ -649,9 +653,9 @@ pub fn process_crate(
     for (mod_name, attr) in attrs.mods.iter() {
         let pat1 = format!("{}.rs", mod_name);
         let pat2 = format!("{}/mod.rs", mod_name);
-        let file_contains_std = hir_spans.iter().any(|span| {
-            span.file.ends_with(&pat1) || span.file.ends_with(&pat2)
-        });
+        let file_contains_std = hir_spans
+            .iter()
+            .any(|span| span.file.ends_with(&pat1) || span.file.ends_with(&pat2));
         if file_contains_std {
             debug!(
                 "Module {} contains direct std usage, adding negated cfg attribute",
@@ -807,6 +811,7 @@ pub fn process_dep_crate(
         None => {
             let (.., dep_crate_info) = downloader::gather_crate_info(&dep.crate_name, true)?;
             let optional_dep_feats = features_for_optional_deps(&dep_crate_info);
+            hir::hir_visit(&dep.crate_name, None, true, Some(&dep_crate_info));
             let dep_crate_name = dep.crate_name.clone();
             let (enable, disable) = process_crate(
                 ctx,
