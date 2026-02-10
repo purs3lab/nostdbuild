@@ -1,0 +1,5 @@
+#!/bin/bash
+
+echo "Testing only the cargo hir tests"
+
+cargo test --test integration --  --test-threads=1

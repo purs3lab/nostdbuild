@@ -1,0 +1,11 @@
+[package]
+name = "test_extern_std"
+description = "Test to verify the `extern crate std` used via current crate is captured"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "main"
+
+[workspace]

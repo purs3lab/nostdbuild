@@ -1,0 +1,11 @@
+[package]
+name = "test_vec_direct_usage"
+description = "Test to verify the direct `std::vec::Vec` usage is captured"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "main"
+
+[workspace]

@@ -1,0 +1,11 @@
+[package]
+name = "test_vec_used_via_use"
+description = "Test to verify the vec used via `use std::vec::Vec` is captured"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "main"
+
+[workspace]
