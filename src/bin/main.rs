@@ -131,7 +131,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut main_attributes = parser::parse_crate(&name, true);
 
-    let readable_spans = hir::proc_macro_span_to_readable(&main_attributes.spans);
+    let readable_spans = hir::proc_macro_spans_to_readables(&main_attributes.spans);
     let dep_and_feats = parser::features_for_optional_deps(&crate_info);
     let (mut enable, disable) = parser::process_crate(
         &ctx,
@@ -149,7 +149,7 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let (mut disable_default, mut main_features) =
+    let (mut disable_default, mut main_features, to_disable) =
         solver::final_feature_list_main(&crate_info, &mut enable, &disable, &mut telemetry);
     parser::minimize(
         &crate_info,
@@ -164,6 +164,10 @@ fn main() -> anyhow::Result<()> {
 
     let deps_attrs = parser::parse_deps_crate();
     let mut skipped = Vec::new();
+    // We keep track of the features we have already disabled for dependencies.
+    // This way we don't accidentally re-enable some feature for a later dependency
+    // that we had to disable for an earlier dependency.
+    let mut previously_disabled: HashSet<String> = HashSet::new();
     // Solve for each dependency
     // TODO: Some dependencies are from git instead of crates.io. Handle those cases.
     // TODO: There are some cleanup and refactoring to minimize the read -> mutate -> write pattern for the toml
@@ -173,7 +177,7 @@ fn main() -> anyhow::Result<()> {
     // the feature requirements can be met, not if they are actually met with the set of features enabled by that crate for
     // no_std compilation.
     // TODO: Handle all keywords for cfg_attr and cfg in code. Update parse_meta function.
-    // TODO: If a module is imported conditionally, and it directly uses std, we need to negate the condition that imports it. This is currently done for main crate and direct dependencies. Extend to add this for deps at all depth during the final `recursive_dep_requirement_check` call.
+    // TODO: If a module is imported conditionally, and it directly uses std, we need to negate the condition that imports it. This is currently done for main crate and direct dependencies. Extend to add this for deps at all depth during the final `recursive_dep_requirement_check` call. (tarfs)
     // TODO: If enabling a feature for a dependency or main crate causes direct std usage, we should disable it. This should be done for chain of features and dependencies. (tinywasm, tinywasm-parser, bytemuck)
     // TODO: For the impossible case where there is no way to connect no_std to some feature, we try compiling, and if there are errors, we need to see what caused the error. If it was due to some unresolved import, we need to find the feature that is guarding it and enabled it. Or we can also have a set of features that we know includes more things into the crate. And then when compilation fails, we can try each of those features and see if it fixes the issue. This is a last resort since it is not systematic and is expensive.
     // TODO: Minimize should ignore features that are part of `compile_error` attribute features.
@@ -212,16 +216,22 @@ fn main() -> anyhow::Result<()> {
             &crate_name_rename,
             &mut telemetry,
         )?;
-        deps_args.extend(local_dep_args.clone());
+
+        deps_args.extend(local_dep_args);
         let (.., dep_crate_info) = downloader::gather_crate_info(&dep.crate_name, true)?;
 
-        let (temp_disable_default, temp_flexible) =
+        let (temp_disable_default, mut temp_flexible, to_disable) =
             solver::final_feature_list_main(&crate_info, &mut enable, &dep_disable, &mut telemetry);
+
+        previously_disabled.extend(to_disable.clone());
+        temp_flexible.retain(|f| !previously_disabled.contains(f));
 
         disable_default = disable_default || temp_disable_default;
         main_features.extend(temp_flexible);
         main_features.sort();
         main_features.dedup();
+
+        main_features.retain(|f| !to_disable.contains(f));
 
         parser::move_unnecessary_dep_feats(
             &name,
@@ -265,17 +275,24 @@ fn main() -> anyhow::Result<()> {
 
             dep_args_skipped.extend(local_dep_args.clone());
 
-            let (temp_disable_default, temp_flexible) = solver::final_feature_list_main(
-                &crate_info,
-                &mut enable,
-                &dep_disable,
-                &mut telemetry,
-            );
+            let (temp_disable_default, mut temp_flexible, to_disable) =
+                solver::final_feature_list_main(
+                    &crate_info,
+                    &mut enable,
+                    &dep_disable,
+                    &mut telemetry,
+                );
+
+            previously_disabled.extend(to_disable.clone());
+            temp_flexible.retain(|f| !previously_disabled.contains(f));
+
             disable_default = disable_default || temp_disable_default;
 
             main_features.extend(temp_flexible);
             main_features.sort();
             main_features.dedup();
+
+            main_features.retain(|f| !to_disable.contains(f));
 
             parser::move_unnecessary_dep_feats(
                 &name,

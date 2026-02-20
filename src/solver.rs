@@ -200,14 +200,27 @@ pub fn final_feature_list_main(
     enable: &mut [String],
     disable: &[String],
     telemetry: &mut Telemetry,
-) -> (bool, Vec<String>) {
+) -> (bool, Vec<String>, Vec<String>) {
     let mut disable_default = false;
     let mut enable_from_default = Vec::new();
+    let mut disable_from_default: Vec<String> = Vec::new();
 
     if disable_in_default(crate_info, disable) || disable_in_default_indirect(crate_info, disable) {
         disable_default = true;
         // TODO: Do we need to redo this for each dependency?
         enable_from_default = get_features_not_disabled(crate_info, disable);
+        disable_from_default = crate_info
+            .features
+            .iter()
+            .find(|(name, _)| name == "default")
+            .map(|(_, features)| {
+                features
+                    .iter()
+                    .filter(|(_, feature)| !enable_from_default.contains(feature))
+                    .map(|(_, feature)| feature.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
     }
 
     let kept = new_feats_to_add(crate_info, &enable_from_default, enable);
@@ -230,7 +243,7 @@ pub fn final_feature_list_main(
     )
     .unwrap();
 
-    (disable_default, enable_from_default)
+    (disable_default, enable_from_default, disable_from_default)
 }
 
 /// This returns the list of features that need to be added to the main crate's
