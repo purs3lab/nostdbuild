@@ -649,7 +649,20 @@ pub fn process_crate(
     // cfg attributes. If any of those modules contains direct std usages,
     // we need to add the negated cfg attribute to the equations while also
     // removing the original attribute from the list (Currently in equation form).
-    let hir_spans = hir::read_hir_spans(name_with_version);
+    let mut hir_spans = hir::read_hir_spans(name_with_version);
+    let proc_macro_spans = hir::proc_macro_spans_to_readables(&attrs.spans);
+
+    // We are filtering the HIR spans where there is some attribute associated with it. In
+    // this case, we don't consider it as a direct usage of std since it is possible
+    // to disable the uasge of std by negating the attribute guarding it. This
+    // case is handled separately. Here we only care about `mod my_mod;` statements and
+    // whether to negate the `cfg` attribute guarding it or not.
+    hir_spans.retain(|span| {
+        !proc_macro_spans
+            .iter()
+            .any(|proc_span| proc_span.contains(span))
+    });
+
     for (mod_name, attr) in attrs.mods.iter() {
         let pat1 = format!("{}.rs", mod_name);
         let pat2 = format!("{}/mod.rs", mod_name);
