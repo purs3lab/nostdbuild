@@ -1,9 +1,9 @@
 #![feature(rustc_private)]
 
-use cargo_test_support::{Project, project, cargo_test};
-use std::path::{PathBuf, Path};
-use std::process::Command;
+use cargo_test_support::{Project, cargo_test, project};
 use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use nostd::consts::HIR_VISITOR_SPAN_DUMP;
 

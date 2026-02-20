@@ -264,6 +264,13 @@ impl<'a> Visit<'a> for Attributes {
         syn::visit::visit_field(self, i);
     }
 
+    fn visit_impl_item_fn(&mut self, i: &'a syn::ImplItemFn) {
+        let attrs: &Vec<Attribute> = &i.attrs;
+        let span: Span = i.span();
+        check_attr_save_span(self, attrs, span);
+        syn::visit::visit_impl_item_fn(self, i);
+    }
+
     // All visitors that collect Span
     fn visit_item(&mut self, i: &'a Item) {
         let attrs: &Vec<Attribute>;
