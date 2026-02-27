@@ -32,7 +32,10 @@ pub fn hir_visit(
     }
 
     let manifest = parser::determine_manifest_file(crate_name);
+    let dir = std::path::Path::new(consts::DOWNLOAD_PATH).join(crate_name.replace(':', "-"));
     let output_file_name = get_hir_output_file(crate_name);
+
+    let backup_hir_manifest = dir.join("Cargo.toml.hir");
 
     if path::Path::new(&output_file_name).exists() {
         fs::remove_file(&output_file_name)
@@ -79,13 +82,48 @@ pub fn hir_visit(
             "Running cargo-hir with all features enabled: features={}",
             top_level_feats
         );
+
+        // Create a copy of the manifest file
+        fs::copy(&manifest, &backup_hir_manifest).expect("Failed to create a copy of Cargo.toml");
+
+        // We also need to remove features that are enabling things for dependencies.
+        let toml = fs::read_to_string(&manifest).expect("Failed to read Cargo.toml");
+        let mut cargo_toml: toml::Value = toml.parse().expect("Failed to parse Cargo.toml");
+        let main_features_table = cargo_toml
+            .get_mut("features")
+            .and_then(|f| f.as_table_mut())
+            .expect("Cargo.toml does not have a [features] table");
+
+        main_features_table.into_iter().for_each(|(feat, vals)| {
+            vals.as_array_mut()
+                .expect("Feature values should be an array")
+                .retain(|v| !v.as_str().unwrap_or_default().contains("/"));
+        });
+
+        fs::write(
+            &manifest,
+            toml::to_string(&cargo_toml).expect("Failed to serialize modified Cargo.toml"),
+        )
+        .expect("Failed to write modified Cargo.toml");
     }
+
+    debug!(
+        "Running cargo-hir for crate: {} with args: {}",
+        crate_name,
+        args.join(" ")
+    );
 
     let now = Instant::now();
     let output = Command::new("cargo")
         .args(&args)
         .output()
         .expect("Failed to run cargo-hir");
+
+    if all_feats {
+        // Copy the file back
+        fs::copy(&backup_hir_manifest, &manifest).expect("Failed to restore original Cargo.toml");
+        fs::remove_file(&backup_hir_manifest).expect("Failed to remove temporary Cargo.toml.hir");
+    }
 
     if let Some(telemetry) = telemetry {
         telemetry.hir_driver_time_ms = now.elapsed().as_millis();
