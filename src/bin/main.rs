@@ -180,7 +180,8 @@ fn main() -> anyhow::Result<()> {
     // TODO: If a module is imported conditionally, and it directly uses std, we need to negate the condition that imports it. This is currently done for main crate and direct dependencies. Extend to add this for deps at all depth during the final `recursive_dep_requirement_check` call. (tarfs)
     // TODO: If enabling a feature for a dependency or main crate causes direct std usage, we should disable it. This should be done for chain of features and dependencies. (tinywasm, tinywasm-parser, bytemuck)
     // TODO: For the impossible case where there is no way to connect no_std to some feature, we try compiling, and if there are errors, we need to see what caused the error. If it was due to some unresolved import, we need to find the feature that is guarding it and enabled it. Or we can also have a set of features that we know includes more things into the crate. And then when compilation fails, we can try each of those features and see if it fixes the issue. This is a last resort since it is not systematic and is expensive.
-    // TODO: Minimize should ignore features that are part of `compile_error` attribute features.
+    // TODO: Std visitor can have no_std feature which can cause std to not exist causing failure. We can try running the crate with one feature at a time to get the direct std usage. (mech-core) // Write test case for this. enable `no_std` and try to use std under some feature while enabling that feature/disabling that feature
+    // TODO: hir visitor should drop features that enable things in dependencies. We only need to consider the current crate in isolation. (ark-ec, ark-std) // write a test for this. use path dependent dependency.
     let mut deps_args = Vec::new();
     for mut dep in deps_attrs {
         if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {
