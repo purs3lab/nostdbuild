@@ -34,7 +34,7 @@ pub struct ParsedAttr {
 pub struct Attributes {
     attributes: Vec<Attribute>,
     /// This will be a list of attributes associated with
-    /// compiler_error macros. Note that the attributes present
+    /// compiler_error macros. Note that the negated attributes present
     /// here will also be present in `attributes` field.
     /// This also does the double duty of storing negated
     /// attributes where the attribute would have included
@@ -63,6 +63,12 @@ pub struct Attributes {
     /// Rust allows including files conditionally using
     /// `cfg_attr` attribute.
     pub files_in_cfg_attrs: Vec<String>,
+    /// The spans collected from HIR visitor.
+    /// We will use this to determine if any of the attributes
+    /// are guarding direct usages of `std`.
+    pub hir_spans: Vec<ReadableSpan>,
+    /// The current file being parsed.
+    pub current_file: String,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -82,11 +88,15 @@ trait GetItemExternCrate {
     fn get_spans(&mut self) -> Option<&mut Vec<(Span, Option<String>)>> {
         None
     }
+    fn set_current_file(&mut self, _file: String) {}
 }
 
 impl GetItemExternCrate for Attributes {
     fn get_spans(&mut self) -> Option<&mut Vec<(Span, Option<String>)>> {
         Some(&mut self.spans)
+    }
+    fn set_current_file(&mut self, file: String) {
+        self.current_file = file;
     }
 }
 
@@ -190,6 +200,25 @@ impl<'a> Visit<'a> for Attributes {
     fn visit_attribute(&mut self, i: &Attribute) {
         if let Some(ident) = i.path().get_ident() {
             if ident == "cfg" || ident == "cfg_attr" {
+                match i.meta.clone() {
+                    Meta::List(meta_list) => {
+                        let tokens = meta_list.tokens.clone();
+                        let negated: Attribute = syn::parse_quote!(
+                        #[cfg(not(#tokens))]
+                        );
+                        if self.compile_error_attrs.iter().any(|a| a == &negated) {
+                            debug!(
+                                "Attribute {:?} is already negated in compile_error_attrs, skipping",
+                                i
+                            );
+                            return;
+                        }
+                    }
+                    _ => {
+                        debug!("Not meta list type for cfg/cfg_attr: {:?}", i.meta);
+                    }
+                }
+                // Only add the attributes which we are not negating.
                 self.attributes.push(i.clone());
             }
             if ident == "no_std" {
@@ -331,6 +360,31 @@ impl<'a> Visit<'a> for Attributes {
                 return;
             }
         }
+
+        if let Some(cfg_attr) = attrs.iter().find(|a| a.path().is_ident("cfg")) {
+            let attr_span =
+                hir::proc_macro_span_to_readable(&span, Some(self.current_file.clone()));
+            if self.hir_spans.iter().any(|span| attr_span.contains(span)) {
+                match cfg_attr.meta.clone() {
+                    Meta::List(meta_list) => {
+                        let tokens = meta_list.tokens.clone();
+                        let negated: Attribute = syn::parse_quote!(
+                        #[cfg(not(#tokens))]
+                        );
+                        debug!(
+                            "Adding negated cfg/cfg_attr span: {:?} for file: {}",
+                            attr_span, self.current_file
+                        );
+                        self.compile_error_attrs.push(negated);
+                    }
+                    _ => {
+                        debug!("Not meta list type for cfg/cfg_attr: {:?}", cfg_attr.meta);
+                    }
+                }
+                self.attributes.retain(|a| a != cfg_attr);
+            }
+        }
+
         check_attr_save_span(self, attrs, span);
         syn::visit::visit_item(self, i);
     }
@@ -433,9 +487,12 @@ pub fn get_item_extern_std(itemexterncrates: &ItemExternCrates) -> Vec<Attribute
 /// # Returns
 /// The attributes of the main crate
 pub fn parse_crate(crate_name: &str, recurse: bool) -> Attributes {
-    let mut attributes = Attributes::default();
+    let mut attributes = Attributes {
+        hir_spans: hir::read_hir_spans(crate_name),
+        ..Default::default()
+    };
 
-    if let Err(err) = visit(&mut attributes, crate_name, recurse) {
+    if let Err(err) = visit(&mut attributes, crate_name, recurse, false) {
         debug!(
             "Failed to parse crate {} with error:{}. Will continue...",
             crate_name, err
@@ -908,7 +965,7 @@ pub fn process_dep_crate(
 /// * `main_name` - The name of the main crate
 /// * `fixed_main_args` - The fixed features of the main crate
 /// * `flexible_main_args` - The list of features whihc are not necessary for main
-/// * `dep_name` - The name of the dependency
+/// * `dep_name` - The name of the dependency with the version
 /// * `deps_args` - The features required for the dependency. This is the list of features
 ///   that are enabled for a dependency.
 pub fn move_unnecessary_dep_feats(
@@ -2316,7 +2373,12 @@ fn get_files_in_attributes<'a>(
     files_and_equations
 }
 
-fn visit<T>(visiter_type: &mut T, crate_name: &str, recurse: bool) -> anyhow::Result<()>
+fn visit<T>(
+    visiter_type: &mut T,
+    crate_name: &str,
+    recurse: bool,
+    direct_file: bool,
+) -> anyhow::Result<()>
 where
     T: for<'a> Visit<'a> + GetItemExternCrate,
 {
@@ -2339,19 +2401,23 @@ where
                 continue;
             }
         };
+        let span_file_path = if !direct_file {
+            let span_file_path = filename
+                .strip_prefix(&(path.clone() + "/"))
+                .unwrap()
+                .to_string();
+            visiter_type.set_current_file(span_file_path.to_string());
+            span_file_path
+        } else {
+            filename.clone()
+        };
         visiter_type.visit_file(&file);
         if let Some(spans) = visiter_type.get_spans() {
             // Newly added spans will have None as filename.
             // We fill it with the current filename.
             for span in spans {
                 if span.1.is_none() {
-                    span.1.replace(
-                        filename
-                            .clone()
-                            .strip_prefix(&(path.clone() + "/"))
-                            .unwrap()
-                            .to_string(),
-                    );
+                    span.1.replace(span_file_path.to_string());
                 }
             }
         }
