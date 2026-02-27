@@ -234,6 +234,13 @@ fn main() -> anyhow::Result<()> {
 
         main_features.retain(|f| !to_disable.contains(f));
 
+        parser::minimize(
+            &crate_info,
+            &dep_and_feats,
+            &mut main_features,
+            &HashSet::new(),
+        );
+
         parser::move_unnecessary_dep_feats(
             &name,
             &enable,
@@ -294,6 +301,13 @@ fn main() -> anyhow::Result<()> {
             main_features.dedup();
 
             main_features.retain(|f| !to_disable.contains(f));
+
+            parser::minimize(
+                &crate_info,
+                &dep_and_feats,
+                &mut main_features,
+                &HashSet::new(),
+            );
 
             parser::move_unnecessary_dep_feats(
                 &name,
