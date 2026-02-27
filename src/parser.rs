@@ -981,15 +981,22 @@ pub fn move_unnecessary_dep_feats(
         toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
     let main_features = main_toml.get_mut("features").and_then(|f| f.as_table_mut());
 
+    let dep_name_only = dep_name.split(':').next().unwrap_or(dep_name);
+
     if main_features.is_none() {
         debug!("No features found for main crate {}", main_name);
         return;
     }
     let main_features = main_features.unwrap();
 
-    let prefix1 = format!("{}/", dep_name);
-    let prefix2 = format!("{}?/", dep_name);
+    let prefix1 = format!("{}/", dep_name_only);
+    let prefix2 = format!("{}?/", dep_name_only);
 
+    // Let's say main has a feature that enables multiple dependency features,
+    // and only some of those features are not required for a dependency. In this
+    // case, we track the ones which are required so we can add it to
+    // a custom feature list later. Note that we only drop it if there is atleast
+    // one feature that has to be disabled.
     let mut needed_dropped: HashSet<String> = HashSet::new();
     flexible_main_args.retain(|feature| {
         main_features
