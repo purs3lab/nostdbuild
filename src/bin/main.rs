@@ -127,7 +127,7 @@ fn main() -> anyhow::Result<()> {
     telemetry.dep_not_no_std = !no_std;
 
     // We need to do it here because our features retension logic relies on this
-    hir::hir_visit(&name, None, true, Some(&crate_info));
+    hir::hir_visit(&name, Some(&mut telemetry), true, Some(&crate_info));
 
     let mut main_attributes = parser::parse_crate(&name, true);
 
