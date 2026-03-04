@@ -60,6 +60,11 @@ pub const KNOWN_SYN_FAILURES: [&str; 1] = ["nb:0.1.3"];
 /// We do hir analysis once per crate and store the results in this file.
 pub const HIR_VISITOR_SPAN_DUMP: &str = concatcp!(RESULTS_PATH, "hir_visitor_span_dump.json");
 
+/// When we run hir analysis for a dependency with multiple features, we run the analysis once
+/// per feature and store the results in the above file. Which is then merged into this
+/// file so that the next run does not overwrite the previous results.
+pub const HIR_VISITOR_MERGE_FILE: &str = concatcp!(RESULTS_PATH, "hir_visitor_merge.json");
+
 /// Once the hir analysis is done for a crate, the results are moved to a crate
 /// specific file with this suffix. This is done to prevent overwriting results
 /// when we run it for multiple dependencies.

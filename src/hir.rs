@@ -63,61 +63,81 @@ pub fn hir_visit(
         );
     }
 
-    let mut args = vec!["hir", "--", "--manifest-path", &manifest];
-    let top_level_feats: String;
+    let args = vec!["hir", "--", "--manifest-path", &manifest];
+    let mut top_level_feats: Vec<String> = Vec::new();
 
     if all_feats {
-        top_level_feats = crate_info
-            .unwrap()
-            .features
-            .iter()
-            .map(|(top, _)| top.clone())
-            .collect::<Vec<String>>()
-            .join(",");
-        if !top_level_feats.is_empty() {
-            args.push("--features");
-            args.push(&top_level_feats);
-        }
-        debug!(
-            "Running cargo-hir with all features enabled: features={}",
-            top_level_feats
-        );
-
         // Create a copy of the manifest file
         fs::copy(&manifest, &backup_hir_manifest).expect("Failed to create a copy of Cargo.toml");
 
         // We also need to remove features that are enabling things for dependencies.
         let toml = fs::read_to_string(&manifest).expect("Failed to read Cargo.toml");
         let mut cargo_toml: toml::Value = toml.parse().expect("Failed to parse Cargo.toml");
-        let main_features_table = cargo_toml
-            .get_mut("features")
-            .and_then(|f| f.as_table_mut())
-            .expect("Cargo.toml does not have a [features] table");
+        let main_features_table = cargo_toml.get_mut("features");
 
-        main_features_table.into_iter().for_each(|(feat, vals)| {
-            vals.as_array_mut()
-                .expect("Feature values should be an array")
-                .retain(|v| !v.as_str().unwrap_or_default().contains("/"));
-        });
+        if main_features_table.is_some() {
+            main_features_table
+                .unwrap()
+                .as_table_mut()
+                .expect("Features should be a table")
+                .into_iter()
+                .for_each(|(feat, vals)| {
+                    vals.as_array_mut()
+                        .expect("Feature values should be an array")
+                        .retain(|v| !v.as_str().unwrap_or_default().contains("/"));
+                });
 
-        fs::write(
-            &manifest,
-            toml::to_string(&cargo_toml).expect("Failed to serialize modified Cargo.toml"),
-        )
-        .expect("Failed to write modified Cargo.toml");
+            fs::write(
+                &manifest,
+                toml::to_string(&cargo_toml).expect("Failed to serialize modified Cargo.toml"),
+            )
+            .expect("Failed to write modified Cargo.toml");
+        }
+
+        top_level_feats = crate_info
+            .unwrap()
+            .features
+            .iter()
+            .map(|(top, _)| top.clone())
+            .collect();
+
+        debug!(
+            "Running cargo-hir with all features enabled: features={:?}",
+            top_level_feats
+        );
     }
 
-    debug!(
-        "Running cargo-hir for crate: {} with args: {}",
-        crate_name,
-        args.join(" ")
-    );
-
     let now = Instant::now();
-    let output = Command::new("cargo")
-        .args(&args)
-        .output()
-        .expect("Failed to run cargo-hir");
+
+    if !top_level_feats.is_empty() {
+        for feat in top_level_feats {
+            let mut feat_args = args.clone();
+            feat_args.push("--features");
+            feat_args.push(&feat);
+
+            debug!("Running cargo-hir with feature: {}", feat);
+
+            let output = Command::new("cargo")
+                .args(&feat_args)
+                .output()
+                .expect("Failed to run cargo-hir with features");
+            merge_hir_results(
+                consts::HIR_VISITOR_SPAN_DUMP,
+                consts::HIR_VISITOR_MERGE_FILE,
+            );
+        }
+    } else {
+        debug!("Running cargo-hir with no features");
+
+        let output = Command::new("cargo")
+            .args(&args)
+            .output()
+            .expect("Failed to run cargo-hir");
+        merge_hir_results(
+            consts::HIR_VISITOR_SPAN_DUMP,
+            consts::HIR_VISITOR_MERGE_FILE,
+        );
+    }
 
     if all_feats {
         // Copy the file back
@@ -129,18 +149,49 @@ pub fn hir_visit(
         telemetry.hir_driver_time_ms = now.elapsed().as_millis();
     }
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        debug!(
-            "cargo-hir failed with status code: {} and message: {}",
-            output.status.code().unwrap_or(-1),
-            stderr
-        );
-    } else {
-        debug!("cargo-hir ran successfully");
-        std::fs::rename(consts::HIR_VISITOR_SPAN_DUMP, &output_file_name)
+    debug!("cargo-hir run finished in {} ms", now.elapsed().as_millis());
+    if path::Path::new(consts::HIR_VISITOR_MERGE_FILE).exists() {
+        std::fs::rename(consts::HIR_VISITOR_MERGE_FILE, &output_file_name)
             .expect("Failed to rename HIR visitor span dump file");
     }
+}
+
+fn merge_hir_results(from: &str, to: &str) {
+    if !path::Path::new(from).exists() {
+        debug!(
+            "HIR visitor span dump file does not exist. Please ensure that `cargo-hir` ran successfully."
+        );
+        return;
+    }
+
+    let mut existing_data = if path::Path::new(to).exists() {
+        let data = fs::read_to_string(to).expect("Unable to read existing HIR merge file");
+        serde_json::from_str::<Vec<ReadableSpan>>(&data)
+            .expect("Unable to parse existing HIR merge file")
+    } else {
+        vec![]
+    };
+
+    let new_data = fs::read_to_string(from).expect("Unable to read new HIR visitor span dump file");
+    let new_spans: Vec<ReadableSpan> =
+        serde_json::from_str(&new_data).expect("Unable to parse new HIR visitor span dump file");
+
+    existing_data.extend(new_spans);
+    existing_data.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.start_line.cmp(&b.start_line))
+            .then(a.start_col.cmp(&b.start_col))
+            .then(a.end_line.cmp(&b.end_line))
+            .then(a.end_col.cmp(&b.end_col))
+    });
+    existing_data.dedup();
+
+    fs::write(
+        to,
+        serde_json::to_string(&existing_data).expect("Unable to serialize merged HIR data"),
+    )
+    .expect("Unable to write merged HIR data to file");
 }
 
 pub fn read_hir_spans(crate_name: &str) -> Vec<ReadableSpan> {

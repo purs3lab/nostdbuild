@@ -108,7 +108,7 @@ impl<'r, 'a> AstVisitor<'a> for MyVisitor<'r> {
                     // Cases like `extern crate std as foo; use foo::...` would be caught here,
                     // where the root segment is `foo`, first segment is from the current crate,
                     // but the root_def_id would be from `std`
-                    // TODO: Does this actually do what is says it does? 
+                    // TODO: Does this actually do what is says it does?
                     if let rustc_hir::def::Res::Def(rustc_hir::def::DefKind::ExternCrate, _) = res {
                         root_def_id = Some(def_id);
                         break;
