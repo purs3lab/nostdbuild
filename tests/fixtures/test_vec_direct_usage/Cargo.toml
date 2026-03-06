@@ -6,6 +6,6 @@ edition = "2024"
 
 [[bin]]
 path = "main.rs"
-name = "main"
+name = "test_vec_direct_usage"
 
 [workspace]
