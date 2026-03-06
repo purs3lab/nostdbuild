@@ -8,7 +8,7 @@ use log::debug;
 use nostd::{compiler, consts, db, downloader, hir, parser, solver};
 
 #[derive(Parser, Debug)]
-#[command(author, version, about)]
+#[command(author, about)]
 struct Cli {
     #[arg(long)]
     url: Option<String>,
@@ -178,9 +178,7 @@ fn main() -> anyhow::Result<()> {
     // no_std compilation.
     // TODO: Handle all keywords for cfg_attr and cfg in code. Update parse_meta function.
     // TODO: If a module is imported conditionally, and it directly uses std, we need to negate the condition that imports it. This is currently done for main crate and direct dependencies. Extend to add this for deps at all depth during the final `recursive_dep_requirement_check` call. (tarfs)
-    // TODO: If enabling a feature for a dependency or main crate causes direct std usage, we should disable it. This should be done for chain of features and dependencies. (tinywasm, tinywasm-parser, bytemuck)
     // TODO: For the impossible case where there is no way to connect no_std to some feature, we try compiling, and if there are errors, we need to see what caused the error. If it was due to some unresolved import, we need to find the feature that is guarding it and enabled it. Or we can also have a set of features that we know includes more things into the crate. And then when compilation fails, we can try each of those features and see if it fixes the issue. This is a last resort since it is not systematic and is expensive.
-    // TODO: Std visitor can have no_std feature which can cause std to not exist causing failure. We can try running the crate with one feature at a time to get the direct std usage. (mech-core) // Write test case for this. enable `no_std` and try to use std under some feature while enabling that feature/disabling that feature
     // TODO: hir visitor should drop features that enable things in dependencies. We only need to consider the current crate in isolation. (ark-ec, ark-std) // write a test for this. use path dependent dependency.
     let mut deps_args = Vec::new();
     for mut dep in deps_attrs {
@@ -366,6 +364,9 @@ fn main() -> anyhow::Result<()> {
         Ok(false)
     }?;
 
+    let mut failed = false;
+    let mut reason = "";
+
     if one_succeeded {
         telemetry.build_success = true;
         db::add_to_db_data(&mut db_data, &name, (&enable, &disable));
@@ -377,6 +378,8 @@ fn main() -> anyhow::Result<()> {
         {
             telemetry.unguarded_std_usages = true;
             debug!("ERROR: Found unguarded std usage in the main crate");
+            failed = true;
+            reason = "Found unguarded std usage in the main crate";
         }
         // We add no_std here but not for the previous condition becase, we want to know
         // even if some deps are not no_std compatible, whether the main would have built successfully
@@ -393,6 +396,8 @@ fn main() -> anyhow::Result<()> {
             debug!(
                 "ERROR: Some dependency at some level does not have a way to enable all its required features in no_std mode"
             );
+            failed = true;
+            reason = "Some dependency at some level does not have a way to enable all its required features in no_std mode";
         }
     }
 
@@ -400,5 +405,8 @@ fn main() -> anyhow::Result<()> {
 
     stats.telemetry = Some(telemetry);
     stats.dump(true);
+    if failed {
+        return Err(anyhow::anyhow!(reason));
+    }
     Ok(())
 }
