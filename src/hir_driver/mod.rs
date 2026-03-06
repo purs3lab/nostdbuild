@@ -25,9 +25,12 @@ use rustc_span::{FileNameDisplayPreference, Span, def_id::DefId};
 
 use rustc_plugin::{CrateFilter, RustcPlugin, RustcPluginArgs, Utf8Path};
 
-use std::env;
 use std::process::Command;
 use std::{borrow::Cow, collections::HashSet};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 use clap::Parser;
 use log::debug;
@@ -258,13 +261,15 @@ fn get_readable_span(tcx: &TyCtxt, span: Span) -> ReadableSpan {
     span
 }
 
-fn dump_spans_as_json(filename: &str, spans: &HashSet<ReadableSpan>) {
+fn dump_spans_as_json(filename: &PathBuf, spans: &HashSet<ReadableSpan>) {
     let json = serde_json::to_string_pretty(spans).unwrap();
     std::fs::write(filename, json).expect("Unable to write file");
 }
 
 struct MyCompilerCalls {
     compilation: Compilation,
+    crate_name: Option<String>,
+    crate_version: Option<String>,
 }
 
 impl rustc_driver::Callbacks for MyCompilerCalls {
@@ -329,7 +334,20 @@ impl rustc_driver::Callbacks for MyCompilerCalls {
         }
 
         println!("Found spans: {:?}", spans);
-        dump_spans_as_json(consts::HIR_VISITOR_SPAN_DUMP, &spans);
+
+        // We are directly calling unwrap here because at this point, we are
+        // guaranteed to have the crate name and version from the command line args
+        let path = Path::new(consts::RESULTS_PATH).join(format!(
+            "{}-{}-{}",
+            self.crate_name
+                .as_deref()
+                .expect("crate_name should be set"),
+            self.crate_version
+                .as_deref()
+                .expect("crate_version should be set"),
+            consts::HIR_VISITOR_VISIT_FILE_SUFFIX
+        ));
+        dump_spans_as_json(&path, &spans);
 
         self.compilation
     }
@@ -402,8 +420,26 @@ impl RustcPlugin for Plugin {
             action = Compilation::Continue;
         }
 
+        let mut crate_name = None;
+        let mut crate_version = None;
+
+        if !compiler_args.iter().any(|arg| arg == "-vV") {
+            crate_name = compiler_args
+                .windows(2)
+                .find(|w| w[0] == "--crate-name")
+                .map(|w| w[1].clone());
+
+            crate_version = std::env::var("CARGO_PKG_VERSION").ok();
+            debug!(
+                "Running plugin for crate: {:?} version: {:?}",
+                crate_name, crate_version
+            );
+        }
+
         let mut callbacks = MyCompilerCalls {
             compilation: action,
+            crate_name,
+            crate_version,
         };
         rustc_driver::run_compiler(&compiler_args, &mut callbacks);
         Ok(())

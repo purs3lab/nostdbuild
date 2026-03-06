@@ -219,7 +219,6 @@ fn main() -> anyhow::Result<()> {
         )?;
 
         deps_args.extend(local_dep_args);
-        let (.., dep_crate_info) = downloader::gather_crate_info(&dep.crate_name, true)?;
 
         let (temp_disable_default, mut temp_flexible, to_disable) =
             solver::final_feature_list_main(&crate_info, &mut enable, &dep_disable, &mut telemetry);

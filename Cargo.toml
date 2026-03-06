@@ -41,4 +41,8 @@ serde_json = "1.0.140"
 bincode = "=2.0.0"
 rustc_plugin = "=0.14.1-nightly-2025-08-20"
 which = "8.0.0"
-const_format = "0.2.34"
+cargo-test-support = "0.9.1"
+
+[workspace]
+members = ["."]
+exclude = ["tests/fixtures"]

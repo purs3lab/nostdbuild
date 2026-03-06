@@ -1,5 +1,6 @@
 use log::debug;
 use proc_macro2::Span;
+use std::path::{Path, PathBuf};
 use std::{fs, path, process::Command, time::Instant};
 use which::which;
 
@@ -33,7 +34,13 @@ pub fn hir_visit(
 
     let manifest = parser::determine_manifest_file(crate_name);
     let dir = std::path::Path::new(consts::DOWNLOAD_PATH).join(crate_name.replace(':', "-"));
+    // Store the final per crate file
     let output_file_name = get_hir_output_file(crate_name);
+    // Stores the per visit file. This is used by the vistor itself.
+    let visit_file_name = get_hir_visit_file(crate_name);
+
+    // Each iteration appends to this in-memory vector.
+    let mut results: Vec<ReadableSpan> = Vec::new();
 
     let backup_hir_manifest = dir.join("Cargo.toml.hir");
 
@@ -42,8 +49,8 @@ pub fn hir_visit(
             .expect("Failed to remove existing HIR visitor span dump file");
     }
 
-    if path::Path::new(&consts::HIR_VISITOR_SPAN_DUMP).exists() {
-        fs::remove_file(consts::HIR_VISITOR_SPAN_DUMP)
+    if path::Path::new(&visit_file_name).exists() {
+        fs::remove_file(&visit_file_name)
             .expect("Failed to remove existing HIR visitor span dump file");
     }
 
@@ -81,7 +88,7 @@ pub fn hir_visit(
                 .as_table_mut()
                 .expect("Features should be a table")
                 .into_iter()
-                .for_each(|(feat, vals)| {
+                .for_each(|(_, vals)| {
                     vals.as_array_mut()
                         .expect("Feature values should be an array")
                         .retain(|v| !v.as_str().unwrap_or_default().contains("/"));
@@ -117,26 +124,22 @@ pub fn hir_visit(
 
             debug!("Running cargo-hir with feature: {}", feat);
 
-            let output = Command::new("cargo")
+            Command::new("cargo")
                 .args(&feat_args)
                 .output()
                 .expect("Failed to run cargo-hir with features");
-            merge_hir_results(
-                consts::HIR_VISITOR_SPAN_DUMP,
-                consts::HIR_VISITOR_MERGE_FILE,
-            );
+
+            collect_hir_results(&visit_file_name, &mut results);
         }
     } else {
         debug!("Running cargo-hir with no features");
 
-        let output = Command::new("cargo")
+        Command::new("cargo")
             .args(&args)
             .output()
             .expect("Failed to run cargo-hir");
-        merge_hir_results(
-            consts::HIR_VISITOR_SPAN_DUMP,
-            consts::HIR_VISITOR_MERGE_FILE,
-        );
+
+        collect_hir_results(&visit_file_name, &mut results);
     }
 
     if all_feats {
@@ -149,35 +152,34 @@ pub fn hir_visit(
         telemetry.hir_driver_time_ms = now.elapsed().as_millis();
     }
 
+    dedup_results(&mut results);
+
+    fs::write(
+        &output_file_name,
+        serde_json::to_string(&results).expect("Failed to serialize HIR visitor span dump"),
+    )
+    .expect("Failed to write HIR visitor span dump file");
+
     debug!("cargo-hir run finished in {} ms", now.elapsed().as_millis());
-    if path::Path::new(consts::HIR_VISITOR_MERGE_FILE).exists() {
-        std::fs::rename(consts::HIR_VISITOR_MERGE_FILE, &output_file_name)
-            .expect("Failed to rename HIR visitor span dump file");
-    }
 }
 
-fn merge_hir_results(from: &str, to: &str) {
-    if !path::Path::new(from).exists() {
+fn collect_hir_results(from: &Path, spans: &mut Vec<ReadableSpan>) {
+    if !from.exists() {
         debug!(
-            "HIR visitor span dump file does not exist. Please ensure that `cargo-hir` ran successfully."
+            "HIR visitor span dump file does not exist. Please ensure that `cargo-hir` ran successfully"
         );
         return;
     }
 
-    let mut existing_data = if path::Path::new(to).exists() {
-        let data = fs::read_to_string(to).expect("Unable to read existing HIR merge file");
-        serde_json::from_str::<Vec<ReadableSpan>>(&data)
-            .expect("Unable to parse existing HIR merge file")
-    } else {
-        vec![]
-    };
-
-    let new_data = fs::read_to_string(from).expect("Unable to read new HIR visitor span dump file");
+    let data = fs::read_to_string(from).expect("Unable to read HIR visitor span dump file");
     let new_spans: Vec<ReadableSpan> =
-        serde_json::from_str(&new_data).expect("Unable to parse new HIR visitor span dump file");
+        serde_json::from_str(&data).expect("Unable to parse HIR visitor span dump file");
 
-    existing_data.extend(new_spans);
-    existing_data.sort_by(|a, b| {
+    spans.extend(new_spans);
+}
+
+fn dedup_results(results: &mut Vec<ReadableSpan>) {
+    results.sort_by(|a, b| {
         a.file
             .cmp(&b.file)
             .then(a.start_line.cmp(&b.start_line))
@@ -185,21 +187,17 @@ fn merge_hir_results(from: &str, to: &str) {
             .then(a.end_line.cmp(&b.end_line))
             .then(a.end_col.cmp(&b.end_col))
     });
-    existing_data.dedup();
-
-    fs::write(
-        to,
-        serde_json::to_string(&existing_data).expect("Unable to serialize merged HIR data"),
-    )
-    .expect("Unable to write merged HIR data to file");
+    results.dedup();
 }
 
 pub fn read_hir_spans(crate_name: &str) -> Vec<ReadableSpan> {
     let output_file_name = get_hir_output_file(crate_name);
 
     if !path::Path::new(&output_file_name).exists() {
+        // This does not necessarily mean a failure. We call `parse_crate` quite early in the process,
+        // and it's possible that `hir_visit` has not been called yet. So we just return an empty vector in this case.
         debug!(
-            "ERROR:HIR visitor span dump file does not exist. Please ensure that `cargo-hir` ran successfully."
+            "Warning:HIR visitor span dump file does not exist. Please ensure that `cargo-hir` ran successfully."
         );
         return vec![];
     }
@@ -267,11 +265,18 @@ fn is_cargo_hir_installed() -> bool {
     which("cargo-hir").is_ok()
 }
 
-fn get_hir_output_file(crate_name: &str) -> String {
-    format!(
-        "{}/{}_{}",
-        consts::RESULTS_PATH,
-        crate_name.replace(":", "_"),
-        consts::HIR_VISITOR_SPAN_DUMP_SUFFIX
-    )
+fn get_hir_output_file(crate_name: &str) -> PathBuf {
+    construct_path(crate_name, consts::HIR_VISITOR_SPAN_DUMP_SUFFIX)
+}
+
+fn get_hir_visit_file(crate_name: &str) -> PathBuf {
+    construct_path(crate_name, consts::HIR_VISITOR_VISIT_FILE_SUFFIX)
+}
+
+fn construct_path(crate_name: &str, suffix: &str) -> PathBuf {
+    Path::new(consts::RESULTS_PATH).join(format!(
+        "{}-{}",
+        crate_name.replace("-", "_").replace(":", "-"),
+        suffix
+    ))
 }
