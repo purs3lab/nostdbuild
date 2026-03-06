@@ -2,27 +2,11 @@
 
 use cargo_test_support::{cargo_test, project};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 use nostd::consts;
 
-fn get_sysroot_lib_path() -> String {
-    let output = Command::new("rustc")
-        .args(["--print", "sysroot"])
-        .output()
-        .expect("Failed to get sysroot");
-
-    let sysroot = String::from_utf8(output.stdout).unwrap().trim().to_string();
-    let mut path = PathBuf::from(sysroot);
-    path.push("lib");
-
-    path.to_str().unwrap().to_string()
-}
-
-fn get_driver_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_BIN_EXE_cargo-hir"))
-}
+mod common;
 
 fn run_fixture_test(fixture_name: &str, fixture_version: &str) {
     let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -41,8 +25,8 @@ fn run_fixture_test(fixture_name: &str, fixture_version: &str) {
         )
         .build();
 
-    p.process(get_driver_path())
-        .env("LD_LIBRARY_PATH", get_sysroot_lib_path())
+    p.process(cargo_bin!("cargo-hir"))
+        .env("LD_LIBRARY_PATH", common::get_sysroot_lib_path())
         .run();
 
     let actual_json_path = Path::new(consts::RESULTS_PATH).join(format!(
@@ -51,24 +35,9 @@ fn run_fixture_test(fixture_name: &str, fixture_version: &str) {
         fixture_version,
         consts::HIR_VISITOR_VISIT_FILE_SUFFIX
     ));
-        
+
     let expected_json_path = fixture_path.join("expected.json");
-
-    assert!(
-        actual_json_path.exists(),
-        "Expected HIR visitor span dump file: {} does not exist. Please ensure that `cargo-hir` ran successfully.",
-        actual_json_path.display()
-    );
-
-    let actual_json = fs::read_to_string(actual_json_path)
-        .expect("Unable to read actual HIR visitor span dump file");
-    let expected_json = fs::read_to_string(expected_json_path)
-        .expect("Unable to read expected HIR visitor span dump file");
-
-    assert_eq!(
-        actual_json, expected_json,
-        "Actual HIR visitor span dump does not match expected output."
-    );
+    common::compare_json_files(&actual_json_path, &expected_json_path);
 }
 
 #[cargo_test]
