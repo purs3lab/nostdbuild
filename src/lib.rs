@@ -4,7 +4,7 @@ use anyhow::Context;
 use bincode::{Decode, Encode};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
-use std::{fs, sync::Mutex};
+use std::{fs, path, sync::Mutex};
 
 pub mod compiler;
 pub mod consts;
@@ -135,11 +135,10 @@ impl<'a> AllStats<'a> {
     /// # Arguments
     /// * `manifest` - If true, restore the original Cargo.toml file.
     pub fn dump(&mut self, manifest: bool) {
-        let stats_dir = format!(
-            "{}/{}",
-            consts::RESULTS_PATH,
-            self.name.replace("-", "_").replace(":", "_")
-        );
+        let stats_dir = path::Path::new(consts::RESULTS_PATH)
+            .join(self.name.replace("-", "_").replace(":", "-"));
+
+        println!("Dumping stats to directory: {:?}", stats_dir);
 
         let dir = std::path::Path::new(consts::DOWNLOAD_PATH).join(self.name.replace(':', "-"));
         if manifest {
@@ -153,10 +152,10 @@ impl<'a> AllStats<'a> {
         }
 
         std::fs::create_dir_all(&stats_dir).unwrap();
-        let crate_info_file = format!("{}/crate_info.json", stats_dir);
-        let compilation_res_file = format!("{}/compilation_results.json", stats_dir);
-        let std_usage_file = format!("{}/std_usages.json", stats_dir);
-        let telemetry_file = format!("{}/telemetry.json", stats_dir);
+        let crate_info_file = stats_dir.join("crate_info.json");
+        let compilation_res_file = stats_dir.join("compilation_results.json");
+        let std_usage_file = stats_dir.join("std_usages.json");
+        let telemetry_file = stats_dir.join("telemetry.json");
         if let Some(crate_info) = &self.crate_info {
             let crate_info_data = serde_json::to_string_pretty(crate_info).unwrap();
             std::fs::write(crate_info_file, crate_info_data).unwrap();
