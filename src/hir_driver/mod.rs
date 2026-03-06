@@ -99,33 +99,31 @@ impl<'r, 'a> AstVisitor<'a> for MyVisitor<'r> {
                 .partial_res_map
                 .get(&segment.id)
                 .map(|r| r.base_res())
+                && let Some(def_id) = res.opt_def_id()
             {
-                if let Some(def_id) = res.opt_def_id() {
-                    // If the usage comes directly from another crate, we stop the processing
-                    if !def_id.is_local() {
-                        root_def_id = Some(def_id);
-                        break;
-                    }
+                // If the usage comes directly from another crate, we stop the processing
+                if !def_id.is_local() {
+                    root_def_id = Some(def_id);
+                    break;
+                }
 
-                    // If the usage comes from the same crate, we check if it is an external crate import
-                    // Cases like `extern crate std as foo; use foo::...` would be caught here,
-                    // where the root segment is `foo`, first segment is from the current crate,
-                    // but the root_def_id would be from `std`
-                    // TODO: Does this actually do what is says it does?
-                    if let rustc_hir::def::Res::Def(rustc_hir::def::DefKind::ExternCrate, _) = res {
-                        root_def_id = Some(def_id);
-                        break;
-                    }
+                // If the usage comes from the same crate, we check if it is an external crate import
+                // Cases like `extern crate std as foo; use foo::...` would be caught here,
+                // where the root segment is `foo`, first segment is from the current crate,
+                // but the root_def_id would be from `std`
+                // TODO: Does this actually do what is says it does?
+                if let rustc_hir::def::Res::Def(rustc_hir::def::DefKind::ExternCrate, _) = res {
+                    root_def_id = Some(def_id);
+                    break;
                 }
             }
         }
 
-        if root_def_id.is_none() {
-            if let Some(first) = path.segments.first() {
-                if let Some(res) = self.resolver.partial_res_map.get(&first.id) {
-                    root_def_id = res.base_res().opt_def_id();
-                }
-            }
+        if root_def_id.is_none()
+            && let Some(first) = path.segments.first()
+            && let Some(res) = self.resolver.partial_res_map.get(&first.id)
+        {
+            root_def_id = res.base_res().opt_def_id();
         }
 
         // if let Some(first_segment) = path.segments.first()

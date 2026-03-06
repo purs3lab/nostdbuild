@@ -83,9 +83,8 @@ pub fn hir_visit(
         let mut cargo_toml: toml::Value = toml.parse().expect("Failed to parse Cargo.toml");
         let main_features_table = cargo_toml.get_mut("features");
 
-        if main_features_table.is_some() {
+        if let Some(main_features_table) = main_features_table {
             main_features_table
-                .unwrap()
                 .as_table_mut()
                 .expect("Features should be a table")
                 .into_iter()
