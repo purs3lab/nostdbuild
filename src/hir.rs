@@ -18,6 +18,7 @@ use crate::{
 /// * `crate_name` - The name of the crate to run `cargo-hir`
 /// * `telemetry` - Optional telemetry object to record the time taken by `hir-driver`
 /// * `all_feats` - Whether to build the crate with all features enabled
+/// * `crate_info` - Optional crate info object containing the features of the crate. Required if `all_feats` is true.
 /// # Panics
 /// Panics if `cargo-hir` is not installed or if there are issues running the command
 pub fn hir_visit(
