@@ -1,0 +1,21 @@
+[
+  {
+    "name": "elfloader",
+    "version": "0.16.0",
+    "target": "x86_64-unknown-none",
+    "args": [
+      "+nightly",
+      "build",
+      "--release",
+      "--target",
+      "x86_64-unknown-none",
+      "--manifest-path",
+      "/evaldisk/sourag/downloads/elfloader-0.16.0/Cargo.toml",
+      "--lib",
+      "--features",
+      "custom_no_std_feature_enabled"
+    ],
+    "status": "Success",
+    "error": null
+  }
+]

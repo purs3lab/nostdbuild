@@ -1,0 +1,21 @@
+[
+  {
+    "name": "bytemuck",
+    "version": "1.25.0",
+    "target": "x86_64-unknown-none",
+    "args": [
+      "+nightly",
+      "build",
+      "--release",
+      "--target",
+      "x86_64-unknown-none",
+      "--manifest-path",
+      "/evaldisk/sourag/downloads/bytemuck-1.25.0/Cargo.toml",
+      "--lib",
+      "--features",
+      "impl_core_error"
+    ],
+    "status": "Success",
+    "error": null
+  }
+]

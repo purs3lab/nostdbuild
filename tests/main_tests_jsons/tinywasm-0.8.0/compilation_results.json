@@ -1,0 +1,22 @@
+[
+  {
+    "name": "tinywasm",
+    "version": "0.8.0",
+    "target": "x86_64-unknown-none",
+    "args": [
+      "+nightly",
+      "build",
+      "--release",
+      "--target",
+      "x86_64-unknown-none",
+      "--manifest-path",
+      "/evaldisk/sourag/downloads/tinywasm-0.8.0/Cargo.toml",
+      "--lib",
+      "--no-default-features",
+      "--features",
+      "nightly"
+    ],
+    "status": "Success",
+    "error": null
+  }
+]

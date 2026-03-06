@@ -1,0 +1,22 @@
+[
+  {
+    "name": "aberth",
+    "version": "0.4.1",
+    "target": "x86_64-unknown-none",
+    "args": [
+      "+nightly",
+      "build",
+      "--release",
+      "--target",
+      "x86_64-unknown-none",
+      "--manifest-path",
+      "/evaldisk/sourag/downloads/aberth-0.4.1/Cargo.toml",
+      "--lib",
+      "--no-default-features",
+      "--features",
+      "libm"
+    ],
+    "status": "Success",
+    "error": null
+  }
+]

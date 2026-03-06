@@ -1,0 +1,21 @@
+[
+  {
+    "name": "log",
+    "version": "0.4.29",
+    "target": "x86_64-unknown-none",
+    "args": [
+      "+nightly",
+      "build",
+      "--release",
+      "--target",
+      "x86_64-unknown-none",
+      "--manifest-path",
+      "/evaldisk/sourag/downloads/log-0.4.29/Cargo.toml",
+      "--lib",
+      "--features",
+      "kv_unstable"
+    ],
+    "status": "Success",
+    "error": null
+  }
+]
