@@ -1,5 +1,16 @@
 #!/bin/bash
 
-echo "Testing only the cargo hir tests"
+hir=$1
 
-cargo test --test integration --  --test-threads=1
+if [ "$hir" = "hir" ]; then
+    echo "Testing only the cargo hir tests"
+    cargo test --test integration
+    exit 0
+elif [ "$hir" = "main" ]; then
+    echo "Testing only main tests"
+    cargo test --test main_tests
+    exit 0
+else
+    echo "Running all tests"
+    cargo test
+fi
