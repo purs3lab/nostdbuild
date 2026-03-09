@@ -246,7 +246,6 @@ fn main() -> anyhow::Result<()> {
     // the feature requirements can be met, not if they are actually met with the set of features enabled by that crate for
     // no_std compilation.
     // TODO: For the impossible case where there is no way to connect no_std to some feature, we try compiling, and if there are errors, we need to see what caused the error. If it was due to some unresolved import, we need to find the feature that is gating it and enabled it. Or we can also have a set of features that we know includes more things into the crate. And then when compilation fails, we can try each of those features and see if it fixes the issue. This is a last resort since it is not systematic and is expensive.
-    // TODO: hir visitor should drop features that enable things in dependencies. We only need to consider the current crate in isolation. (ark-ec, ark-std) // write a test for this. use path dependent dependency.
     let mut deps_args = Vec::new();
     for mut dep in deps_attrs {
         if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {
