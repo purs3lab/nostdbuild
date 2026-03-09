@@ -70,7 +70,7 @@ pub struct Attributes {
     pub files_in_cfg_attrs: Vec<String>,
     /// The spans collected from HIR visitor.
     /// We will use this to determine if any of the attributes
-    /// are guarding direct usages of `std`.
+    /// are gating direct usages of `std`.
     pub hir_spans: Vec<ReadableSpan>,
     /// The current file being parsed.
     pub current_file: String,
@@ -727,9 +727,9 @@ pub fn process_crate(
 
     // We are filtering the HIR spans where there is some attribute associated with it. In
     // this case, we don't consider it as a direct usage of std since it is possible
-    // to disable the uasge of std by negating the attribute guarding it. This
+    // to disable the uasge of std by negating the attribute gating it. This
     // case is handled separately. Here we only care about `mod my_mod;` statements and
-    // whether to negate the `cfg` attribute guarding it or not.
+    // whether to negate the `cfg` attribute gating it or not.
     hir_spans.retain(|span| {
         !proc_macro_spans
             .iter()
@@ -2245,7 +2245,7 @@ fn parse_top_level_externs<'a>(
     let mut worklist = Vec::new();
     for ex in externs {
         let (equation, parsed_attr) = parse_main_attributes_direct(ex.attrs.first().unwrap(), ctx);
-        // If there is no attribute guarding the extern crate,
+        // If there is no attribute gating the extern crate,
         // then we can't control it.
         if equation.is_none() {
             continue;

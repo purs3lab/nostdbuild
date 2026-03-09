@@ -42,6 +42,7 @@ bincode = "=2.0.0"
 rustc_plugin = "=0.14.1-nightly-2025-08-20"
 which = "8.0.0"
 cargo-test-support = "0.9.1"
+strsim = "0.11.1"
 
 [workspace]
 members = ["."]
