@@ -176,7 +176,6 @@ fn main() -> anyhow::Result<()> {
     // crate that depends on them. -> This is currently implemented and only checks if
     // the feature requirements can be met, not if they are actually met with the set of features enabled by that crate for
     // no_std compilation.
-    // TODO: Handle all keywords for cfg_attr and cfg in code. Update parse_meta function.
     // TODO: If a module is imported conditionally, and it directly uses std, we need to negate the condition that imports it. This is currently done for main crate and direct dependencies. Extend to add this for deps at all depth during the final `recursive_dep_requirement_check` call. (tarfs)
     // TODO: For the impossible case where there is no way to connect no_std to some feature, we try compiling, and if there are errors, we need to see what caused the error. If it was due to some unresolved import, we need to find the feature that is guarding it and enabled it. Or we can also have a set of features that we know includes more things into the crate. And then when compilation fails, we can try each of those features and see if it fixes the issue. This is a last resort since it is not systematic and is expensive.
     // TODO: hir visitor should drop features that enable things in dependencies. We only need to consider the current crate in isolation. (ark-ec, ark-std) // write a test for this. use path dependent dependency.

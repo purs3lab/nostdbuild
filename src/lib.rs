@@ -285,4 +285,8 @@ pub struct Telemetry {
     pub recursive_requirement_check_failed: bool,
     /// If the above is true, which dependency caused it to fail
     pub recursive_requirement_check_failed_dep: Option<String>,
+    /// List of unknown keywords found in attributes
+    pub unknown_idents_in_attrs: bool,
+    /// List of unknown keywords found in attributes for dependencies
+    pub unknown_idents_in_attrs_deps: Vec<(String, bool)>,
 }

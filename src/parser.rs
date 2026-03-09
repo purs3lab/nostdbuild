@@ -9,6 +9,8 @@ use syn::{
 use walkdir::WalkDir;
 use z3::{self, ast::Bool};
 
+use strsim::levenshtein;
+
 use crate::{
     CrateInfo, DBData, DEPENDENCIES, ReadableSpan, Telemetry, TupleVec, consts, db, downloader,
     hir, solver,
@@ -25,6 +27,9 @@ enum Logic {
 #[derive(Default, Clone, Debug)]
 pub struct ParsedAttr {
     constants: Vec<String>,
+    /// Did we find a typo? Specifically, did we find "feature"
+    /// in a typoed form
+    typoed_keyword: bool,
     pub features: Vec<String>,
     pub filepath: Option<String>,
     logic: Vec<Logic>,
@@ -579,10 +584,14 @@ pub fn process_crate(
 
     if is_main {
         telemetry.main_conditional_no_std = no_std;
+        telemetry.unknown_idents_in_attrs = parsed_attr.typoed_keyword;
     } else {
         telemetry
             .conditional_no_std_deps
             .push((name_with_version.to_string(), no_std));
+        telemetry
+            .unknown_idents_in_attrs_deps
+            .push((name_with_version.to_string(), parsed_attr.typoed_keyword));
     }
 
     if !attrs.unconditional_no_std {
@@ -2503,7 +2512,11 @@ fn parse_token_stream<'a>(
                     parsed.logic.push(logic.clone());
                     curr_logic = logic;
                 } else {
-                    parsed.constants.push(ident_str);
+                    parsed.constants.push(ident_str.clone());
+                    if levenshtein(&ident_str, "feature") == 2 {
+                        debug!("Possible misspelled feature: {}", ident_str);
+                        parsed.typoed_keyword = true;
+                    }
                 }
             }
             proc_macro2::TokenTree::Literal(l) => {
