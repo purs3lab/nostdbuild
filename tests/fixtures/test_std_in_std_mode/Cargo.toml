@@ -1,0 +1,17 @@
+[package]
+name = "test_std_in_std_mode"
+description = "Test with std usage while in no_std mode"
+version = "0.1.0"
+edition = "2024"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[[bin]]
+path = "main.rs"
+name = "test_std_in_std_mode"
+
+[workspace]

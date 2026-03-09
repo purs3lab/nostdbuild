@@ -1,0 +1,14 @@
+[package]
+name = "test_feature_causes_std_usage"
+description = "Test to check if enabling/disabling a feature causes std usage or not"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "test_feature_causes_std_usage"
+
+[features]
+make_conflicting = []
+
+[workspace]
