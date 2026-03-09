@@ -370,7 +370,6 @@ fn main() -> anyhow::Result<()> {
         telemetry.build_success = true;
         db::add_to_db_data(&mut db_data, &name, (&enable, &disable));
     } else {
-        hir::hir_visit(&name, Some(&mut telemetry), true, Some(&crate_info));
         telemetry.hir_analysis_done = true;
         if hir::check_for_unguarded_std_usages(&name, &readable_spans, &main_attributes, &mut stats)
         {
