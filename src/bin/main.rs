@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use clap::Parser;
 use log::debug;
 
-use nostd::{compiler, consts, db, downloader, hir, parser, solver};
+use nostd::{Attributes, compiler, consts, db, downloader, hir, parser, solver};
 
 #[derive(Parser, Debug)]
 #[command(author, about)]
@@ -27,6 +27,57 @@ struct Cli {
 
     #[arg(long)]
     depth: Option<u32>,
+}
+
+fn process_dep_crate_wrapper(
+    exchange: &mut nostd::DataExchange,
+    dep: &mut Attributes,
+    dep_and_feats: &nostd::TupleVec,
+    main_features: &mut Vec<String>,
+    disable_default: &mut bool,
+    enable: &[String],
+    deps_args: &mut Vec<String>,
+    previously_disabled: &mut HashSet<String>,
+) -> anyhow::Result<()> {
+    debug!("Processing dependency: {}", dep.crate_name);
+
+    let (local_dep_args, dep_disable, dep_enable) = parser::process_dep_crate(exchange, dep)?;
+
+    deps_args.extend(local_dep_args);
+
+    let (temp_disable_default, mut temp_flexible, to_disable) = solver::final_feature_list_main(
+        &exchange.crate_info,
+        enable,
+        &dep_disable,
+        &mut exchange.telemetry,
+    );
+
+    previously_disabled.extend(to_disable.clone());
+    temp_flexible.retain(|f| !previously_disabled.contains(f));
+
+    *disable_default = *disable_default || temp_disable_default;
+    main_features.extend(temp_flexible);
+    main_features.sort();
+    main_features.dedup();
+
+    main_features.retain(|f| !to_disable.contains(f));
+
+    parser::minimize(
+        &exchange.crate_info,
+        dep_and_feats,
+        main_features,
+        &HashSet::new(),
+    );
+
+    parser::move_unnecessary_dep_feats(
+        &exchange.name_with_version,
+        enable,
+        main_features,
+        &dep.crate_name,
+        &dep_enable,
+        &mut exchange.telemetry,
+    );
+    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -63,7 +114,7 @@ fn main() -> anyhow::Result<()> {
         None => u32::MAX,
     };
 
-    let mut db_data = db::read_db_file()?;
+    let db_data = db::read_db_file()?;
     let mut telemetry = nostd::Telemetry::default();
 
     if let Some(url) = cli.url {
@@ -122,25 +173,39 @@ fn main() -> anyhow::Result<()> {
         depth,
         &mut telemetry,
     )?;
-    stats.crate_info = Some(&crate_info);
-    telemetry.no_std = found;
-    telemetry.dep_not_no_std = !no_std;
+
+    let mut exchange = nostd::DataExchange {
+        ctx: Some(ctx),
+        name_with_version: name,
+        db_data,
+        crate_info,
+        telemetry,
+        crate_name_rename,
+    };
+
+    stats.crate_info = Some(exchange.crate_info.clone());
+    exchange.telemetry.no_std = found;
+    exchange.telemetry.dep_not_no_std = !no_std;
 
     // We need to do it here because our features retension logic relies on this
-    hir::hir_visit(&name, Some(&mut telemetry), true, Some(&crate_info));
+    hir::hir_visit(
+        &exchange.name_with_version,
+        Some(&mut exchange.telemetry),
+        true,
+        Some(&exchange.crate_info),
+    );
 
-    let mut main_attributes = parser::parse_crate(&name, true);
+    let mut main_attributes = parser::parse_crate(&exchange.name_with_version, true);
 
     let readable_spans = hir::proc_macro_spans_to_readables(&main_attributes.spans);
-    let dep_and_feats = parser::features_for_optional_deps(&crate_info);
-    let (mut enable, disable) = parser::process_crate(
-        &ctx,
+    let dep_and_feats = parser::features_for_optional_deps(&exchange.crate_info);
+
+    let (enable, disable) = parser::process_crate(
+        &mut exchange,
         &mut main_attributes,
-        &name,
-        &db_data,
-        &crate_info,
+        None,
+        None,
         true,
-        &mut telemetry,
         &dep_and_feats,
     )?;
 
@@ -149,10 +214,14 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let (mut disable_default, mut main_features, to_disable) =
-        solver::final_feature_list_main(&crate_info, &mut enable, &disable, &mut telemetry);
+    let (mut disable_default, mut main_features, to_disable) = solver::final_feature_list_main(
+        &exchange.crate_info,
+        &enable,
+        &disable,
+        &mut exchange.telemetry,
+    );
     parser::minimize(
-        &crate_info,
+        &exchange.crate_info,
         &dep_and_feats,
         &mut main_features,
         &HashSet::new(),
@@ -190,11 +259,11 @@ fn main() -> anyhow::Result<()> {
 
         if parser::should_skip_dep(
             &dep.crate_name,
-            &crate_info,
+            &exchange.crate_info,
             &dep_and_feats,
             &main_features,
             disable_default,
-            &mut telemetry,
+            &mut exchange.telemetry,
             false,
         ) {
             debug!("Dependency {} is optional, skipping", dep.crate_name);
@@ -202,48 +271,16 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        debug!("Processing dependency: {}", dep.crate_name);
-
-        let (local_dep_args, dep_disable, dep_enable) = parser::process_dep_crate(
-            &ctx,
+        process_dep_crate_wrapper(
+            &mut exchange,
             &mut dep,
-            &name,
-            &mut db_data,
-            &crate_info,
-            &crate_name_rename,
-            &mut telemetry,
-        )?;
-
-        deps_args.extend(local_dep_args);
-
-        let (temp_disable_default, mut temp_flexible, to_disable) =
-            solver::final_feature_list_main(&crate_info, &mut enable, &dep_disable, &mut telemetry);
-
-        previously_disabled.extend(to_disable.clone());
-        temp_flexible.retain(|f| !previously_disabled.contains(f));
-
-        disable_default = disable_default || temp_disable_default;
-        main_features.extend(temp_flexible);
-        main_features.sort();
-        main_features.dedup();
-
-        main_features.retain(|f| !to_disable.contains(f));
-
-        parser::minimize(
-            &crate_info,
             &dep_and_feats,
             &mut main_features,
-            &HashSet::new(),
-        );
-
-        parser::move_unnecessary_dep_feats(
-            &name,
+            &mut disable_default,
             &enable,
-            &mut main_features,
-            &dep.crate_name,
-            &dep_enable,
-            &mut telemetry,
-        );
+            &mut deps_args,
+            &mut previously_disabled,
+        )?;
     }
 
     let mut temp_combined = deps_args.clone();
@@ -255,68 +292,33 @@ fn main() -> anyhow::Result<()> {
     for mut dep in skipped {
         if !parser::should_skip_dep(
             &dep.crate_name,
-            &crate_info,
+            &exchange.crate_info,
             &dep_and_feats,
             &temp_combined,
             disable_default,
-            &mut telemetry,
+            &mut exchange.telemetry,
             true,
         ) {
             debug!(
                 "Dependency {} which was skipped previously is now required",
                 dep.crate_name
             );
-            let (local_dep_args, dep_disable, dep_enable) = parser::process_dep_crate(
-                &ctx,
+
+            process_dep_crate_wrapper(
+                &mut exchange,
                 &mut dep,
-                &name,
-                &mut db_data,
-                &crate_info,
-                &crate_name_rename,
-                &mut telemetry,
-            )?;
-
-            dep_args_skipped.extend(local_dep_args.clone());
-
-            let (temp_disable_default, mut temp_flexible, to_disable) =
-                solver::final_feature_list_main(
-                    &crate_info,
-                    &mut enable,
-                    &dep_disable,
-                    &mut telemetry,
-                );
-
-            previously_disabled.extend(to_disable.clone());
-            temp_flexible.retain(|f| !previously_disabled.contains(f));
-
-            disable_default = disable_default || temp_disable_default;
-
-            main_features.extend(temp_flexible);
-            main_features.sort();
-            main_features.dedup();
-
-            main_features.retain(|f| !to_disable.contains(f));
-
-            parser::minimize(
-                &crate_info,
                 &dep_and_feats,
                 &mut main_features,
-                &HashSet::new(),
-            );
-
-            parser::move_unnecessary_dep_feats(
-                &name,
+                &mut disable_default,
                 &enable,
-                &mut main_features,
-                &dep.crate_name,
-                &dep_enable,
-                &mut telemetry,
-            );
+                &mut dep_args_skipped,
+                &mut previously_disabled,
+            )?;
         }
     }
 
     parser::minimize(
-        &crate_info,
+        &exchange.crate_info,
         &dep_and_feats,
         &mut main_features,
         &enable.iter().cloned().collect(),
@@ -353,11 +355,17 @@ fn main() -> anyhow::Result<()> {
         final_args.push("--features".to_string());
         final_args.push(combined_features.join(","));
     }
-    telemetry.final_features_length = final_features_len;
+    exchange.telemetry.final_features_length = final_features_len;
 
     println!("Final args: {:?}", final_args);
     let one_succeeded = if no_std {
-        compiler::try_compile(&name, &target, &final_args, &mut stats, &mut telemetry)
+        compiler::try_compile(
+            &exchange.name_with_version,
+            &target,
+            &final_args,
+            &mut stats,
+            &mut exchange.telemetry,
+        )
     } else {
         Ok(false)
     }?;
@@ -366,13 +374,21 @@ fn main() -> anyhow::Result<()> {
     let mut reason = "";
 
     if one_succeeded {
-        telemetry.build_success = true;
-        db::add_to_db_data(&mut db_data, &name, (&enable, &disable));
+        exchange.telemetry.build_success = true;
+        db::add_to_db_data(
+            &mut exchange.db_data,
+            &exchange.name_with_version,
+            (&enable, &disable),
+        );
     } else {
-        telemetry.hir_analysis_done = true;
-        if hir::check_for_unguarded_std_usages(&name, &readable_spans, &main_attributes, &mut stats)
-        {
-            telemetry.unguarded_std_usages = true;
+        exchange.telemetry.hir_analysis_done = true;
+        if hir::check_for_unguarded_std_usages(
+            &exchange.name_with_version,
+            &readable_spans,
+            &main_attributes,
+            &mut stats,
+        ) {
+            exchange.telemetry.unguarded_std_usages = true;
             debug!("ERROR: Found unguarded std usage in the main crate");
             failed = true;
             reason = "Found unguarded std usage in the main crate";
@@ -380,14 +396,7 @@ fn main() -> anyhow::Result<()> {
         // We add no_std here but not for the previous condition becase, we want to know
         // even if some deps are not no_std compatible, whether the main would have built successfully
         // if not for the unsupported deps.
-        else if no_std
-            && !parser::recursive_dep_requirement_check(
-                &crate_info,
-                &db_data,
-                depth,
-                &mut telemetry,
-            )
-        {
+        else if no_std && !parser::recursive_dep_requirement_check(&mut exchange, depth) {
             // This is the last resort since this has a high chance of false positives
             debug!(
                 "ERROR: Some dependency at some level does not have a way to enable all its required features in no_std mode"
@@ -397,9 +406,9 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    db::write_db_file(db_data)?;
+    db::write_db_file(exchange.db_data)?;
 
-    stats.telemetry = Some(telemetry);
+    stats.telemetry = Some(exchange.telemetry);
     stats.dump(true);
     if failed {
         return Err(anyhow::anyhow!(reason));

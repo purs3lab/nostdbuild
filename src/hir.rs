@@ -5,10 +5,7 @@ use std::{fs, path, process::Command, time::Instant};
 use which::which;
 
 use crate::{AllStats, CrateInfo, ReadableSpan, Telemetry};
-use crate::{
-    consts,
-    parser::{self, Attributes},
-};
+use crate::{Attributes, consts, parser};
 
 /// Runs `cargo-hir` to generate AST driver span dump for the given crate.
 /// If `all_feats` is true, it builds the crate with all features enabled.

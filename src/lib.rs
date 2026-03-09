@@ -3,8 +3,10 @@
 use anyhow::Context;
 use bincode::{Decode, Encode};
 use lazy_static::lazy_static;
+use proc_macro2::Span;
 use serde::{Deserialize, Serialize};
 use std::{fs, path, sync::Mutex};
+use syn::Attribute;
 
 pub mod compiler;
 pub mod consts;
@@ -24,6 +26,9 @@ lazy_static! {
 
 /// A vector of (String, String) tuples.
 pub type TupleVec = Vec<(String, String)>;
+
+pub type DoubleTupleVecString = (Vec<String>, Vec<String>);
+pub type TripleTupleVecString = (Vec<String>, Vec<String>, Vec<String>);
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -60,16 +65,68 @@ pub struct Results {
     pub error: Option<String>,
 }
 
+#[derive(Default, Clone, Debug)]
+pub struct Attributes {
+    attributes: Vec<Attribute>,
+    /// This will be a list of attributes associated with
+    /// compiler_error macros. Note that the negated attributes present
+    /// here will also be present in `attributes` field.
+    /// This also does the double duty of storing negated
+    /// attributes where the attribute would have included
+    /// some direct usage of `std`.
+    compile_error_attrs: Vec<Attribute>,
+    /// This holds both name and version seperated by `:`
+    pub crate_name: String,
+    pub unconditional_no_std: bool,
+    /// Sometimes, crate authors put `#[no_std]` instead of
+    /// `#![no_std]`. This field will help track such cases.
+    pub wrong_unconditional_setup: bool,
+    /// Stores the filename as well since we can't recover
+    /// it later from the Span.
+    pub spans: Vec<(Span, Option<String>)>,
+    /// We also collect modules whose imports is conditional
+    /// on cfg attributes along with the attribute.
+    /// ```
+    /// #[cfg(feature = "my_mod")]
+    /// mod my_mod;
+    /// ```
+    /// In this case, we don't consider direct usages of `std`
+    /// in `my_mod` because it is possible to build the crate
+    /// without enabling `my_mod` feature. But we need to ensure
+    /// that the `cfg` is negated when solving the equations.
+    pub mods: Vec<(String, Attribute)>,
+    /// Rust allows including files conditionally using
+    /// `cfg_attr` attribute.
+    pub files_in_cfg_attrs: Vec<String>,
+    /// The spans collected from HIR visitor.
+    /// We will use this to determine if any of the attributes
+    /// are gating direct usages of `std`.
+    pub hir_spans: Vec<ReadableSpan>,
+    /// The current file being parsed.
+    pub current_file: String,
+}
+
+/// Used to pass huge amount of params between functions
+#[derive(Default)]
+pub struct DataExchange {
+    pub ctx: Option<z3::Context>,
+    pub name_with_version: String,
+    pub db_data: Vec<DBData>,
+    pub crate_info: CrateInfo,
+    pub telemetry: Telemetry,
+    pub crate_name_rename: TupleVec,
+}
+
 /// We store already resolved features for a crate
 /// to be compiled as no_std in a db file.
 /// This is the structure of the db file.
 #[derive(Debug, Encode, Decode)]
 pub struct DBData {
     pub name_with_version: String,
-    pub features: (Vec<String>, Vec<String>),
+    pub features: DoubleTupleVecString,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct CrateInfo {
     pub name: String,
     pub version: String,
@@ -110,16 +167,16 @@ impl ReadableSpan {
 }
 
 #[derive(Debug, Default, Serialize)]
-pub struct AllStats<'a> {
+pub struct AllStats {
     pub name: String,
     pub compilation_res: Vec<Results>,
-    pub crate_info: Option<&'a CrateInfo>,
+    pub crate_info: Option<CrateInfo>,
     // Collects all unguarded std usages found by hir analysis
     pub std_usage_matches: Vec<ReadableSpan>,
     pub telemetry: Option<Telemetry>,
 }
 
-impl<'a> AllStats<'a> {
+impl AllStats {
     pub fn new(name: String) -> Self {
         Self {
             name,

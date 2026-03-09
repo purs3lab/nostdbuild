@@ -12,8 +12,8 @@ use z3::{self, ast::Bool};
 use strsim::levenshtein;
 
 use crate::{
-    CrateInfo, DBData, DEPENDENCIES, ReadableSpan, Telemetry, TupleVec, consts, db, downloader,
-    hir, solver,
+    Attributes, CrateInfo, DEPENDENCIES, DataExchange, DoubleTupleVecString, Telemetry,
+    TripleTupleVecString, TupleVec, consts, db, downloader, hir, solver,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,47 +33,6 @@ pub struct ParsedAttr {
     pub features: Vec<String>,
     pub filepath: Option<String>,
     logic: Vec<Logic>,
-}
-
-#[derive(Default, Clone, Debug)]
-pub struct Attributes {
-    attributes: Vec<Attribute>,
-    /// This will be a list of attributes associated with
-    /// compiler_error macros. Note that the negated attributes present
-    /// here will also be present in `attributes` field.
-    /// This also does the double duty of storing negated
-    /// attributes where the attribute would have included
-    /// some direct usage of `std`.
-    compile_error_attrs: Vec<Attribute>,
-    /// This holds both name and version seperated by `:`
-    pub crate_name: String,
-    pub unconditional_no_std: bool,
-    /// Sometimes, crate authors put `#[no_std]` instead of
-    /// `#![no_std]`. This field will help track such cases.
-    pub wrong_unconditional_setup: bool,
-    /// Stores the filename as well since we can't recover
-    /// it later from the Span.
-    pub spans: Vec<(Span, Option<String>)>,
-    /// We also collect modules whose imports is conditional
-    /// on cfg attributes along with the attribute.
-    /// ```
-    /// #[cfg(feature = "my_mod")]
-    /// mod my_mod;
-    /// ```
-    /// In this case, we don't consider direct usages of `std`
-    /// in `my_mod` because it is possible to build the crate
-    /// without enabling `my_mod` feature. But we need to ensure
-    /// that the `cfg` is negated when solving the equations.
-    pub mods: Vec<(String, Attribute)>,
-    /// Rust allows including files conditionally using
-    /// `cfg_attr` attribute.
-    pub files_in_cfg_attrs: Vec<String>,
-    /// The spans collected from HIR visitor.
-    /// We will use this to determine if any of the attributes
-    /// are gating direct usages of `std`.
-    pub hir_spans: Vec<ReadableSpan>,
-    /// The current file being parsed.
-    pub current_file: String,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -557,39 +516,42 @@ pub fn parse_deps_crate() -> Vec<Attributes> {
 /// guaring the `no_std` attribute to solve the other `cfg` attributes.
 /// If neither is found, it will return not found.
 /// # Arguments
-/// * `ctx` - The Z3 context
+/// * `exchange` - The data exchange struct that contains all the necessary data for processing the crate
 /// * `attrs` - The attributes of the crate
-/// * `name` - The name of the crate
-/// * `db_data` - The database data
-/// * `crate_info` - The crate info of the main crate
+/// * `name_with_version` - The name of the crate. Exchange crate name is used if None is provided.
+/// * `crate_info` - The crate info of the main crate. Exchange crate info is used if None is provided.
 /// * `is_main` - A boolean indicating whether the crate is the main crate
-/// * `telemetry` - The global telemetry data
+/// * `optional_dep_feats` - The features that enable the optional dependencies of the crate
 /// # Returns
 /// A tuple containing the features to enable, the features to disable,
 /// a boolean indicating whether `no_std` was found, and a boolean indicating
 /// whether to recurse further if it was the main crate.
 pub fn process_crate(
-    ctx: &z3::Context,
+    exchange: &mut DataExchange,
     attrs: &mut Attributes,
-    name_with_version: &str,
-    db_data: &[DBData],
-    crate_info: &CrateInfo,
+    name_with_version: Option<&str>,
+    crate_info: Option<&CrateInfo>,
     is_main: bool,
-    telemetry: &mut Telemetry,
     optional_dep_feats: &TupleVec,
-) -> anyhow::Result<(Vec<String>, Vec<String>)> {
-    let (mut enable, mut disable): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+) -> anyhow::Result<DoubleTupleVecString> {
+    let (mut enable, mut disable): DoubleTupleVecString = (Vec::new(), Vec::new());
+
+    let ctx = exchange.ctx.as_ref().unwrap();
+    let name_with_version = name_with_version.unwrap_or(&exchange.name_with_version);
+    let crate_info = crate_info.unwrap_or(&exchange.crate_info);
 
     let (no_std, mut equation, mut parsed_attr) = parse_main_attributes(attrs, ctx);
 
     if is_main {
-        telemetry.main_conditional_no_std = no_std;
-        telemetry.unknown_idents_in_attrs = parsed_attr.typoed_keyword;
+        exchange.telemetry.main_conditional_no_std = no_std;
+        exchange.telemetry.unknown_idents_in_attrs = parsed_attr.typoed_keyword;
     } else {
-        telemetry
+        exchange
+            .telemetry
             .conditional_no_std_deps
             .push((name_with_version.to_string(), no_std));
-        telemetry
+        exchange
+            .telemetry
             .unknown_idents_in_attrs_deps
             .push((name_with_version.to_string(), parsed_attr.typoed_keyword));
     }
@@ -601,9 +563,10 @@ pub fn process_crate(
         }
     } else {
         if is_main {
-            telemetry.main_unconditional_no_std = true;
+            exchange.telemetry.main_unconditional_no_std = true;
         } else {
-            telemetry
+            exchange
+                .telemetry
                 .unconditional_no_std_deps
                 .push((name_with_version.to_string(), true));
         }
@@ -632,13 +595,14 @@ pub fn process_crate(
         if !std_attrs.is_empty() {
             debug!("Leaf level crate reached {}", name_with_version);
             if is_main {
-                telemetry.direct_extern_std_usage_main = true;
+                exchange.telemetry.direct_extern_std_usage_main = true;
             } else {
-                telemetry
+                exchange
+                    .telemetry
                     .direct_extern_std_usage_deps
                     .push(name_with_version.to_string());
             }
-            let features = db::get_from_db_data(db_data, name_with_version);
+            let features = db::get_from_db_data(&exchange.db_data, name_with_version);
             if let Some(feats) = features {
                 debug!(
                     "Features to enable and disable for crate {} from db: {:?}",
@@ -687,7 +651,12 @@ pub fn process_crate(
                     .map(|(dep, _)| (dep.name.clone(), dep.version.clone()))
                     .collect();
                 let externs = get_item_extern_dep(&items, &names_and_versions);
-                match parse_top_level_externs(ctx, &names_and_versions, &externs, telemetry) {
+                match parse_top_level_externs(
+                    ctx,
+                    &names_and_versions,
+                    &externs,
+                    &mut exchange.telemetry,
+                ) {
                     Ok((eq, attr)) => {
                         if let Some(eq) = eq {
                             equation = Some(eq.not());
@@ -769,9 +738,10 @@ pub fn process_crate(
     }
     if !files_and_equations.is_empty() {
         if is_main {
-            telemetry.conditional_file_import_main = true;
+            exchange.telemetry.conditional_file_import_main = true;
         } else {
-            telemetry
+            exchange
+                .telemetry
                 .conditional_file_import_deps
                 .push((name_with_version.to_string(), true));
         }
@@ -800,11 +770,13 @@ pub fn process_crate(
     }
 
     if is_main {
-        telemetry
+        exchange
+            .telemetry
             .conditional_files_with_std_main
             .extend(imported_files);
     } else {
-        telemetry
+        exchange
+            .telemetry
             .conditional_files_with_std_deps
             .push((name_with_version.to_string(), imported_files));
     }
@@ -812,13 +784,16 @@ pub fn process_crate(
     let now = Instant::now();
     // Finally, we solve the equations
     let (model, len, depth) = solver::solve(ctx, &equation, &filtered);
-    telemetry
+    exchange
+        .telemetry
         .constraint_solving_time_ms
         .push((name_with_version.to_string(), now.elapsed().as_millis()));
-    telemetry
+    exchange
+        .telemetry
         .max_contraint_length
         .push((name_with_version.to_string(), len));
-    telemetry
+    exchange
+        .telemetry
         .max_constrait_depth
         .push((name_with_version.to_string(), depth));
     if enable.is_empty() && disable.is_empty() {
@@ -875,24 +850,15 @@ pub fn minimize(
 /// But this does some additional checks and updates the main crate's
 /// toml file if required.
 /// # Arguments
-/// * `ctx` - The Z3 context
+/// * `exchange` - The data exchange struct that contains all the necessary data for processing the crate
 /// * `dep` - The attributes of the dependency crate
-/// * `main_name` - The name of the main crate
-/// * `db_data` - The database data
-/// * `crate_info` - The crate info
-/// * `crate_name_rename` - A list of names and their renames of crate names
 /// # Returns
 /// A Result indicating success or failure.
 pub fn process_dep_crate(
-    ctx: &z3::Context,
+    exchange: &mut DataExchange,
     dep: &mut Attributes,
-    main_name: &str,
-    db_data: &mut [DBData],
-    crate_info: &CrateInfo,
-    crate_name_rename: &[(String, String)],
-    telemetry: &mut Telemetry,
-) -> Result<(Vec<String>, Vec<String>, Vec<String>), anyhow::Error> {
-    let (enable, disable) = match db::get_from_db_data(db_data, &dep.crate_name) {
+) -> Result<TripleTupleVecString, anyhow::Error> {
+    let (enable, disable) = match db::get_from_db_data(&exchange.db_data, &dep.crate_name) {
         Some(dbdata) => (dbdata.features.0.clone(), dbdata.features.1.clone()),
         None => {
             let (.., dep_crate_info) = downloader::gather_crate_info(&dep.crate_name, true)?;
@@ -900,13 +866,11 @@ pub fn process_dep_crate(
             hir::hir_visit(&dep.crate_name, None, true, Some(&dep_crate_info));
             let dep_crate_name = dep.crate_name.clone();
             let (enable, disable) = process_crate(
-                ctx,
+                exchange,
                 dep,
-                &dep_crate_name,
-                db_data,
-                &dep_crate_info,
+                Some(&dep_crate_name),
+                Some(&dep_crate_info),
                 false,
-                telemetry,
                 &optional_dep_feats,
             )?;
             (enable, disable)
@@ -921,12 +885,12 @@ pub fn process_dep_crate(
     let dep_original_name = dep.crate_name.split(":").next().unwrap_or("").to_string();
 
     let (args, update_default_config) = solver::final_feature_list_dep(
-        crate_info,
+        &exchange.crate_info,
         &dep_original_name,
         &enable,
         &disable,
-        crate_name_rename,
-        telemetry,
+        &exchange.crate_name_rename,
+        &mut exchange.telemetry,
     );
 
     debug!(
@@ -935,12 +899,18 @@ pub fn process_dep_crate(
     );
 
     if update_default_config {
-        update_main_crate_default_list(main_name, &dep.crate_name, crate_name_rename);
-        telemetry
+        update_main_crate_default_list(
+            &exchange.name_with_version,
+            &dep.crate_name,
+            &exchange.crate_name_rename,
+        );
+        exchange
+            .telemetry
             .default_true_unset_deps
             .push((dep.crate_name.clone(), true));
     } else {
-        telemetry
+        exchange
+            .telemetry
             .default_true_unset_deps
             .push((dep.crate_name.clone(), false));
     }
@@ -950,7 +920,8 @@ pub fn process_dep_crate(
         dep.crate_name, args
     );
 
-    let dep_name = crate_name_rename
+    let dep_name = exchange
+        .crate_name_rename
         .iter()
         .find(|(_, name)| *name == dep_original_name)
         .map(|(renamed, _)| renamed)
@@ -2028,22 +1999,17 @@ pub fn is_dep_optional(crate_info: &CrateInfo, name: &str) -> bool {
 /// # Returns
 /// A boolean indicating whether all dependencies can satisfy their
 /// no_std requirements.
-pub fn recursive_dep_requirement_check(
-    crate_info: &CrateInfo,
-    db_data: &[DBData],
-    depth: u32,
-    telemetry: &mut Telemetry,
-) -> bool {
-    telemetry.recursive_requirement_check_done = true;
+pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) -> bool {
+    exchange.telemetry.recursive_requirement_check_done = true;
     println!("Starting recursive dependency requirement check...");
-    let top_level_deps: TupleVec = crate_info
+    let top_level_deps: TupleVec = exchange
+        .crate_info
         .deps_and_features
         .iter()
         .filter(|(info, _)| !info.optional)
         .map(|(dep, _)| (dep.name.clone(), dep.version.clone()))
         .collect();
 
-    let ctx = z3::Context::new(&z3::Config::new());
     // Throwaway telemetry
     let mut telemetry = Telemetry::default();
 
@@ -2058,7 +2024,7 @@ pub fn recursive_dep_requirement_check(
     let client = downloader::create_client().unwrap();
     // For the crates that we already processed, save the requirements
     // so that we don't have to recompute them.
-    let mut visited_dep_require: Vec<(String, (Vec<String>, Vec<String>))> = Vec::new();
+    let mut visited_dep_require: Vec<(String, DoubleTupleVecString)> = Vec::new();
     let instant = std::time::Instant::now();
 
     while let Some((name, version)) = worklist.pop() {
@@ -2107,11 +2073,10 @@ pub fn recursive_dep_requirement_check(
 
             let optional_dep_feats = features_for_optional_deps(&dep_crate_info);
 
-            let (mut enable, disable): (Vec<String>, Vec<String>) = if let Some(reqs) =
-                visited_dep_require
-                    .iter()
-                    .find(|(visited_name, _)| visited_name == &dep_name_with_version)
-                    .map(|(_, reqs)| reqs)
+            let (enable, disable): DoubleTupleVecString = if let Some(reqs) = visited_dep_require
+                .iter()
+                .find(|(visited_name, _)| visited_name == &dep_name_with_version)
+                .map(|(_, reqs)| reqs)
             {
                 debug!(
                     "Already visited dependency requirements for crate: {}",
@@ -2122,13 +2087,11 @@ pub fn recursive_dep_requirement_check(
                 hir::hir_visit(&dep_name_with_version, None, true, Some(&dep_crate_info));
                 let mut crate_attrs = parse_crate(&dep_name_with_version, false);
                 let (enable, disable) = process_crate(
-                    &ctx,
+                    exchange,
                     &mut crate_attrs,
-                    &dep_name_with_version,
-                    db_data,
-                    &dep_crate_info,
+                    Some(&dep_name_with_version),
+                    Some(&dep_crate_info),
                     true,
-                    &mut telemetry,
                     &optional_dep_feats,
                 )
                 .unwrap();
@@ -2144,7 +2107,7 @@ pub fn recursive_dep_requirement_check(
                 (enable, disable)
             };
 
-            solver::new_feats_to_add(&dep_crate_info, &Vec::new(), &mut enable);
+            solver::new_feats_to_add(&dep_crate_info, &Vec::new(), &enable);
 
             debug!(
                 "Dependency: {} requires features: {:?} to be enabled and features: {:?} to be disabled to support no_std",

@@ -4,7 +4,7 @@ use std::fs;
 use toml;
 use z3::{self, ast::Bool};
 
-use crate::{CrateInfo, Telemetry, consts::CUSTOM_FEATURES_ENABLED, parser};
+use crate::{CrateInfo, DoubleTupleVecString, Telemetry, consts::CUSTOM_FEATURES_ENABLED, parser};
 
 /// Given a context, a main equation and a list of
 /// filtered equations, solve for the main equation
@@ -72,7 +72,7 @@ fn length_and_depth(ast: String) -> (usize, usize) {
 /// # Returns
 /// * `Vec<String>` - The list of features to enable
 /// * `Vec<String>` - The list of features to disable
-pub fn model_to_features(model: &Option<z3::Model>) -> (Vec<String>, Vec<String>) {
+pub fn model_to_features(model: &Option<z3::Model>) -> DoubleTupleVecString {
     if model.is_none() {
         return (Vec::new(), Vec::new());
     }
@@ -197,7 +197,7 @@ pub fn final_feature_list_dep(
 /// containing the final feature list for the main crate.
 pub fn final_feature_list_main(
     crate_info: &CrateInfo,
-    enable: &mut [String],
+    enable: &[String],
     disable: &[String],
     telemetry: &mut Telemetry,
 ) -> (bool, Vec<String>, Vec<String>) {
@@ -259,7 +259,7 @@ pub fn final_feature_list_main(
 pub fn new_feats_to_add(
     crate_info: &CrateInfo,
     enable_from_default: &[String],
-    enable: &mut [String],
+    enable: &[String],
 ) -> Vec<String> {
     let optional_deps: Vec<String> = crate_info
         .deps_and_features
@@ -284,7 +284,7 @@ pub fn new_feats_to_add(
 
     // We don't want to add features that are implicitly added by cargo for
     // optional dependencies.
-    let (removed, kept): (Vec<String>, Vec<String>) = not_found
+    let (removed, kept): DoubleTupleVecString = not_found
         .into_iter()
         .partition(|feat| optional_deps.iter().any(|dep| feat == dep));
 
