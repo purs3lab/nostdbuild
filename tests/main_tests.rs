@@ -28,6 +28,13 @@ fn run_main_test(crate_name: &str, crate_version: &str, arch: &str) {
         arch,
     ];
 
+    let crate_download_dir =
+        Path::new(consts::DOWNLOAD_PATH).join(format!("{}-{}", crate_name, crate_version));
+    if crate_download_dir.exists() {
+        std::fs::remove_dir_all(&crate_download_dir)
+            .expect("Failed to remove existing crate download directory");
+    }
+
     let output = Command::new(cargo_bin!("main"))
         .args(&args)
         .env("LD_LIBRARY_PATH", common::get_sysroot_lib_path())
