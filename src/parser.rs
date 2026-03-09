@@ -2067,7 +2067,7 @@ pub fn recursive_dep_requirement_check(
             current_depth += 1;
             threshold = worklist.len();
             current_threshold = 0;
-            debug!("Recursion depth increased to: {}", depth);
+            debug!("Recursion depth increased to: {}", current_depth);
         }
         println!("Checking dependency: {}:{}", name, version);
         let crate_data = client.get_crate(&name).unwrap();
@@ -2119,6 +2119,7 @@ pub fn recursive_dep_requirement_check(
                 );
                 reqs.clone()
             } else {
+                hir::hir_visit(&dep_name_with_version, None, true, Some(&dep_crate_info));
                 let mut crate_attrs = parse_crate(&dep_name_with_version, false);
                 let (enable, disable) = process_crate(
                     &ctx,
