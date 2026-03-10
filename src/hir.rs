@@ -157,6 +157,12 @@ pub fn hir_visit(
     )
     .expect("Failed to write HIR visitor span dump file");
 
+    // Cleanup
+    if path::Path::new(&visit_file_name).exists() {
+        fs::remove_file(&visit_file_name)
+            .expect("Failed to remove HIR visitor visit file");
+    }
+
     debug!("cargo-hir run finished in {} ms", now.elapsed().as_millis());
 }
 
