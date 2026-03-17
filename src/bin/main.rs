@@ -35,7 +35,7 @@ fn process_dep_crate_wrapper(
     dep_and_feats: &nostd::TupleVec,
     main_features: &mut Vec<String>,
     disable_default: &mut bool,
-    enable: &[String],
+    enable: &mut Vec<String>,
     deps_args: &mut Vec<String>,
     previously_disabled: &mut HashSet<String>,
 ) -> anyhow::Result<()> {
@@ -93,6 +93,7 @@ fn process_dep_crate_wrapper(
         &dep.crate_name,
         &dep_enable,
         &mut exchange.telemetry,
+        *disable_default,
     );
     Ok(())
 }
@@ -294,7 +295,7 @@ fn main() -> anyhow::Result<()> {
             &dep_and_feats,
             &mut main_features,
             &mut disable_default,
-            &enable,
+            &mut enable,
             &mut deps_args,
             &mut previously_disabled,
         )?;
@@ -327,7 +328,7 @@ fn main() -> anyhow::Result<()> {
                 &dep_and_feats,
                 &mut main_features,
                 &mut disable_default,
-                &enable,
+                &mut enable,
                 &mut dep_args_skipped,
                 &mut previously_disabled,
             )?;

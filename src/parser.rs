@@ -950,11 +950,12 @@ pub fn process_dep_crate(
 ///   that are enabled for a dependency.
 pub fn move_unnecessary_dep_feats(
     main_name: &str,
-    fixed_main_args: &[String],
+    fixed_main_args: &mut Vec<String>,
     flexible_main_args: &mut Vec<String>,
     dep_name: &str,
     deps_args: &[String],
     telemetry: &mut Telemetry,
+    disable_default: bool,
 ) {
     let main_manifest = determine_manifest_file(main_name);
     let mut main_toml: toml::Value =
@@ -968,6 +969,42 @@ pub fn move_unnecessary_dep_feats(
         return;
     }
     let main_features = main_features.unwrap();
+
+    if !disable_default && !fixed_main_args.contains(&"default".to_string()) {
+        fixed_main_args.push("default".to_string());
+    }
+
+    // TODO: Iterate over both fixed and flexible main args. Then for each feature, check if the cargo specifies an array for it. If yes, put that name into the flexible list. If its already in either fixed or flexible, skip.
+
+    let mut worklist: HashSet<String> = HashSet::from_iter(
+        fixed_main_args
+            .iter()
+            .chain(flexible_main_args.iter())
+            .cloned(),
+    );
+
+    while let Some(feature) = worklist.iter().next().cloned() {
+        worklist.remove(&feature);
+
+        let Some(arr) = main_features.get(&feature).and_then(|f| f.as_array()) else {
+            debug!(
+                "Feature {} in main crate {} does not have an array in Cargo.toml",
+                feature, main_name
+            );
+            continue;
+        };
+
+        for f in arr {
+            let Some(s) = f.as_str() else { continue };
+            if main_features.contains_key(s)
+                && !fixed_main_args.contains(&s.to_string())
+                && !flexible_main_args.contains(&s.to_string())
+            {
+                flexible_main_args.push(s.to_string());
+                worklist.insert(s.to_string());
+            }
+        }
+    }
 
     let prefix1 = format!("{}/", dep_name_only);
     let prefix2 = format!("{}?/", dep_name_only);
