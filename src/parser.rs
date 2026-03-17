@@ -974,8 +974,9 @@ pub fn move_unnecessary_dep_feats(
         fixed_main_args.push("default".to_string());
     }
 
-    // TODO: Iterate over both fixed and flexible main args. Then for each feature, check if the cargo specifies an array for it. If yes, put that name into the flexible list. If its already in either fixed or flexible, skip.
-
+    // List of features that are indirectly enabled and are not part of either the
+    // fixed or flexible main args.
+    let mut indirect_flexible_args: HashSet<String> = HashSet::new();
     let mut worklist: HashSet<String> = HashSet::from_iter(
         fixed_main_args
             .iter()
@@ -1000,7 +1001,7 @@ pub fn move_unnecessary_dep_feats(
                 && !fixed_main_args.contains(&s.to_string())
                 && !flexible_main_args.contains(&s.to_string())
             {
-                flexible_main_args.push(s.to_string());
+                indirect_flexible_args.insert(s.to_string());
                 worklist.insert(s.to_string());
             }
         }
@@ -1052,6 +1053,26 @@ pub fn move_unnecessary_dep_feats(
                     let key = extract_key(s);
                     if !deps_args.contains(&key.to_string()) {
                         debug!("Removing unnecessary feature {} from main crate", s);
+                        removed.insert(s.to_string());
+                        return false;
+                    }
+                }
+                true
+            });
+        }
+    }
+
+    for enabled_feat in indirect_flexible_args {
+        if let Some(arr) = main_features
+            .get_mut(&enabled_feat)
+            .and_then(|f| f.as_array_mut())
+        {
+            arr.retain(|v| {
+                if let Some(s) = v.as_str()
+                    && (s.starts_with(&prefix1) || s.starts_with(&prefix2))
+                {
+                    let key = extract_key(s);
+                    if !deps_args.contains(&key.to_string()) {
                         removed.insert(s.to_string());
                         return false;
                     }
