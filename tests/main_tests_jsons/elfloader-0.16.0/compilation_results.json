@@ -13,7 +13,7 @@
       "/evaldisk/sourag/downloads/elfloader-0.16.0/Cargo.toml",
       "--lib",
       "--features",
-      "custom_no_std_feature_enabled"
+      "default,custom_no_std_feature_enabled"
     ],
     "status": "Success",
     "error": null
