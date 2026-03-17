@@ -143,7 +143,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         debug!("Downloading from crates.io");
         let version = cli.version.map(|version| format!("={}", version));
-        name = downloader::clone_from_crates(&name, version.as_ref())?;
+        name = downloader::clone_from_crates(&name, version.as_ref(), None)?;
         debug!("Downloaded crate: {}", name);
     }
 
@@ -153,7 +153,7 @@ fn main() -> anyhow::Result<()> {
     telemetry.name = temp_name.to_string();
     telemetry.version = version.to_string();
 
-    if parser::is_proc_macro(&name) {
+    if parser::is_proc_macro(&name, None) {
         telemetry.is_proc_macro = true;
         stats.telemetry = Some(telemetry);
         // At this point, we still did not modify any files, so no need to restore Cargo.toml
@@ -164,14 +164,14 @@ fn main() -> anyhow::Result<()> {
     }
 
     let (mut worklist, crate_name_rename, mut crate_info) =
-        downloader::gather_crate_info(&name, false)?;
+        downloader::gather_crate_info(&name, false, None)?;
     telemetry.num_deps = crate_info.deps_and_features.len();
 
     debug!("Dependencies: {:?}", crate_info);
 
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
-    let found = parser::check_for_no_std(&name, &ctx, Some(&mut telemetry));
+    let found = parser::check_for_no_std(&name, &ctx, Some(&mut telemetry), None);
 
     if !found || telemetry.wrong_unconditional_setup {
         stats.telemetry = Some(telemetry);
@@ -186,6 +186,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let no_std = downloader::download_all_dependencies(
+        &name,
         &mut worklist,
         &mut crate_info,
         depth,
@@ -211,14 +212,15 @@ fn main() -> anyhow::Result<()> {
         Some(&mut exchange.telemetry),
         true,
         Some(&exchange.crate_info),
+        None,
     );
 
-    let mut main_attributes = parser::parse_crate(&exchange.name_with_version, true);
+    let mut main_attributes = parser::parse_crate(&exchange.name_with_version, true, None);
 
     let readable_spans = hir::proc_macro_spans_to_readables(&main_attributes.spans);
     let dep_and_feats = parser::features_for_optional_deps(&exchange.crate_info);
 
-    let (enable, disable) = parser::process_crate(
+    let (mut enable, disable) = parser::process_crate(
         &mut exchange,
         &mut main_attributes,
         None,
@@ -250,7 +252,7 @@ fn main() -> anyhow::Result<()> {
 
     println!("Main crate arguments: {:?}", main_features);
 
-    let deps_attrs = parser::parse_deps_crate();
+    let deps_attrs = parser::parse_deps_crate(&exchange.name_with_version);
     let mut skipped = Vec::new();
     // We keep track of the features we have already disabled for dependencies.
     // This way we don't accidentally re-enable some feature for a later dependency
@@ -265,6 +267,7 @@ fn main() -> anyhow::Result<()> {
     // the feature requirements can be met, not if they are actually met with the set of features enabled by that crate for
     // no_std compilation.
     // TODO: For the impossible case where there is no way to connect no_std to some feature, we try compiling, and if there are errors, we need to see what caused the error. If it was due to some unresolved import, we need to find the feature that is gating it and enabled it. Or we can also have a set of features that we know includes more things into the crate. And then when compilation fails, we can try each of those features and see if it fixes the issue. This is a last resort since it is not systematic and is expensive.
+    // ADD test for yaxpeax-m16c
     let mut deps_args = Vec::new();
     for mut dep in deps_attrs {
         if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {
@@ -277,11 +280,10 @@ fn main() -> anyhow::Result<()> {
 
         if parser::should_skip_dep(
             &dep.crate_name,
-            &exchange.crate_info,
+            &mut exchange,
             &dep_and_feats,
             &main_features,
             disable_default,
-            &mut exchange.telemetry,
             false,
         ) {
             debug!("Dependency {} is optional, skipping", dep.crate_name);
@@ -310,11 +312,10 @@ fn main() -> anyhow::Result<()> {
     for mut dep in skipped {
         if !parser::should_skip_dep(
             &dep.crate_name,
-            &exchange.crate_info,
+            &mut exchange,
             &dep_and_feats,
             &temp_combined,
             disable_default,
-            &mut exchange.telemetry,
             true,
         ) {
             debug!(

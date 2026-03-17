@@ -199,7 +199,7 @@ impl AllStats {
 
         let dir = std::path::Path::new(consts::DOWNLOAD_PATH).join(self.name.replace(':', "-"));
         if manifest {
-            let manifest = parser::determine_manifest_file(&self.name);
+            let manifest = parser::determine_manifest_file(&self.name, None);
             fs::copy(dir.join("Cargo.toml.bak"), &manifest)
                 .context("Failed to restore original Cargo.toml")
                 .unwrap();

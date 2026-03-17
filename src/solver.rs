@@ -216,7 +216,9 @@ pub fn final_feature_list_main(
         });
     }
 
-    if disable_in_default(crate_info, &local_to_disable) || disable_in_default_indirect(crate_info, &local_to_disable) {
+    if disable_in_default(crate_info, &local_to_disable)
+        || disable_in_default_indirect(crate_info, &local_to_disable)
+    {
         disable_default = true;
         // TODO: Do we need to redo this for each dependency?
         enable_from_default = get_features_not_disabled(crate_info, &local_to_disable);
@@ -238,7 +240,7 @@ pub fn final_feature_list_main(
 
     debug!("Main crate does not have features: {:?}", kept);
     let main_name = format!("{}-{}", crate_info.name, crate_info.version);
-    let main_manifest = parser::determine_manifest_file(&main_name);
+    let main_manifest = parser::determine_manifest_file(&main_name, None);
     let mut main_toml: toml::Value =
         toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
     telemetry.new_feats_added_to_main = !kept.is_empty();

@@ -2,7 +2,12 @@ use anyhow::Context;
 use log::debug;
 use proc_macro2::{Span, TokenStream};
 // use quote::ToTokens;
-use std::{collections::HashSet, fs, path::Path, time::Instant};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 use syn::{
     Attribute, ExprBlock, Item, ItemExternCrate, Meta, Stmt, spanned::Spanned, visit::Visit,
 };
@@ -367,12 +372,12 @@ fn check_attr_save_span(attributes: &mut Attributes, attr: &[Attribute], span: S
 /// # Returns
 /// The extern crates of the main crate
 /// that have attributes associated with them.
-pub fn parse_item_extern_crates(crate_name: &str) -> ItemExternCrates {
+pub fn parse_item_extern_crates(crate_name: &str, main_name: Option<&str>) -> ItemExternCrates {
     let mut itemexterncrates = ItemExternCrates {
         itemexterncrates: Vec::new(),
     };
 
-    if let Err(err) = visit(&mut itemexterncrates, crate_name, true, false) {
+    if let Err(err) = visit(&mut itemexterncrates, crate_name, true, false, main_name) {
         debug!(
             "Failed to parse crate {} with error:{}. Will continue...",
             crate_name, err
@@ -390,19 +395,28 @@ pub fn parse_item_extern_crates(crate_name: &str) -> ItemExternCrates {
 /// # Returns
 /// A vector containing the names of the files
 /// that have unguarded `extern crate std`.
-pub fn parse_item_extern_crates_for_files(crate_name: &str) -> Vec<String> {
-    let path = format!("{}/{}", consts::DOWNLOAD_PATH, crate_name.replace(':', "-"));
-    let files = get_all_rs_files(&path, true);
+pub fn parse_item_extern_crates_for_files(
+    crate_name: &str,
+    main_name: Option<&str>,
+) -> Vec<String> {
+    let dir = get_actual_dir(crate_name, main_name);
+
+    let files = get_all_rs_files(&dir, true, main_name);
     let mut files_ungaurded = Vec::new();
     for file in files {
         let mut itemexterncrates = ItemExternCratesAll {
             itemexterncrates: Vec::new(),
         };
 
-        let filename = file.replace(&(consts::DOWNLOAD_PATH.to_owned() + "/"), "");
-        if let Err(err) = visit(&mut itemexterncrates, &filename, true, true) {
+        if let Err(err) = visit(
+            &mut itemexterncrates,
+            &file.as_os_str().to_str().unwrap_or_default(),
+            true,
+            true,
+            main_name,
+        ) {
             debug!(
-                "Failed to parse file {} with error:{}. Will continue...",
+                "Failed to parse file {:?} with error:{}. Will continue...",
                 file, err
             );
         }
@@ -417,11 +431,8 @@ pub fn parse_item_extern_crates_for_files(crate_name: &str) -> Vec<String> {
                     .any(|a| a.path().get_ident().is_some_and(|ident| ident == "cfg"))
             });
         if extern_std_without_cfg {
-            debug!("Found unguarded extern crate std in file: {}", file);
-            let basename = Path::new(&filename)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
+            debug!("Found unguarded extern crate std in file: {:?}", file);
+            let basename = file.file_name().and_then(|s| s.to_str()).unwrap_or("");
             files_ungaurded.push(basename.to_string());
         }
     }
@@ -450,13 +461,13 @@ pub fn get_item_extern_std(itemexterncrates: &ItemExternCrates) -> Vec<Attribute
 /// * `crate_name` - The name of the main crate
 /// # Returns
 /// The attributes of the main crate
-pub fn parse_crate(crate_name: &str, recurse: bool) -> Attributes {
+pub fn parse_crate(crate_name: &str, recurse: bool, main_name: Option<&str>) -> Attributes {
     let mut attributes = Attributes {
         hir_spans: hir::read_hir_spans(crate_name),
         ..Default::default()
     };
 
-    if let Err(err) = visit(&mut attributes, crate_name, recurse, false) {
+    if let Err(err) = visit(&mut attributes, crate_name, recurse, false, main_name) {
         debug!(
             "Failed to parse crate {} with error:{}. Will continue...",
             crate_name, err
@@ -472,7 +483,12 @@ pub fn parse_crate(crate_name: &str, recurse: bool) -> Attributes {
 /// * `ctx` - The Z3 context
 /// # Returns
 /// A boolean indicating whether the crate has a no_std attribute.
-pub fn check_for_no_std(name: &str, ctx: &z3::Context, telemetry: Option<&mut Telemetry>) -> bool {
+pub fn check_for_no_std(
+    name: &str,
+    ctx: &z3::Context,
+    telemetry: Option<&mut Telemetry>,
+    main_name: Option<&str>,
+) -> bool {
     // This is the list of known syn failure crates which are no_std
     if consts::KNOWN_SYN_FAILURES.contains(&name) {
         debug!("Skipping known syn failure crate: {}", name);
@@ -482,7 +498,7 @@ pub fn check_for_no_std(name: &str, ctx: &z3::Context, telemetry: Option<&mut Te
     // We need to re-parse this instead of using already existing attributes
     // since files in non root directory might have `no_std` attribute
     // and we don't want to include those.
-    let base_attrs = parse_crate(name, false);
+    let base_attrs = parse_crate(name, false, main_name);
 
     if let Some(telemetry) = telemetry {
         telemetry.wrong_unconditional_setup = base_attrs.wrong_unconditional_setup;
@@ -498,11 +514,11 @@ pub fn check_for_no_std(name: &str, ctx: &z3::Context, telemetry: Option<&mut Te
 /// Parse the dependencies of the main crate
 /// # Returns
 /// A vector containing the attributes of each dependency
-pub fn parse_deps_crate() -> Vec<Attributes> {
+pub fn parse_deps_crate(main_name: &str) -> Vec<Attributes> {
     let mut attributes = Vec::new();
     let deps_lock = DEPENDENCIES.lock().unwrap();
     for dep in deps_lock.iter() {
-        attributes.push(parse_crate(&dep.clone(), true));
+        attributes.push(parse_crate(&dep.clone(), true, Some(main_name)));
     }
     drop(deps_lock);
     attributes
@@ -541,6 +557,12 @@ pub fn process_crate(
     let crate_info = crate_info.unwrap_or(&exchange.crate_info);
 
     let (no_std, mut equation, mut parsed_attr) = parse_main_attributes(attrs, ctx);
+
+    let main_name = if is_main {
+        None
+    } else {
+        Some(exchange.name_with_version.as_ref())
+    };
 
     if is_main {
         exchange.telemetry.main_conditional_no_std = no_std;
@@ -584,7 +606,7 @@ pub fn process_crate(
             );
         }
 
-        let items = parse_item_extern_crates(name_with_version);
+        let items = parse_item_extern_crates(name_with_version, main_name);
 
         // This case implies that the crate is no_std without any feature requirements.
         if items.itemexterncrates.is_empty() {
@@ -656,6 +678,7 @@ pub fn process_crate(
                     &names_and_versions,
                     &externs,
                     &mut exchange.telemetry,
+                    &exchange.name_with_version,
                 ) {
                     Ok((eq, attr)) => {
                         if let Some(eq) = eq {
@@ -747,15 +770,15 @@ pub fn process_crate(
         }
     }
     debug!("Files in attributes: {:?}", files_and_equations);
-    let files_unguared = parse_item_extern_crates_for_files(name_with_version);
+    let files_unguarded = parse_item_extern_crates_for_files(name_with_version, main_name);
     debug!(
         "Files with unguarded extern crate std: {:?}",
-        files_unguared
+        files_unguarded
     );
 
     let mut imported_files: Vec<String> = Vec::new();
     for (file, eq) in files_and_equations {
-        if files_unguared.contains(&file) {
+        if files_unguarded.contains(&file) {
             debug!("File {} contains unguarded extern crate std", file);
             imported_files.push(file.clone());
             if let Some(e) = eq {
@@ -861,9 +884,19 @@ pub fn process_dep_crate(
     let (enable, disable) = match db::get_from_db_data(&exchange.db_data, &dep.crate_name) {
         Some(dbdata) => (dbdata.features.0.clone(), dbdata.features.1.clone()),
         None => {
-            let (.., dep_crate_info) = downloader::gather_crate_info(&dep.crate_name, true)?;
+            let (.., dep_crate_info) = downloader::gather_crate_info(
+                &dep.crate_name,
+                true,
+                Some(&exchange.name_with_version),
+            )?;
             let optional_dep_feats = features_for_optional_deps(&dep_crate_info);
-            hir::hir_visit(&dep.crate_name, None, true, Some(&dep_crate_info));
+            hir::hir_visit(
+                &dep.crate_name,
+                None,
+                true,
+                Some(&dep_crate_info),
+                Some(&exchange.name_with_version),
+            );
             let dep_crate_name = dep.crate_name.clone();
             let (enable, disable) = process_crate(
                 exchange,
@@ -957,7 +990,7 @@ pub fn move_unnecessary_dep_feats(
     telemetry: &mut Telemetry,
     disable_default: bool,
 ) {
-    let main_manifest = determine_manifest_file(main_name);
+    let main_manifest = determine_manifest_file(main_name, None);
     let mut main_toml: toml::Value =
         toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
     let main_features = main_toml.get_mut("features").and_then(|f| f.as_table_mut());
@@ -1134,6 +1167,7 @@ pub fn determine_n_depth_dep_no_std(
     current_depth: u32,
     visited: &mut HashSet<(String, String)>,
     ctx: &z3::Context,
+    main_name: &str,
 ) -> (bool, u32) {
     let mut local_initlist = Vec::new();
     if current_depth >= depth || initlist.is_empty() {
@@ -1144,15 +1178,17 @@ pub fn determine_n_depth_dep_no_std(
             debug!("Already visited dependency {}:{}", name, version);
             continue;
         }
-        let names_and_versions = downloader::read_dep_names_and_versions(&name, &version, true)
-            .expect("Failed to read dependency names and versions");
+        let names_and_versions =
+            downloader::read_dep_names_and_versions(&name, &version, true, main_name)
+                .expect("Failed to read dependency names and versions");
         for (dep_name, dep_version) in names_and_versions {
             debug!(
                 "Processing dependency {}:{} for no_std",
                 dep_name, dep_version
             );
             let name_with_version =
-                match downloader::clone_from_crates(&dep_name, Some(&dep_version)) {
+                match downloader::clone_from_crates(&dep_name, Some(&dep_version), Some(main_name))
+                {
                     Ok(name_with_version) => name_with_version,
                     Err(e) => {
                         debug!("Failed to download crate: {}", e);
@@ -1160,7 +1196,7 @@ pub fn determine_n_depth_dep_no_std(
                     }
                 };
 
-            if is_proc_macro(&name_with_version) {
+            if is_proc_macro(&name_with_version, Some(main_name)) {
                 debug!("{} is a proc-macro, skipping", name_with_version);
                 continue;
             }
@@ -1169,7 +1205,7 @@ pub fn determine_n_depth_dep_no_std(
                 .split_once(':')
                 .unwrap_or((&name_with_version, ""));
 
-            if !check_for_no_std(&name_with_version, ctx, None) {
+            if !check_for_no_std(&name_with_version, ctx, None, Some(main_name)) {
                 debug!(
                     "ERROR: Dependency {} of dependency {} does not support no_std build at depth {}",
                     name_with_version, name, current_depth
@@ -1181,7 +1217,14 @@ pub fn determine_n_depth_dep_no_std(
         }
     }
 
-    determine_n_depth_dep_no_std(local_initlist, depth, current_depth + 1, visited, ctx)
+    determine_n_depth_dep_no_std(
+        local_initlist,
+        depth,
+        current_depth + 1,
+        visited,
+        ctx,
+        main_name,
+    )
 }
 
 /// Parse the attributes of a the main crate.
@@ -1297,8 +1340,19 @@ pub fn filter_equations<'a>(
 /// * `dir` - The directory to check for the Cargo.toml file
 /// # Returns
 /// The path to the Cargo.toml file if it exists, otherwise panics.
-pub fn determine_manifest_file(name_with_version: &str) -> String {
-    let dir = Path::new(consts::DOWNLOAD_PATH).join(name_with_version.replace(':', "-"));
+pub fn determine_manifest_file(name_with_version: &str, main_name: Option<&str>) -> String {
+    let mut dir = PathBuf::from(consts::DOWNLOAD_PATH);
+
+    if let Some(main_name) = main_name {
+        debug!(
+            "Determining manifest file for dependency {} of main crate {}",
+            name_with_version, main_name
+        );
+        dir = dir.join(format!("{}_deps", main_name.replace(':', "-")));
+    }
+
+    dir = dir.join(name_with_version.replace(':', "-"));
+
     let path = format!("{}/Cargo.toml", dir.display());
     if Path::new(&path).exists() {
         return path;
@@ -1477,8 +1531,8 @@ pub fn toml_has_bin_target(filename: &str) -> bool {
 /// * `crate_name` - The name of the crate with version
 /// # Returns
 /// A boolean indicating whether the crate is a procedural macro.
-pub fn is_proc_macro(crate_name: &str) -> bool {
-    let manifest = determine_manifest_file(crate_name);
+pub fn is_proc_macro(crate_name: &str, main_name: Option<&str>) -> bool {
+    let manifest = determine_manifest_file(crate_name, main_name);
     let toml: toml::Value = toml::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
     if let Some(lib) = toml.get("lib")
         && let Some(proc_macro) = lib.get("proc-macro")
@@ -1505,8 +1559,8 @@ pub fn is_proc_macro(crate_name: &str) -> bool {
 /// # Returns
 /// None
 fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(String, String)]) {
-    let main_manifest = determine_manifest_file(main);
-    let dep_manifest = determine_manifest_file(dep);
+    let main_manifest = determine_manifest_file(main, None);
+    let dep_manifest = determine_manifest_file(dep, Some(main));
     let dep_name_original = dep.split(':').next().unwrap().to_string();
     let dep_name = crate_name_rename
         .iter()
@@ -1594,7 +1648,7 @@ pub fn update_feat_lists(
     feats_to_add: &[String],
     crate_name_rename: &[(String, String)],
 ) {
-    let main_manifest = determine_manifest_file(main_name);
+    let main_manifest = determine_manifest_file(main_name, None);
     let mut main_toml: toml::Value =
         toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
 
@@ -1680,7 +1734,7 @@ pub fn update_feat_lists(
 /// # Returns
 /// None
 pub fn remove_conflicting_dep_feats(main_name: &str, name: &str, disable: &[String]) {
-    let main_manifest = determine_manifest_file(main_name);
+    let main_manifest = determine_manifest_file(main_name, None);
     let mut main_toml: toml::Value =
         toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
 
@@ -1742,7 +1796,7 @@ pub fn remove_feats_enabling_dep(main_name: &str, feats: &[String], to_drop: &St
         return;
     }
 
-    let main_manifest = determine_manifest_file(main_name);
+    let main_manifest = determine_manifest_file(main_name, None);
     let mut main_toml: toml::Value =
         toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
 
@@ -1781,6 +1835,24 @@ pub fn remove_feats_enabling_dep(main_name: &str, feats: &[String], to_drop: &St
             .unwrap(),
     )
     .unwrap();
+}
+
+/// Get the actual directory of a crate given its name with version and the main crate name.
+/// Since we use crate specific directories for dependencies of that crate, we use this
+/// to construct the actual path to the crate's directory.
+/// # Arguments
+/// * `name_with_version` - The name of the crate with version (main or dependency)
+/// * `main_name` - The name of the main crate, if the crate is a dependency
+/// # Returns
+/// The path to the crate's directory as a PathBuf.
+pub fn get_actual_dir(name_with_version: &str, main_name: Option<&str>) -> PathBuf {
+    let mut dir = PathBuf::from(consts::DOWNLOAD_PATH);
+
+    if let Some(main_name) = main_name {
+        dir = dir.join(format!("{}_deps", main_name.replace(':', "-")));
+    }
+
+    dir.join(name_with_version.replace(':', "-"))
 }
 
 /// Given a toml::Value representing the main Cargo.toml,
@@ -1928,21 +2000,20 @@ pub fn features_for_optional_deps(crate_info: &CrateInfo) -> TupleVec {
 /// A boolean indicating whether the dependency should be skipped.
 pub fn should_skip_dep(
     name: &str,
-    crate_info: &CrateInfo,
+    exchange: &mut DataExchange,
     deps_and_features: &[(String, String)],
     enable_features: &[String],
     disable_default: bool,
-    telemetry: &mut Telemetry,
     second_round: bool,
 ) -> bool {
-    if is_proc_macro(name) {
+    if is_proc_macro(name, Some(&exchange.name_with_version)) {
         debug!("Dependency {} is a proc-macro, skipping", name);
         return true;
     }
 
     let dep_name = name.split(':').next().unwrap_or("").to_string();
 
-    if !is_dep_optional(crate_info, &dep_name) {
+    if !is_dep_optional(&exchange.crate_info, &dep_name) {
         debug!("Dependency {} is not optional, not skipping", name);
         return false;
     }
@@ -1953,7 +2024,7 @@ pub fn should_skip_dep(
         .map(|(_, feat)| feat.clone())
         .collect();
 
-    let main_feats = &crate_info.features;
+    let main_feats = &exchange.crate_info.features;
     let mut worklist: Vec<String> = enable_features.to_vec();
     if !disable_default {
         worklist.push("default".to_string());
@@ -1992,7 +2063,7 @@ pub fn should_skip_dep(
     if !features_for_dependency.is_empty() {
         let cfg = z3::Config::new();
         let ctx = z3::Context::new(&cfg);
-        let found = check_for_no_std(name, &ctx, None);
+        let found = check_for_no_std(name, &ctx, None, Some(&exchange.name_with_version));
 
         debug!(
             "Dependency: {} is enabled by features: {:?} and currently enabled list enabled {:?} from that list",
@@ -2004,11 +2075,18 @@ pub fn should_skip_dep(
                 "Dependency {} does not support no_std. Creating a new feature and adding the conflicting features to it",
                 dep_name
             );
-            let main_name = &format!("{}:{}", crate_info.name, crate_info.version);
+            let main_name = &format!(
+                "{}:{}",
+                exchange.crate_info.name, exchange.crate_info.version
+            );
             remove_feats_enabling_dep(main_name, &features_for_dependency, &dep_name);
             if second_round {
-                telemetry.optional_deps_disabled.push(dep_name.clone());
-                telemetry
+                exchange
+                    .telemetry
+                    .optional_deps_disabled
+                    .push(dep_name.clone());
+                exchange
+                    .telemetry
                     .optional_deps_disabled_features_moved
                     .push((dep_name, features_for_dependency));
             }
@@ -2016,8 +2094,12 @@ pub fn should_skip_dep(
         } else {
             debug!("Dependency {} supports no_std", dep_name);
             if second_round {
-                telemetry.optional_deps_enabled.push(dep_name.clone());
-                telemetry
+                exchange
+                    .telemetry
+                    .optional_deps_enabled
+                    .push(dep_name.clone());
+                exchange
+                    .telemetry
                     .optional_deps_enabled_features
                     .push((dep_name, features_for_dependency));
             }
@@ -2098,7 +2180,7 @@ pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) 
         let resolved_version = downloader::resolve_version(&Some(&version), &crate_data).unwrap();
         let name_with_version = format!("{}:{}", name, resolved_version);
 
-        if is_proc_macro(&name_with_version) {
+        if is_proc_macro(&name_with_version, Some(&exchange.crate_info.name)) {
             debug!(
                 "Dependency: {} is a proc-macro crate, skipping requirement check",
                 name_with_version
@@ -2107,7 +2189,12 @@ pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) 
         }
 
         // Current crate's CrateInfo. We will use this to check the features the the current crate exposes.
-        let (.., crate_info) = downloader::gather_crate_info(&name_with_version, true).unwrap();
+        let (.., crate_info) = downloader::gather_crate_info(
+            &name_with_version,
+            true,
+            Some(&exchange.name_with_version),
+        )
+        .unwrap();
 
         for (dep, _) in crate_info.deps_and_features.iter() {
             let dep_crate_data = client.get_crate(&dep.name).unwrap();
@@ -2116,7 +2203,9 @@ pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) 
             let dep_name_with_version = format!("{}:{}", dep.name.clone(), dep_resolved_version);
 
             println!("Processing dependency: {}", dep_name_with_version);
-            if is_dep_optional(&crate_info, &dep.name) || is_proc_macro(&dep_name_with_version) {
+            if is_dep_optional(&crate_info, &dep.name)
+                || is_proc_macro(&dep_name_with_version, Some(&exchange.crate_info.name))
+            {
                 debug!(
                     "Dependency: {} is optional or a proc-macro crate: {}, skipping requirement check",
                     dep.name, name_with_version
@@ -2126,8 +2215,12 @@ pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) 
 
             debug!("Seen so far: {:?}", seen);
 
-            let (.., dep_crate_info) =
-                downloader::gather_crate_info(&dep_name_with_version, true).unwrap();
+            let (.., dep_crate_info) = downloader::gather_crate_info(
+                &dep_name_with_version,
+                true,
+                Some(&exchange.name_with_version),
+            )
+            .unwrap();
 
             let optional_dep_feats = features_for_optional_deps(&dep_crate_info);
 
@@ -2142,8 +2235,18 @@ pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) 
                 );
                 reqs.clone()
             } else {
-                hir::hir_visit(&dep_name_with_version, None, true, Some(&dep_crate_info));
-                let mut crate_attrs = parse_crate(&dep_name_with_version, false);
+                hir::hir_visit(
+                    &dep_name_with_version,
+                    None,
+                    true,
+                    Some(&dep_crate_info),
+                    Some(&exchange.name_with_version),
+                );
+                let mut crate_attrs = parse_crate(
+                    &dep_name_with_version,
+                    false,
+                    Some(&exchange.name_with_version),
+                );
                 let (enable, disable) = process_crate(
                     exchange,
                     &mut crate_attrs,
@@ -2263,6 +2366,7 @@ fn parse_top_level_externs<'a>(
     names_and_versions: &[(String, String)],
     externs: &Vec<ItemExternCrate>,
     telemetry: &mut Telemetry,
+    main_name: &str,
 ) -> Result<(Option<Bool<'a>>, ParsedAttr), anyhow::Error> {
     let mut worklist = Vec::new();
     for ex in externs {
@@ -2279,8 +2383,9 @@ fn parse_top_level_externs<'a>(
         if version.is_none() {
             continue;
         }
-        let name_with_version = downloader::clone_from_crates(&ex.ident.to_string(), version)?;
-        let items = parse_item_extern_crates(&name_with_version);
+        let name_with_version =
+            downloader::clone_from_crates(&ex.ident.to_string(), version, Some(main_name))?;
+        let items = parse_item_extern_crates(&name_with_version, Some(main_name));
         if items.itemexterncrates.is_empty() {
             continue;
         }
@@ -2293,12 +2398,17 @@ fn parse_top_level_externs<'a>(
         worklist.push((name_with_version, equation, parsed_attr));
     }
 
-    Ok(parse_n_level_externs_entry(&mut worklist, telemetry))
+    Ok(parse_n_level_externs_entry(
+        &mut worklist,
+        telemetry,
+        main_name,
+    ))
 }
 
 fn parse_n_level_externs_entry<'a>(
     worklist: &mut Vec<(String, Option<Bool<'a>>, ParsedAttr)>,
     telemetry: &mut Telemetry,
+    main_name: &str,
 ) -> (Option<Bool<'a>>, ParsedAttr) {
     let mut worklists = Vec::new();
     let mut depth = 2;
@@ -2315,7 +2425,7 @@ fn parse_n_level_externs_entry<'a>(
                 .iter_mut()
                 .find(|(name, _)| name == name_with_version)
                 .unwrap();
-            if parse_n_level_externs(&mut local_worklist.1, telemetry) {
+            if parse_n_level_externs(&mut local_worklist.1, telemetry, main_name) {
                 telemetry.indirect_extern_std_usage_depth = depth;
                 return (equation.clone(), parsed_attr.clone());
             }
@@ -2324,18 +2434,23 @@ fn parse_n_level_externs_entry<'a>(
     }
 }
 
-fn parse_n_level_externs(worklist: &mut Vec<String>, telemetry: &mut Telemetry) -> bool {
+fn parse_n_level_externs(
+    worklist: &mut Vec<String>,
+    telemetry: &mut Telemetry,
+    main_name: &str,
+) -> bool {
     let mut local_worklist = Vec::new();
     for name_with_version in worklist.drain(..) {
         let (mut name, version) = name_with_version.split_once(':').unwrap();
         let new_name_with_version =
-            downloader::clone_from_crates(name, Some(&version.to_string())).unwrap();
+            downloader::clone_from_crates(name, Some(&version.to_string()), Some(main_name))
+                .unwrap();
         name = new_name_with_version
             .split_once(':')
             .map_or(name, |(n, _)| n);
         let names_and_versions =
-            downloader::read_dep_names_and_versions(name, version, false).unwrap();
-        let unfiltered = parse_item_extern_crates(&new_name_with_version);
+            downloader::read_dep_names_and_versions(name, version, false, main_name).unwrap();
+        let unfiltered = parse_item_extern_crates(&new_name_with_version, Some(main_name));
         let std_attrs = get_item_extern_std(&unfiltered);
         if !std_attrs.is_empty() {
             telemetry.indirect_extern_std_usage_crate = Some(new_name_with_version);
@@ -2416,38 +2531,41 @@ fn visit<T>(
     crate_name: &str,
     recurse: bool,
     direct_file: bool,
+    main_name: Option<&str>,
 ) -> anyhow::Result<()>
 where
     T: for<'a> Visit<'a> + GetItemExternCrate,
 {
-    let path = format!("{}/{}", consts::DOWNLOAD_PATH, crate_name.replace(':', "-"));
-    let files = get_all_rs_files(&path, recurse);
+    let dir;
+    if !direct_file {
+        dir = get_actual_dir(crate_name, main_name);
+    } else {
+        dir = PathBuf::from(crate_name);
+    }
+    let files = get_all_rs_files(&dir, recurse, main_name);
 
     for filename in files {
-        debug!("Parsing file: {}", filename);
+        debug!("Parsing file: {:?}", filename);
         let content = match fs::read_to_string(&filename) {
             Ok(content) => content,
             Err(e) => {
-                debug!("Failed to read file {}: {}", filename, e);
+                debug!("Failed to read file {:?}: {}", filename, e);
                 continue;
             }
         };
         let file = match syn::parse_file(&content) {
             Ok(file) => file,
             Err(e) => {
-                debug!("Failed to parse file {}: {}", filename, e);
+                debug!("Failed to parse file {:?}: {}", filename, e);
                 continue;
             }
         };
         let span_file_path = if !direct_file {
-            let span_file_path = filename
-                .strip_prefix(&(path.clone() + "/"))
-                .unwrap()
-                .to_string();
-            visiter_type.set_current_file(span_file_path.to_string());
-            span_file_path
+            let span_file_path = filename.strip_prefix(&dir).unwrap();
+            visiter_type.set_current_file(span_file_path.display().to_string());
+            span_file_path.to_path_buf()
         } else {
-            filename.clone()
+            filename
         };
         visiter_type.visit_file(&file);
         if let Some(spans) = visiter_type.get_spans() {
@@ -2455,7 +2573,7 @@ where
             // We fill it with the current filename.
             for span in spans {
                 if span.1.is_none() {
-                    span.1.replace(span_file_path.to_string());
+                    span.1.replace(span_file_path.display().to_string());
                 }
             }
         }
@@ -2600,10 +2718,9 @@ fn parse_meta_for_cfg_attr<'a>(
     }
 }
 
-fn get_all_rs_files(path: &str, recurse: bool) -> Vec<String> {
-    let path_obj = Path::new(path);
-    if path_obj.is_file() && path_obj.extension().unwrap_or_default() == "rs" {
-        return vec![path.to_string()];
+fn get_all_rs_files(path: &Path, recurse: bool, main_name: Option<&str>) -> Vec<PathBuf> {
+    if path.is_file() && path.extension().unwrap_or_default() == "rs" {
+        return vec![path.to_path_buf()];
     }
 
     let mut files = Vec::new();
@@ -2613,7 +2730,12 @@ fn get_all_rs_files(path: &str, recurse: bool) -> Vec<String> {
             push_to_files_vec(entry.unwrap().path(), &mut files);
         }
     } else {
-        let manifest_path = determine_manifest_file(path);
+        let basename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_str()
+            .unwrap_or_default();
+        let manifest_path = determine_manifest_file(basename, main_name);
         let toml: toml::Value = fs::read_to_string(&manifest_path)
             .ok()
             .and_then(|content| toml::from_str(&content).ok())
@@ -2638,7 +2760,7 @@ fn get_all_rs_files(path: &str, recurse: bool) -> Vec<String> {
         }
         let src_path = Path::new(path).join("src");
         let entries = if !src_path.exists() {
-            debug!("No src directory found in {}", path);
+            debug!("No src directory found in {:?}", path);
             fs::read_dir(path).unwrap()
         } else {
             let mut push_if_path_exist = |sub_path: &str| {
@@ -2660,8 +2782,8 @@ fn get_all_rs_files(path: &str, recurse: bool) -> Vec<String> {
     files
 }
 
-fn push_to_files_vec(path: &Path, files: &mut Vec<String>) {
+fn push_to_files_vec(path: &Path, files: &mut Vec<PathBuf>) {
     if path.extension().unwrap_or_default() == "rs" && !path.to_str().unwrap().contains("/tests/") {
-        files.push(path.to_str().unwrap().to_string());
+        files.push(path.to_path_buf());
     }
 }

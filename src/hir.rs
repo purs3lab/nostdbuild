@@ -23,6 +23,7 @@ pub fn hir_visit(
     telemetry: Option<&mut Telemetry>,
     all_feats: bool,
     crate_info: Option<&CrateInfo>,
+    main_name: Option<&str>,
 ) {
     if !is_cargo_hir_installed() {
         panic!(
@@ -30,8 +31,9 @@ pub fn hir_visit(
         );
     }
 
-    let manifest = parser::determine_manifest_file(crate_name);
-    let dir = std::path::Path::new(consts::DOWNLOAD_PATH).join(crate_name.replace(':', "-"));
+    let manifest = parser::determine_manifest_file(crate_name, main_name);
+    let dir = parser::get_actual_dir(crate_name, main_name);
+
     // Store the final per crate file
     let output_file_name = get_hir_output_file(crate_name);
     // Stores the per visit file. This is used by the vistor itself.
@@ -42,12 +44,12 @@ pub fn hir_visit(
 
     let backup_hir_manifest = dir.join("Cargo.toml.hir");
 
-    if path::Path::new(&output_file_name).exists() {
+    if Path::new(&output_file_name).exists() {
         fs::remove_file(&output_file_name)
             .expect("Failed to remove existing HIR visitor span dump file");
     }
 
-    if path::Path::new(&visit_file_name).exists() {
+    if Path::new(&visit_file_name).exists() {
         fs::remove_file(&visit_file_name)
             .expect("Failed to remove existing HIR visitor span dump file");
     }
@@ -159,8 +161,7 @@ pub fn hir_visit(
 
     // Cleanup
     if path::Path::new(&visit_file_name).exists() {
-        fs::remove_file(&visit_file_name)
-            .expect("Failed to remove HIR visitor visit file");
+        fs::remove_file(&visit_file_name).expect("Failed to remove HIR visitor visit file");
     }
 
     debug!("cargo-hir run finished in {} ms", now.elapsed().as_millis());

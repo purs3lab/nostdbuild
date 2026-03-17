@@ -5,7 +5,12 @@ use git2::Repository;
 use log::debug;
 use reqwest::blocking;
 use semver::VersionReq;
-use std::{collections::HashSet, fs, path::Path, time::Instant};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 use tar::Archive;
 use toml::{self, Value, map::Map};
 use walkdir::WalkDir;
@@ -34,8 +39,19 @@ pub fn clone_repo(url: &str, name: &str) -> Result<(), git2::Error> {
 /// # Arguments
 /// * `name` - The name of the crate to download
 /// * `version` - The version of the crate to download in semver format
-pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String, anyhow::Error> {
-    let dir = Path::new(DOWNLOAD_PATH);
+/// * `main_name` - The optional name of the main crate being analyzed. Used to put
+///   dependencies in a crate specific directory
+pub fn clone_from_crates(
+    name: &str,
+    version: Option<&String>,
+    main_name: Option<&str>,
+) -> Result<String, anyhow::Error> {
+    let mut dir = PathBuf::from(DOWNLOAD_PATH);
+
+    if let Some(name) = main_name {
+        dir = dir.join(format!("{}_deps", name.replace(':', "-")));
+    }
+
     let filename = format!("{}.crate", name);
 
     let client = create_client()?;
@@ -79,7 +95,7 @@ pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String,
             }
         };
     }
-    extract_crate(&filename, dir)?;
+    extract_crate(&filename, &dir)?;
     fs::remove_file(&filename).context("Failed to delete crate file")?;
 
     debug!("Downloaded {} to {}", newname, dir.display());
@@ -95,6 +111,7 @@ pub fn clone_from_crates(name: &str, version: Option<&String>) -> Result<String,
 /// # Returns
 /// * `Result` - An empty `Result` if successful, an `Error` otherwise
 pub fn download_all_dependencies(
+    main_name: &str,
     worklist: &mut TupleVec,
     crate_info: &mut CrateInfo,
     depth: u32,
@@ -106,7 +123,7 @@ pub fn download_all_dependencies(
         debug!("Worklist length: {}", worklist.len());
         let (name, version) = worklist.pop().unwrap();
         debug!("Downloading {} with version {}", name, version);
-        let name_with_version = match clone_from_crates(&name, Some(&version)) {
+        let name_with_version = match clone_from_crates(&name, Some(&version), Some(main_name)) {
             Ok(name_with_version) => name_with_version,
             Err(e) => {
                 debug!("Failed to download crate: {}", e);
@@ -132,14 +149,14 @@ pub fn download_all_dependencies(
             update_name(&old_name, &name, crate_info);
         }
 
-        if parser::is_proc_macro(&name_with_version) {
+        if parser::is_proc_macro(&name_with_version, Some(main_name)) {
             debug!("{} is a proc-macro, skipping", name_with_version);
             continue;
         }
 
         let cfg = z3::Config::new();
         let ctx = z3::Context::new(&cfg);
-        let found = parser::check_for_no_std(&name_with_version, &ctx, None);
+        let found = parser::check_for_no_std(&name_with_version, &ctx, None, Some(main_name));
         if !parser::is_dep_optional(crate_info, &name) {
             if !found {
                 debug!(
@@ -151,20 +168,23 @@ pub fn download_all_dependencies(
             initlist.push((name.clone(), new_version.to_string()));
         }
 
+        debug!("Successfully downloaded {}", name_with_version);
+
         // `clone_from_crates` gives a more accurate version.
         // Update the version in the crate_info with this version.
         traverse_and_update(&name, &version, &new_version, crate_info);
 
-        traverse_and_add_local_features(&name, &new_version, crate_info)?;
-        let dep_names = read_dep_names_and_versions(&name, &new_version, false)?;
+        traverse_and_add_local_features(&name, &new_version, crate_info, main_name)?;
+        let dep_names = read_dep_names_and_versions(&name, &new_version, false, main_name)?;
         traverse_and_add_dep_names(&name, &new_version, crate_info, &dep_names)?;
     }
     let mut visited = HashSet::new();
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
     let now = Instant::now();
+    debug!("Finished downloading dependencies. Now verifying if they support no_std build");
     let (no_std, depth_traversed) =
-        parser::determine_n_depth_dep_no_std(initlist, depth, 0, &mut visited, &ctx);
+        parser::determine_n_depth_dep_no_std(initlist, depth, 0, &mut visited, &ctx, main_name);
     telemetry.initial_dep_verification_time_ms = now.elapsed().as_millis();
     telemetry.deps_depth_traversed = depth_traversed;
     Ok(no_std)
@@ -181,8 +201,10 @@ pub fn read_dep_names_and_versions(
     name: &str,
     version: &str,
     skip_optional: bool,
+    main_name: &str,
 ) -> Result<TupleVec, anyhow::Error> {
-    let manifest = parser::determine_manifest_file(&format!("{}-{}", name, version));
+    let manifest =
+        parser::determine_manifest_file(&format!("{}-{}", name, version), Some(main_name));
     let mut dep_names = Vec::new();
     let toml = fs::read_to_string(&manifest).context("Failed to read Cargo.toml")?;
     let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
@@ -236,9 +258,10 @@ pub fn read_dep_names_and_versions(
 pub fn gather_crate_info(
     name: &str,
     only_gather: bool,
+    main_name: Option<&str>,
 ) -> Result<(TupleVec, TupleVec, CrateInfo), anyhow::Error> {
     let dir = Path::new(DOWNLOAD_PATH).join(name.replace(':', "-"));
-    let manifest = parser::determine_manifest_file(name);
+    let manifest = parser::determine_manifest_file(name, main_name);
     let mut worklist: TupleVec = Vec::new();
     let mut crate_name_rename: TupleVec = Vec::new();
     let mut crate_info: CrateInfo = CrateInfo::default();
@@ -420,9 +443,11 @@ fn traverse_and_add_local_features(
     name: &str,
     version: &str,
     crate_info: &mut CrateInfo,
+    main_name: &str,
 ) -> anyhow::Result<(), anyhow::Error> {
     if crate_info.name == name && crate_info.version == version {
-        let manifest = parser::determine_manifest_file(&format!("{}-{}", name, version));
+        let manifest =
+            parser::determine_manifest_file(&format!("{}-{}", name, version), Some(main_name));
         debug!("Reading Cargo.toml from {}", manifest);
         let toml = fs::read_to_string(&manifest).context("Failed to read Cargo.toml")?;
         let toml: toml::Value = toml::from_str(&toml).context("Failed to parse Cargo.toml")?;
@@ -431,7 +456,7 @@ fn traverse_and_add_local_features(
         return Ok(());
     }
     for (dep, _) in &mut crate_info.deps_and_features {
-        traverse_and_add_local_features(name, version, dep)?;
+        traverse_and_add_local_features(name, version, dep, main_name)?;
     }
     Ok(())
 }
