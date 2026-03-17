@@ -45,10 +45,27 @@ fn process_dep_crate_wrapper(
 
     deps_args.extend(local_dep_args);
 
+    let crate_name = dep.crate_name.split(":").next().unwrap_or_default();
+
+    let all_dep_feats: Vec<String> = exchange
+        .crate_info
+        .features
+        .iter()
+        .flat_map(|(_, feats)| feats.iter())
+        .filter(|(name, _)| *name == crate_name)
+        .map(|(_, feat)| feat.clone())
+        .collect();
+
+    debug!(
+        "All features for dependency {}: {:?}",
+        dep.crate_name, all_dep_feats
+    );
+
     let (temp_disable_default, mut temp_flexible, to_disable) = solver::final_feature_list_main(
         &exchange.crate_info,
         enable,
         &dep_disable,
+        Some(&all_dep_feats),
         &mut exchange.telemetry,
     );
 
@@ -218,6 +235,7 @@ fn main() -> anyhow::Result<()> {
         &exchange.crate_info,
         &enable,
         &disable,
+        None,
         &mut exchange.telemetry,
     );
     parser::minimize(

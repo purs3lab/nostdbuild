@@ -199,16 +199,27 @@ pub fn final_feature_list_main(
     crate_info: &CrateInfo,
     enable: &[String],
     disable: &[String],
+    all_dep_feats: Option<&Vec<String>>,
     telemetry: &mut Telemetry,
 ) -> (bool, Vec<String>, Vec<String>) {
     let mut disable_default = false;
     let mut enable_from_default = Vec::new();
     let mut disable_from_default: Vec<String> = Vec::new();
 
-    if disable_in_default(crate_info, disable) || disable_in_default_indirect(crate_info, disable) {
+    let mut local_to_disable: Vec<String> = disable.iter().cloned().collect();
+
+    if let Some(all_dep_feats) = all_dep_feats {
+        all_dep_feats.iter().for_each(|feat| {
+            if !enable.contains(feat) && !disable.contains(feat) {
+                local_to_disable.push(feat.clone());
+            }
+        });
+    }
+
+    if disable_in_default(crate_info, &local_to_disable) || disable_in_default_indirect(crate_info, &local_to_disable) {
         disable_default = true;
         // TODO: Do we need to redo this for each dependency?
-        enable_from_default = get_features_not_disabled(crate_info, disable);
+        enable_from_default = get_features_not_disabled(crate_info, &local_to_disable);
         disable_from_default = crate_info
             .features
             .iter()
