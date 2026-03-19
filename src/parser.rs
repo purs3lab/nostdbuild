@@ -1003,8 +1003,11 @@ pub fn move_unnecessary_dep_feats(
     }
     let main_features = main_features.unwrap();
 
+    let mut default_added = false;
+
     if !disable_default && !fixed_main_args.contains(&"default".to_string()) {
         fixed_main_args.push("default".to_string());
+        default_added = true;
     }
 
     // List of features that are indirectly enabled and are not part of either the
@@ -1074,7 +1077,7 @@ pub fn move_unnecessary_dep_feats(
     });
 
     let mut removed = HashSet::new();
-    for feature in fixed_main_args {
+    for feature in fixed_main_args.iter() {
         if let Some(arr) = main_features
             .get_mut(feature)
             .and_then(|f| f.as_array_mut())
@@ -1126,6 +1129,10 @@ pub fn move_unnecessary_dep_feats(
         telemetry
             .unnecessary_features_removed
             .push((dep_name.to_string(), false));
+    }
+
+    if default_added {
+        fixed_main_args.retain(|f| f != "default");
     }
 
     add_feats_to_custom_feature(
