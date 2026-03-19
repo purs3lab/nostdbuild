@@ -2187,7 +2187,7 @@ pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) 
         let resolved_version = downloader::resolve_version(&Some(&version), &crate_data).unwrap();
         let name_with_version = format!("{}:{}", name, resolved_version);
 
-        if is_proc_macro(&name_with_version, Some(&exchange.crate_info.name)) {
+        if is_proc_macro(&name_with_version, Some(&exchange.name_with_version)) {
             debug!(
                 "Dependency: {} is a proc-macro crate, skipping requirement check",
                 name_with_version
@@ -2211,7 +2211,7 @@ pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) 
 
             println!("Processing dependency: {}", dep_name_with_version);
             if is_dep_optional(&crate_info, &dep.name)
-                || is_proc_macro(&dep_name_with_version, Some(&exchange.crate_info.name))
+                || is_proc_macro(&dep_name_with_version, Some(&exchange.name_with_version))
             {
                 debug!(
                     "Dependency: {} is optional or a proc-macro crate: {}, skipping requirement check",
