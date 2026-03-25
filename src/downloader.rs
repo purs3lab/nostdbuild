@@ -45,6 +45,7 @@ pub fn clone_from_crates(
     name: &str,
     version: Option<&String>,
     main_name: Option<&str>,
+    parent_name: Option<&str>,
 ) -> Result<String, anyhow::Error> {
     let mut dir = PathBuf::from(DOWNLOAD_PATH);
 
@@ -58,20 +59,21 @@ pub fn clone_from_crates(
     let (mut download_url, mut ver, mut newname): (String, String, String);
     // Try until successful
     loop {
-        (download_url, ver, newname) = match get_download_url(&client, name, &version) {
-            Ok((url, ver, newname)) => (url, ver, newname),
-            Err(e) => {
-                debug!("Failed to get download URL: {}", e);
-                if e.to_string().contains("could not be found") {
-                    return Err(anyhow::anyhow!("Crate not found"));
+        (download_url, ver, newname) =
+            match get_download_url(&client, name, &version, main_name, parent_name) {
+                Ok((url, ver, newname)) => (url, ver, newname),
+                Err(e) => {
+                    debug!("Failed to get download URL: {}", e);
+                    if e.to_string().contains("could not be found") {
+                        return Err(anyhow::anyhow!("Crate not found"));
+                    }
+                    if e.to_string().contains("Known: ") {
+                        return Err(anyhow::anyhow!("Version not found"));
+                    }
+                    debug!("Retrying download");
+                    continue;
                 }
-                if e.to_string().contains("Known: ") {
-                    return Err(anyhow::anyhow!("Version not found"));
-                }
-                debug!("Retrying download");
-                continue;
-            }
-        };
+            };
         debug!("Download URL: {}", download_url);
 
         let crate_path = dir.join(format!("{}-{}", newname, ver));
@@ -123,13 +125,14 @@ pub fn download_all_dependencies(
         debug!("Worklist length: {}", worklist.len());
         let (name, version) = worklist.pop().unwrap();
         debug!("Downloading {} with version {}", name, version);
-        let name_with_version = match clone_from_crates(&name, Some(&version), Some(main_name)) {
-            Ok(name_with_version) => name_with_version,
-            Err(e) => {
-                debug!("Failed to download crate: {}", e);
-                continue;
-            }
-        };
+        let name_with_version =
+            match clone_from_crates(&name, Some(&version), Some(main_name), None) {
+                Ok(name_with_version) => name_with_version,
+                Err(e) => {
+                    debug!("Failed to download crate: {}", e);
+                    continue;
+                }
+            };
         let old_name = name.clone();
         let (name, new_version) = match name_with_version.split_once(':') {
             Some((n, v)) => (n.to_string(), v.to_string()),
@@ -486,10 +489,61 @@ fn get_download_url(
     client: &SyncClient,
     name: &str,
     version: &Option<&String>,
+    main_name: Option<&str>,
+    parent_name: Option<&str>,
 ) -> Result<(String, String, String), anyhow::Error> {
     let crate_data = client.get_crate(name)?;
+    let mut resolved_version: String = String::new();
 
-    let resolved_version = resolve_version(version, &crate_data)?;
+    // main_name None means this the download of the main crate itself. So there is no
+    // parent or version to look for in the lock file.
+    if let Some(main_name) = main_name {
+        let lock_file = match parent_name {
+            Some(parent) => PathBuf::from(DOWNLOAD_PATH)
+                .join(format!("{}_deps", main_name.replace(':', "-")))
+                .join(format!(
+                    "{}-{}",
+                    parent,
+                    version.unwrap_or(&"latest".to_string())
+                ))
+                .join("Cargo.lock"),
+            None => PathBuf::from(DOWNLOAD_PATH)
+                .join(main_name.replace(':', "-"))
+                .join("Cargo.lock"),
+        };
+
+        if lock_file.exists() {
+            debug!(
+                "Lock file found at {}, trying to find exact version match",
+                lock_file.display()
+            );
+            let lock_content =
+                fs::read_to_string(&lock_file).context("Failed to read Cargo.lock")?;
+            let lock_toml: toml::Value =
+                toml::from_str(&lock_content).context("Failed to parse Cargo.lock")?;
+            if let Some(packages) = lock_toml.get("package").and_then(Value::as_array) {
+                for package in packages {
+                    if package.get("name").and_then(Value::as_str) == Some(name)
+                        && let Some(ver) = package.get("version").and_then(Value::as_str)
+                    {
+                        debug!("Exact version match found in Cargo.lock: {}", ver);
+                        resolved_version = ver.to_string();
+                    }
+                }
+            }
+            debug!("No exact version match found in Cargo.lock, falling back to crates.io API");
+        }
+    }
+
+    if resolved_version.is_empty() {
+        debug!("Resolving version using crates.io API");
+        resolved_version = resolve_version(version, &crate_data)?;
+    } else {
+        debug!(
+            "Resolved version for {} using Cargo.lock: {}",
+            name, resolved_version
+        );
+    }
 
     let dl_path = crate_data
         .versions

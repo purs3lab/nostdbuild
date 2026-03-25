@@ -673,6 +673,7 @@ pub fn process_crate(
                     &externs,
                     &mut exchange.telemetry,
                     &exchange.name_with_version,
+                    Some(name_with_version),
                 ) {
                     Ok((eq, attr)) => {
                         if let Some(eq) = eq {
@@ -1187,15 +1188,18 @@ pub fn determine_n_depth_dep_no_std(
                 "Processing dependency {}:{} for no_std",
                 dep_name, dep_version
             );
-            let name_with_version =
-                match downloader::clone_from_crates(&dep_name, Some(&dep_version), Some(main_name))
-                {
-                    Ok(name_with_version) => name_with_version,
-                    Err(e) => {
-                        debug!("Failed to download crate: {}", e);
-                        continue;
-                    }
-                };
+            let name_with_version = match downloader::clone_from_crates(
+                &dep_name,
+                Some(&dep_version),
+                Some(main_name),
+                Some(&format!("{}:{}", &name, &version)),
+            ) {
+                Ok(name_with_version) => name_with_version,
+                Err(e) => {
+                    debug!("Failed to download crate: {}", e);
+                    continue;
+                }
+            };
 
             if is_proc_macro(&name_with_version, Some(main_name)) {
                 debug!("{} is a proc-macro, skipping", name_with_version);
@@ -2368,6 +2372,7 @@ fn parse_top_level_externs<'a>(
     externs: &Vec<ItemExternCrate>,
     telemetry: &mut Telemetry,
     main_name: &str,
+    parent_name: Option<&str>,
 ) -> Result<(Option<Bool<'a>>, ParsedAttr), anyhow::Error> {
     let mut worklist = Vec::new();
     for ex in externs {
@@ -2384,8 +2389,12 @@ fn parse_top_level_externs<'a>(
         if version.is_none() {
             continue;
         }
-        let name_with_version =
-            downloader::clone_from_crates(&ex.ident.to_string(), version, Some(main_name))?;
+        let name_with_version = downloader::clone_from_crates(
+            &ex.ident.to_string(),
+            version,
+            Some(main_name),
+            parent_name,
+        )?;
         let items = parse_item_extern_crates(&name_with_version, Some(main_name));
         if items.itemexterncrates.is_empty() {
             continue;
@@ -2442,7 +2451,12 @@ fn parse_n_level_externs_entry<'a>(
             // extern crate std hit at the shallowest depth. A crate with a deeper violation
             // may be missed if another crate hits first at a shallower depth. Consider
             // exhaustive per-crate traversal if full coverage is needed.
-            if parse_n_level_externs(&mut local_worklist.1, telemetry, main_name) {
+            if parse_n_level_externs(
+                &mut local_worklist.1,
+                telemetry,
+                main_name,
+                Some(name_with_version),
+            ) {
                 telemetry.indirect_extern_std_usage_depth = depth;
                 return (equation.clone(), parsed_attr.clone());
             }
@@ -2455,13 +2469,18 @@ fn parse_n_level_externs(
     worklist: &mut Vec<String>,
     telemetry: &mut Telemetry,
     main_name: &str,
+    parent_name: Option<&str>,
 ) -> bool {
     let mut local_worklist = Vec::new();
     for name_with_version in worklist.drain(..) {
         let (mut name, version) = name_with_version.split_once(':').unwrap();
-        let new_name_with_version =
-            downloader::clone_from_crates(name, Some(&version.to_string()), Some(main_name))
-                .unwrap();
+        let new_name_with_version = downloader::clone_from_crates(
+            name,
+            Some(&version.to_string()),
+            Some(main_name),
+            parent_name,
+        )
+        .unwrap();
         name = new_name_with_version
             .split_once(':')
             .map_or(name, |(n, _)| n);
