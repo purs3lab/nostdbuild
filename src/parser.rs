@@ -404,7 +404,7 @@ pub fn parse_item_extern_crates_for_files(
 
         if let Err(err) = visit(
             &mut itemexterncrates,
-            &file.as_os_str().to_str().unwrap_or_default(),
+            file.as_os_str().to_str().unwrap_or_default(),
             true,
             true,
             main_name,
@@ -2572,12 +2572,12 @@ fn visit<T>(
 where
     T: for<'a> Visit<'a> + GetItemExternCrate,
 {
-    let dir;
-    if !direct_file {
-        dir = get_actual_dir(crate_name, main_name);
+    let dir = if !direct_file {
+        get_actual_dir(crate_name, main_name)
     } else {
-        dir = PathBuf::from(crate_name);
-    }
+        PathBuf::from(crate_name)
+    };
+
     let files = get_all_rs_files(&dir, recurse, main_name);
 
     for filename in files {

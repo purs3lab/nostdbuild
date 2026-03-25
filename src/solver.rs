@@ -206,7 +206,7 @@ pub fn final_feature_list_main(
     let mut enable_from_default = Vec::new();
     let mut disable_from_default: Vec<String> = Vec::new();
 
-    let mut local_to_disable: Vec<String> = disable.iter().cloned().collect();
+    let mut local_to_disable: Vec<String> = disable.to_vec();
 
     if let Some(all_dep_feats) = all_dep_feats {
         all_dep_feats.iter().for_each(|feat| {
