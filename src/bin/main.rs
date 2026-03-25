@@ -86,6 +86,12 @@ fn process_dep_crate_wrapper(
         &HashSet::new(),
     );
 
+    // TODO: For the crate watchface, we process and get to the state where the disable list of the dependency
+    // contains the feature that originally enabled that optional dependency. Once the std visitor issue is fixed,
+    // come back to this and see if we need to change how we process it here. It is possible that the original 
+    // features that we discovered for the dependency might be difference once the std visitor issue is fixed,
+    // and if that is the case, we might be able to build the crate with this dependency enabled.
+
     parser::move_unnecessary_dep_feats(
         &exchange.name_with_version,
         enable,
@@ -231,6 +237,7 @@ fn main() -> anyhow::Result<()> {
 
     if cli.dry_run {
         println!("Dry run enabled, exiting now!");
+        stats.dump(true);
         return Ok(());
     }
 
@@ -268,6 +275,7 @@ fn main() -> anyhow::Result<()> {
     // no_std compilation.
     // TODO: For the impossible case where there is no way to connect no_std to some feature, we try compiling, and if there are errors, we need to see what caused the error. If it was due to some unresolved import, we need to find the feature that is gating it and enabled it. Or we can also have a set of features that we know includes more things into the crate. And then when compilation fails, we can try each of those features and see if it fixes the issue. This is a last resort since it is not systematic and is expensive.
     // ADD test for yaxpeax-m16c
+    // To look at: watchface-0.4.0: optional dependency getting enabled/use lock file to get the dep version here, world_magnetic_model-0.2.0: dep feature not correct, uom-0.36.0: last crate uses this but this shows std usage when there is not one requires changes to ast visitor here (chrono-0.4.19 same issue here).
     let mut deps_args = Vec::new();
     for mut dep in deps_attrs {
         if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {
