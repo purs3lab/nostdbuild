@@ -213,13 +213,10 @@ impl<'a> Visit<'a> for Attributes {
             }
             // Remove the attribute from the list which are
             // compiler_error attributes.
-            // This is currently assuming there will be only
-            // one attribute associated with compiler_error
-            // and also that the attribute to remove
-            // has already been visited.
-            self.attributes.retain(|a| a != &attrs[0]);
+            let attr = attrs.iter().find(|a| a.path().is_ident("cfg")).unwrap();
+            self.attributes.retain(|a| a != attr);
             // Negate the attrs[0] and add it to the attributes
-            match attrs[0].meta.clone() {
+            match attr.meta.clone() {
                 Meta::List(meta_list) => {
                     let path = meta_list.path.get_ident();
                     if path.is_some() && path.unwrap() == "cfg" {
@@ -232,10 +229,7 @@ impl<'a> Visit<'a> for Attributes {
                     }
                 }
                 _ => {
-                    debug!(
-                        "Unexpected meta type for compiler_error: {:?}",
-                        attrs[0].meta
-                    );
+                    debug!("Unexpected meta type for compiler_error: {:?}", attr.meta);
                 }
             }
         }
