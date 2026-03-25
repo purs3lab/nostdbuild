@@ -2422,6 +2422,18 @@ fn parse_n_level_externs_entry<'a>(
     worklist.iter().for_each(|(name_with_version, _, _)| {
         worklists.push((name_with_version.clone(), Vec::<String>::new()));
     });
+
+    worklist.iter().for_each(|(name_with_version, _, _)| {
+        let (name, version) = name_with_version.split_once(':').unwrap();
+        let dep_names = downloader::read_dep_names_and_versions(name, version, false, main_name)
+            .unwrap_or_default();
+        let initial_worklist = dep_names
+            .iter()
+            .map(|(dep_name, dep_version)| format!("{}:{}", dep_name, dep_version))
+            .collect::<Vec<String>>();
+        worklists.push((name_with_version.clone(), initial_worklist));
+    });
+
     loop {
         if worklists.iter().all(|(_, remaining)| remaining.is_empty()) {
             telemetry.indirect_extern_std_usage_depth = depth;
@@ -2432,6 +2444,10 @@ fn parse_n_level_externs_entry<'a>(
                 .iter_mut()
                 .find(|(name, _)| name == name_with_version)
                 .unwrap();
+            // TODO: BFS across all top-level crates simultaneously - returns on the first
+            // extern crate std hit at the shallowest depth. A crate with a deeper violation
+            // may be missed if another crate hits first at a shallower depth. Consider
+            // exhaustive per-crate traversal if full coverage is needed.
             if parse_n_level_externs(&mut local_worklist.1, telemetry, main_name) {
                 telemetry.indirect_extern_std_usage_depth = depth;
                 return (equation.clone(), parsed_attr.clone());
