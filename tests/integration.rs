@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 static FEATURE_TEST_LOCK: Mutex<()> = Mutex::new(());
+static EXTERN_STD_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 use nostd::consts;
 
@@ -96,4 +97,23 @@ fn test_feature_causes_std_usage1() {
 fn test_feature_causes_std_usage2() {
     let _lock = FEATURE_TEST_LOCK.lock().unwrap();
     run_fixture_test("test_feature_causes_std_usage", "0.1.0", &[], "2");
+}
+
+// Following two tests test the same crate, but with different features enabled,
+// to test if enabling a feature causes extern to refer to std or core.
+#[cargo_test]
+fn test_extern_std_on_feature_usage2() {
+    let _lock = EXTERN_STD_TEST_LOCK.lock().unwrap();
+    run_fixture_test("test_extern_std_on_feature", "0.1.0", &[], "1");
+}
+
+#[cargo_test]
+fn test_extern_std_on_feature_usage1() {
+    let _lock = EXTERN_STD_TEST_LOCK.lock().unwrap();
+    run_fixture_test(
+        "test_extern_std_on_feature",
+        "0.1.0",
+        &["--", "--", "--features=use_std"],
+        "2",
+    );
 }

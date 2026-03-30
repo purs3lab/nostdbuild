@@ -1,0 +1,14 @@
+[package]
+name = "test_extern_std_on_feature"
+description = "Test to check if enabling/disabling a feature causes extern to use std vs core"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "test_extern_std_on_feature"
+
+[features]
+use_std = []
+
+[workspace]

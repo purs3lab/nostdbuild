@@ -1,0 +1,26 @@
+[
+  {
+    "file": "main.rs",
+    "start_line": 7,
+    "start_col": 13,
+    "end_line": 7,
+    "end_col": 31,
+    "usage_crate": "std"
+  },
+  {
+    "file": "main.rs",
+    "start_line": 3,
+    "start_col": 2,
+    "end_line": 3,
+    "end_col": 5,
+    "usage_crate": "LOCAL"
+  },
+  {
+    "file": "main.rs",
+    "start_line": 1,
+    "start_col": 0,
+    "end_line": 1,
+    "end_col": 0,
+    "usage_crate": "LOCAL"
+  }
+]
