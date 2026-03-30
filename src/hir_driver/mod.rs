@@ -239,7 +239,7 @@ impl<'r, 'a> AstVisitor<'a> for MyVisitor<'r> {
 //     def_path.starts_with("std[") || def_path.starts_with("std::")
 // }
 
-fn get_readable_span(tcx: &TyCtxt, span: Span) -> ReadableSpan {
+fn get_readable_span(tcx: &TyCtxt, span: Span, usage_crate: &str) -> ReadableSpan {
     let source_map = tcx.sess.source_map();
     let loc = source_map.lookup_char_pos(span.lo());
     let end_loc = source_map.lookup_char_pos(span.hi());
@@ -254,6 +254,7 @@ fn get_readable_span(tcx: &TyCtxt, span: Span) -> ReadableSpan {
         start_col: loc.col.0,
         end_line: end_loc.line,
         end_col: end_loc.col.0,
+        usage_crate: Some(usage_crate.to_string()),
     };
     println!("Found span: {:?}", span);
     span
@@ -321,9 +322,9 @@ impl rustc_driver::Callbacks for MyCompilerCalls {
                 continue;
             }
 
-            if usage_crate.as_str() == "std" {
-                spans.insert(get_readable_span(&tcx, info.span));
-            }
+            // if usage_crate.as_str() == "std" {
+            spans.insert(get_readable_span(&tcx, info.span, usage_crate.as_str()));
+            // }
 
             println!(
                 "{:<30} | {:<15} | {:<15}",

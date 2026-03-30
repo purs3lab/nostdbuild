@@ -42,6 +42,9 @@ pub fn hir_visit(
     // Each iteration appends to this in-memory vector.
     let mut results: Vec<ReadableSpan> = Vec::new();
 
+    // Collects spans where we get conflicts in usage_crate between runs.
+    let mut conflicts: Vec<ReadableSpan> = Vec::new();
+
     let backup_hir_manifest = dir.join("Cargo.toml.hir");
 
     if Path::new(&output_file_name).exists() {
@@ -128,7 +131,7 @@ pub fn hir_visit(
                 .output()
                 .expect("Failed to run cargo-hir with features");
 
-            collect_hir_results(&visit_file_name, &mut results);
+            collect_hir_results(&visit_file_name, &mut results, &mut conflicts);
         }
     } else {
         debug!("Running cargo-hir with no features");
@@ -138,7 +141,7 @@ pub fn hir_visit(
             .output()
             .expect("Failed to run cargo-hir");
 
-        collect_hir_results(&visit_file_name, &mut results);
+        collect_hir_results(&visit_file_name, &mut results, &mut conflicts);
     }
 
     if all_feats {
@@ -151,7 +154,7 @@ pub fn hir_visit(
         telemetry.hir_driver_time_ms = now.elapsed().as_millis();
     }
 
-    dedup_results(&mut results);
+    dedup_results(&mut results, &conflicts);
 
     fs::write(
         &output_file_name,
@@ -167,7 +170,11 @@ pub fn hir_visit(
     debug!("cargo-hir run finished in {} ms", now.elapsed().as_millis());
 }
 
-fn collect_hir_results(from: &Path, spans: &mut Vec<ReadableSpan>) {
+fn collect_hir_results(
+    from: &Path,
+    spans: &mut Vec<ReadableSpan>,
+    conflicts: &mut Vec<ReadableSpan>,
+) {
     if !from.exists() {
         debug!(
             "HIR visitor span dump file does not exist. Please ensure that `cargo-hir` ran successfully"
@@ -179,10 +186,22 @@ fn collect_hir_results(from: &Path, spans: &mut Vec<ReadableSpan>) {
     let new_spans: Vec<ReadableSpan> =
         serde_json::from_str(&data).expect("Unable to parse HIR visitor span dump file");
 
-    spans.extend(new_spans);
+    for new_span in &new_spans {
+        if let Some(existing) = spans.iter().find(|s| s == &new_span) {
+            if (existing.usage_crate.as_deref() == Some("std")
+                && new_span.usage_crate.as_deref() != Some("std"))
+                || (existing.usage_crate.as_deref() != Some("std")
+                    && new_span.usage_crate.as_deref() == Some("std"))
+            {
+                conflicts.push(new_span.clone());
+            }
+        } else {
+            spans.push(new_span.clone());
+        }
+    }
 }
 
-fn dedup_results(results: &mut Vec<ReadableSpan>) {
+fn dedup_results(results: &mut Vec<ReadableSpan>, conflicts: &[ReadableSpan]) {
     results.sort_by(|a, b| {
         a.file
             .cmp(&b.file)
@@ -192,6 +211,8 @@ fn dedup_results(results: &mut Vec<ReadableSpan>) {
             .then(a.end_col.cmp(&b.end_col))
     });
     results.dedup();
+
+    results.retain(|r| r.usage_crate.as_deref() == Some("std") && !conflicts.contains(r));
 }
 
 pub fn read_hir_spans(crate_name: &str) -> Vec<ReadableSpan> {
@@ -262,6 +283,7 @@ pub fn proc_macro_span_to_readable(span: &Span, file: Option<String>) -> Readabl
         start_col: span.start().column,
         end_line: span.end().line,
         end_col: span.end().column,
+        usage_crate: None,
     }
 }
 

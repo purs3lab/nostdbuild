@@ -5,7 +5,12 @@ use bincode::{Decode, Encode};
 use lazy_static::lazy_static;
 use proc_macro2::Span;
 use serde::{Deserialize, Serialize};
-use std::{fs, path, sync::Mutex};
+use std::{
+    fs,
+    hash::{Hash, Hasher},
+    path,
+    sync::Mutex,
+};
 use syn::Attribute;
 
 pub mod compiler;
@@ -139,13 +144,38 @@ pub struct CrateInfo {
     pub git: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadableSpan {
     file: String,
     start_line: usize,
     start_col: usize,
     end_line: usize,
     end_col: usize,
+    // This field is used only during the ast visitor call to track the usage crate of the current span.
+    // It is then used to filter out spans where there are conflicting usage_crates.
+    usage_crate: Option<String>,
+}
+
+impl PartialEq for ReadableSpan {
+    fn eq(&self, other: &Self) -> bool {
+        self.file == other.file
+            && self.start_line == other.start_line
+            && self.start_col == other.start_col
+            && self.end_line == other.end_line
+            && self.end_col == other.end_col
+    }
+}
+
+impl Eq for ReadableSpan {}
+
+impl Hash for ReadableSpan {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.file.hash(state);
+        self.start_line.hash(state);
+        self.start_col.hash(state);
+        self.end_line.hash(state);
+        self.end_col.hash(state);
+    }
 }
 
 impl ReadableSpan {
