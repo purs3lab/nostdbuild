@@ -32,13 +32,26 @@ pub(crate) fn compare_json_files(actual_path: &PathBuf, expected_path: &PathBuf)
         actual_path.display()
     );
 
-    let actual_json =
-        fs::read_to_string(actual_path).expect("Unable to read actual HIR visitor span dump file");
-    let expected_json = fs::read_to_string(expected_path)
-        .expect("Unable to read expected HIR visitor span dump file");
-
     assert_eq!(
-        actual_json, expected_json,
+        normalize_json(actual_path),
+        normalize_json(expected_path),
         "Actual HIR visitor span dump does not match expected output."
     );
+}
+
+fn normalize_json(path: &PathBuf) -> String {
+    let json_str = fs::read_to_string(path).expect("Unable to read JSON file");
+    let mut json_value: Vec<serde_json::Value> =
+        serde_json::from_str(&json_str).expect("Unable to parse JSON file");
+    json_value.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+    let sort_key = |v: &serde_json::Value| {
+        (
+            v["file"].as_str().unwrap_or("").to_string(),
+            v["start_line"].as_u64().unwrap_or(0),
+            v["start_col"].as_u64().unwrap_or(0),
+        )
+    };
+
+    json_value.sort_by_key(sort_key);
+    serde_json::to_string_pretty(&json_value).expect("Unable to serialize JSON")
 }

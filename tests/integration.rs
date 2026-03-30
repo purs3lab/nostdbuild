@@ -74,7 +74,7 @@ fn test_vec_used_via_use() {
 }
 
 #[cargo_test]
-#[should_panic]
+#[should_panic(expected = "use of unresolved module or unlinked crate `std`")]
 fn test_std_in_std_mode() {
     run_fixture_test("test_std_in_std_mode", "0.1.0", &[], "");
 }

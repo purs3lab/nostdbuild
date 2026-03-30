@@ -1,9 +1,18 @@
 [
   {
     "file": "main.rs",
+    "start_line": 1,
+    "start_col": 0,
+    "end_line": 1,
+    "end_col": 0,
+    "usage_crate": "LOCAL"
+  },
+  {
+    "file": "main.rs",
     "start_line": 2,
     "start_col": 12,
     "end_line": 2,
-    "end_col": 30
+    "end_col": 30,
+    "usage_crate": "std"
   }
 ]
