@@ -1,0 +1,22 @@
+[
+  {
+    "name": "zlib-rs",
+    "version": "0.5.0",
+    "target": "armv7a-none-eabi",
+    "args": [
+      "+nightly",
+      "build",
+      "--release",
+      "--target",
+      "armv7a-none-eabi",
+      "--manifest-path",
+      "/evaldisk/sourag/downloads/zlib-rs-0.5.0/Cargo.toml",
+      "--lib",
+      "--no-default-features",
+      "--features",
+      "c-allocator"
+    ],
+    "status": "Success",
+    "error": null
+  }
+]

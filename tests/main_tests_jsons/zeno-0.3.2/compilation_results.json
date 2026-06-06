@@ -1,7 +1,7 @@
 [
   {
-    "name": "log",
-    "version": "0.4.29",
+    "name": "zeno",
+    "version": "0.3.2",
     "target": "x86_64-unknown-none",
     "args": [
       "+nightly",
@@ -10,8 +10,11 @@
       "--target",
       "x86_64-unknown-none",
       "--manifest-path",
-      "/evaldisk/sourag/downloads/log-0.4.29/Cargo.toml",
-      "--lib"
+      "/evaldisk/sourag/downloads/zeno-0.3.2/Cargo.toml",
+      "--lib",
+      "--no-default-features",
+      "--features",
+      "eval,libm"
     ],
     "status": "Success",
     "error": null

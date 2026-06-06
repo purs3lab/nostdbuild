@@ -111,3 +111,55 @@ fn test_elfloader() {
 fn test_assertr() {
     run_main_test("assertr", "0.4.3", "x86_64-unknown-none");
 }
+
+#[cargo_test]
+fn test_wg() {
+    run_main_test("wg", "0.9.2", "x86_64-unknown-none");
+}
+
+#[cargo_test]
+fn test_ya_smoltcp() {
+    run_main_test("ya-smoltcp", "0.1.0", "x86_64-unknown-none");
+}
+
+#[cargo_test]
+#[should_panic(expected = "Found unguarded std usage in the main crate")]
+fn test_zyx_core() {
+    run_main_test("zyx-core", "0.1.1", "x86_64-unknown-none");
+}
+
+#[cargo_test]
+fn test_winter_fri() {
+    run_main_test("winter-fri", "0.12.2", "x86_64-unknown-none");
+}
+
+#[cargo_test]
+fn test_winter_crypto() {
+    run_main_test("winter-crypto", "0.12.0", "x86_64-unknown-none");
+}
+
+#[cargo_test]
+fn test_zeno() {
+    run_main_test("zeno", "0.3.2", "x86_64-unknown-none");
+}
+
+#[cargo_test]
+fn test_zlib_rs() {
+    run_main_test("zlib-rs", "0.5.0", "armv7a-none-eabi");
+}
+
+#[cargo_test]
+#[should_panic(expected = "Main crate is a proc-macro crate, which is not supported")]
+fn test_educe() {
+    run_main_test("educe", "0.6.0", "x86_64-unknown-none");
+}
+
+#[cargo_test]
+fn test_uom() {
+    run_main_test("uom", "0.38.0", "x86_64-unknown-none");
+}
+
+#[cargo_test]
+fn test_watchface() {
+    run_main_test("watchface", "0.4.0", "x86_64-unknown-none");
+}
