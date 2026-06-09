@@ -32,6 +32,8 @@ pub const TARGET_LIST: [&str; 26] = [
     "x86_64-unknown-none",
 ];
 
+pub const PLUGIN_OUTPUT_ENV: &str = "NO_STD_TOOL_OUTPUT_PATH";
+
 /// When we remove a feature from default enabled features, we add it to
 /// this custom feature list to preserve the original functionality
 /// of the crate when used in std mode.
@@ -54,15 +56,6 @@ pub const DEP_UNNECESSARY_FEATURES: &str = "dep_unnecessary_features";
 /// Some crates have known syntex failures but are `no_std`.
 /// We need to ignore these crates to prevent false negatives.
 pub const KNOWN_SYN_FAILURES: [&str; 1] = ["nb:0.1.3"];
-
-/// This is the file where the visitor itself dumps the spans it visits.
-/// This is then later merged and moved to a per crate file.
-pub const HIR_VISITOR_VISIT_FILE_SUFFIX: &str = "hir_visitor_visit.json";
-
-/// Once the hir analysis is done for a crate, the results are moved to a crate
-/// specific file with this suffix. This is done to prevent overwriting results
-/// when we run it for multiple dependencies.
-pub const HIR_VISITOR_SPAN_DUMP_SUFFIX: &str = "hir_visitor_span_dump.json";
 
 /// Check if the target is valid
 /// # Arguments
