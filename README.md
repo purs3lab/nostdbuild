@@ -1,39 +1,79 @@
-# Automatic `no_std` compilation of crates
+# Automatic `no_std` Cargo feature solver
 
-This tool automatically finds the features that should be enabled/disabled for a crate to be compiled in `no_std` mode.  
-This requires that the crate already supports `no_std` build.
+Given a crate that supports `no_std`, this tool automatically finds the Cargo feature flags needed to compile it in `no_std` mode and verifies the result by actually building it.
 
-The tool runs in three main phases moving to the next only if the previous one fails.
+## How it works
 
-### Phase 1
-Run the ast visitor to find std usages. Parse the attributes and find a starting point. This starting point depends on the kind of attribute that enables `no_std`. If is a conditional attribute, that condition is used as the starting point. If it is an unconditional attribute, we find any std usages gated by an attribute and use that as the starting point.  
+The tool runs in two broad stages.
 
-Once we have all attributes and the starting point, we convert all the conditions into `z3` equation and solve them. This gives the required condition for `no_std`.  
+### Stage 1 — Determine the no_std condition for the main crate
 
-> If there are conflicting conditions, for example, main crate a feature for a dependency that should be disabled to make the dependency `no_std`, we update the main crate manifest to solve this confict. Refer to `move_unnecessary_dep_feats` for more details.
+The goal is to find the feature combination under which all `std` usage disappears.
 
-### Phase 2
-If the above phase fails to find list of features, we check the reason for failure. This phase checks for any std usages that are not gated by any attribute. This means the crate is configured such that it is impossible to build in `no_std` mode. This reuses the ast visitor result from the previous phase.
+**Coverage pass.** A syn-based AST visitor parses `cfg` attributes across the crate and encodes them as Z3 boolean constraints. A CEGAR loop drives the Z3 solver to find a minimal set of feature combinations (covering runs) such that every `#[cfg(…)]`-gated block is exercised by at least one run. Each covering run invokes the `cargo-hir` rustc plugin, which instruments the compiler to record every path resolution, specifically which crate each symbol resolves to (`std`, `core`, `alloc`, a local path, or an external dep crate).
 
-### Phase 3
-Possibly the most time consuming and most likely to give false positive. This phase goes through the chain of dependencies and check if there is a dependency at some depth where it is impossible to make it `no_std` without modifying the manigest of its parent. We need to check this because we can only edit the manifest for the main crate. Meaning crates at depth > 1 is considered immutable.
+**Span classification.** After all covering runs complete, each span that resolves to `std` is classified:
+- **AlwaysStd** — resolves to `std` in every covering run that activates it
+- **Conditional** — resolves to `std` in some runs, non-std in others
+- **NeverStd** — never resolves to `std`
 
-## Usage
+**Probing.** For each `AlwaysStd` import or usage, the tool negates its cfg gate in Z3 and re-runs the plugin. If negating the gate produces a run where the span is absent or resolves to non-std, the negated condition is the required no_std enabler. CEGAR is used here too: if a candidate feature set fails to compile, that model is blocked and Z3 picks a different one. The final no_std condition is the conjunction of all discovered gate conditions.
 
-The tool depends on an ast visitor plugin. So you will need to install the visitor first.
-Run the following command from the root of the repo.
+If any `std` span cannot be gated away, the crate is reported as incompatible.
+
+### Stage 2 — Resolve dependencies
+
+Each direct dependency is processed similarly. The tool:
+1. Checks the results DB for a cached feature set; otherwise runs the full analysis.
+2. Reconciles the dependency's required features with what the main crate already enables, adding or removing features as needed.
+3. Minimizes the final feature list by removing features that are redundant given the crate's feature implication graph.
+4. Handles optional dependencies that get pulled in transitively.
+
+After all dependencies are resolved, the combined feature set is compiled against the requested target to verify correctness. Successful results are cached in `db.bin`.
+
+## Setup
+
+Install the rustc plugin (required before running):
 ```sh
 cargo install --path . --bin cargo-hir --bin hir-driver --force
 ```
-> The name is `hir` because that's what it used to do.
 
-You will need to update the following constants from [consts](./src/consts.rs):  
-- `DOWNLOAD_PATH`: Location where the main crate and its dependencies will be downloaded
-- `RESULTS_PATH`: Location where the results are stored
+Update [src/consts.rs](src/consts.rs):
+- `DOWNLOAD_PATH` — where crates and dependencies are downloaded
+- `RESULTS_PATH` — where JSON results are written
+
+## Usage
+
+```sh
+cargo run --bin main -- --name <crate-name> --version <version> --target <target>
+```
+
+Example:
+```sh
+cargo run --bin main -- --name log --version 0.4.29 --target x86_64-unknown-none
+```
+
+Supported targets are listed in `consts::TARGET_LIST`. Pass `--no-recursive` to skip the final recursive dependency check.
+
+## Output
+
+Results are written to `$RESULTS_PATH/<crate_name>-<version>/`:
+- `compilation_results.json` — per-target build status and the derived `--features` / `--no-default-features` args
+- `crate_info.json` — dependency tree with resolved features
+- `std_usages.json` — hard std spans that could not be gated away (non-empty means failure)
+- `telemetry.json` — detailed diagnostics about the analysis
 
 ## Tests
-There are two sets of tests available for this crate:
-- `./test-all hir`: Test the ast visitor with example crates
-- `./test-all main`: Test the main crate functionality
 
-> `cargo test` depends on the above paths as well. So update them before running tests.
+```sh
+cargo test
+```
+
+| Suite | What it tests |
+|-------|--------------|
+| `tests/driver_tests.rs` | Unit tests for `is_local_reexport` and `resolve_local_facade_gateways` |
+| `tests/std_tests.rs` | Fixture crates: verifies hard vs non-hard std span classification against known-correct answers |
+| `tests/cegar_tests.rs` | Regression tests for the CEGAR retry loop and covering-set pairing recovery |
+| `tests/main_tests.rs` | End-to-end: runs the full binary on real crates and diffs the JSON output against saved fixtures |
+
+`main_tests` requires `DOWNLOAD_PATH` and `RESULTS_PATH` to be set and `cargo-hir` to be installed.
