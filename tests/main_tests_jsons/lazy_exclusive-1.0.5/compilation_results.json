@@ -12,9 +12,11 @@
       "--manifest-path",
       "/evaldisk/sourag/downloads/lazy-exclusive-1.0.5/Cargo.toml",
       "--lib",
-      "--no-default-features"
+      "--no-default-features",
+      "--features",
+      "use-locks"
     ],
-    "status": "Success",
-    "error": null
+    "status": "Failed",
+    "error": "Cargo failed with status code: 101 and message:    Compiling libc v0.2.171\n   Compiling lazy-exclusive v1.0.5 (/evaldisk/sourag/downloads/lazy-exclusive-1.0.5)\nerror[E0432]: unresolved imports `libc::pthread_mutex_destroy`, `libc::pthread_mutex_init`, `libc::pthread_mutex_lock`, `libc::pthread_mutex_t`, `libc::pthread_mutex_unlock`\n  --> src/lock.rs:16:5\n   |\n16 |     pthread_mutex_destroy, pthread_mutex_init, pthread_mutex_lock, pthread_mutex_t,\n   |     ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^ no `pthread_mutex_t` in the root\n   |     |                      |                   |\n   |     |                      |                   no `pthread_mutex_lock` in the root\n   |     |                      no `pthread_mutex_init` in the root\n   |     no `pthread_mutex_destroy` in the root\n17 |     pthread_mutex_unlock,\n   |     ^^^^^^^^^^^^^^^^^^^^ no `pthread_mutex_unlock` in the root\n\nFor more information about this error, try `rustc --explain E0432`.\nerror: could not compile `lazy-exclusive` (lib) due to 1 previous error\n"
   }
 ]

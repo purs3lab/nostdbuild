@@ -12,7 +12,9 @@
       "--manifest-path",
       "/evaldisk/sourag/downloads/tinywasm-parser-0.8.0/Cargo.toml",
       "--lib",
-      "--no-default-features"
+      "--no-default-features",
+      "--features",
+      "logging"
     ],
     "status": "Success",
     "error": null

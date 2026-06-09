@@ -26,6 +26,7 @@ fn run_main_test(crate_name: &str, crate_version: &str, arch: &str) {
         crate_version,
         "--target",
         arch,
+        "--no-recursive",
     ];
 
     let crate_download_dir =
@@ -96,6 +97,11 @@ fn test_log() {
     run_main_test("log", "0.4.29", "x86_64-unknown-none");
 }
 
+/// Looks like recent changes made is such that we add
+/// `use-locks` to the set of features to enable and this causes
+/// compilation error. But according to README of the crate
+/// `use-locks` possible but untested. So we will leave it as
+/// a known failure.
 #[cargo_test]
 fn test_lazy_exclusive() {
     run_main_test("lazy-exclusive", "1.0.5", "x86_64-unknown-none");

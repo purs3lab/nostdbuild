@@ -14,7 +14,7 @@
       "--lib",
       "--no-default-features",
       "--features",
-      "nightly"
+      "parser"
     ],
     "status": "Success",
     "error": null

@@ -8,4 +8,7 @@ edition = "2024"
 path = "main.rs"
 name = "test_extern_std"
 
+[features]
+use_std = []
+
 [workspace]

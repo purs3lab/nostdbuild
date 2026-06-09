@@ -9,6 +9,9 @@ path = "main.rs"
 name = "test_extern_std_on_feature"
 
 [features]
+default = ["use_std", "f64", "si"]
 use_std = []
+f64 = []
+si = []
 
 [workspace]
