@@ -1,0 +1,14 @@
+[package]
+name = "test_local_facade_deep"
+description = "Tests resolve_local_facade_gateways prefix matching with a 3-level deep extern crate std"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "test_local_facade_deep"
+
+[features]
+std = []
+
+[workspace]

@@ -1,0 +1,15 @@
+[package]
+name = "test_feature_implies_std_transitively"
+description = "feat_a implies feat_b (feat_a = [\"feat_b\"]), feat_b gates extern crate std"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "test_feature_implies_std_transitively"
+
+[features]
+feat_b = []
+feat_a = ["feat_b"]
+
+[workspace]

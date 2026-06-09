@@ -1,0 +1,11 @@
+[package]
+name = "test_cfg_target_os_std"
+description = "std gated on cfg(target_os) — not a feature, so cannot be avoided via feature CEGAR"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "test_cfg_target_os_std"
+
+[workspace]

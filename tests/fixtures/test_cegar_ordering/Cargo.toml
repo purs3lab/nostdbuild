@@ -1,0 +1,15 @@
+[package]
+name = "test_cegar_ordering"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "test_cegar_ordering"
+
+[features]
+feat_a = []
+feat_b = []
+feat_c = []
+
+[workspace]

@@ -1,0 +1,11 @@
+[package]
+name = "test_alloc_only"
+description = "Crate that uses alloc::vec::Vec but never std — should produce no hard std spans"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "test_alloc_only"
+
+[workspace]

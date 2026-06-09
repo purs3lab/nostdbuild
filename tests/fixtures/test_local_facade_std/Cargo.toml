@@ -1,0 +1,14 @@
+[package]
+name = "test_local_facade_std"
+description = "Test that std deps behind a local module facade (tinywasm pattern) are detected"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "test_local_facade_std"
+
+[features]
+std = []
+
+[workspace]

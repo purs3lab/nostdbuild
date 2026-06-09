@@ -1,0 +1,15 @@
+[package]
+name = "test_probe_cegar_retry"
+description = "Tests CEGAR retry in probe_one_target: nightly+no-std fails to compile, CEGAR finds nightly=off+no-std which compiles and proves the Error impl is NonStd"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "test_probe_cegar_retry"
+
+[features]
+std = []
+nightly = []
+
+[workspace]
