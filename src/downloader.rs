@@ -15,8 +15,9 @@ use tar::Archive;
 use toml::{self, Value, map::Map};
 use walkdir::WalkDir;
 
+use crate::types::*;
 use crate::{
-    CrateInfo, DEPENDENCIES, Dependency, Telemetry, TupleVec,
+    CrateInfo, DEPENDENCIES, Dependency, Telemetry,
     consts::{CRATE_IO, DOWNLOAD_PATH},
     parser,
 };
@@ -118,9 +119,11 @@ pub fn download_all_dependencies(
     crate_info: &mut CrateInfo,
     depth: u32,
     telemetry: &mut Telemetry,
+    top_level_deps: &mut Vec<(String, String)>,
 ) -> Result<bool, anyhow::Error> {
     debug!("Initial worklist length: {}", worklist.len());
     let mut initlist = Vec::new();
+    let mut opt_initlist = Vec::new();
     while !worklist.is_empty() {
         debug!("Worklist length: {}", worklist.len());
         let (name, version) = worklist.pop().unwrap();
@@ -144,6 +147,7 @@ pub fn download_all_dependencies(
             dep_lock.push(name_with_version.clone());
         }
         drop(dep_lock);
+        top_level_deps.push((name.clone(), new_version.clone()));
 
         // Some crates have _ in their name when in the dependency list,
         // but the actual crate name has - instead.
@@ -169,6 +173,10 @@ pub fn download_all_dependencies(
                 return Ok(false);
             }
             initlist.push((name.clone(), new_version.to_string()));
+        } else {
+            // Optional dep: download its transitive sub-deps so recursive_dep_requirement_check
+            // can inspect them, but don't fail if they lack no_std support.
+            opt_initlist.push((name.clone(), new_version.to_string()));
         }
 
         debug!("Successfully downloaded {}", name_with_version);
@@ -186,8 +194,26 @@ pub fn download_all_dependencies(
     let ctx = z3::Context::new(&cfg);
     let now = Instant::now();
     debug!("Finished downloading dependencies. Now verifying if they support no_std build");
-    let (no_std, depth_traversed) =
-        parser::determine_n_depth_dep_no_std(initlist, depth, 0, &mut visited, &ctx, main_name);
+    let (no_std, depth_traversed) = parser::determine_n_depth_dep_no_std(
+        initlist,
+        depth,
+        0,
+        &mut visited,
+        &ctx,
+        main_name,
+        true,
+    );
+    // Download transitive sub-deps of optional top-level deps so recursive_dep_requirement_check
+    // can inspect them. Re-use `visited` to avoid re-downloading crates already fetched above.
+    parser::determine_n_depth_dep_no_std(
+        opt_initlist,
+        depth,
+        0,
+        &mut visited,
+        &ctx,
+        main_name,
+        false,
+    );
     telemetry.initial_dep_verification_time_ms = now.elapsed().as_millis();
     telemetry.deps_depth_traversed = depth_traversed;
     Ok(no_std)
@@ -371,7 +397,7 @@ pub fn contains_one_rs_file(path: &str) -> bool {
     false
 }
 
-fn read_local_features(toml: &toml::Value) -> Vec<(String, TupleVec)> {
+pub(crate) fn read_local_features(toml: &toml::Value) -> Vec<(String, TupleVec)> {
     let features = toml
         .get("features")
         .and_then(Value::as_table)

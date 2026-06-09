@@ -1,11 +1,12 @@
 #![feature(rustc_private)]
 
-use std::collections::HashSet;
+use std::{collections::HashSet};
 
+use anyhow::Ok;
 use clap::Parser;
 use log::debug;
 
-use nostd::{Attributes, compiler, consts, db, downloader, hir, parser, solver};
+use nostd::{Attributes, compiler, consts, db, downloader, driver, parser, solver};
 
 #[derive(Parser, Debug)]
 #[command(author, about)]
@@ -27,21 +28,194 @@ struct Cli {
 
     #[arg(long)]
     depth: Option<u32>,
+
+    /// Whether the final recursive dep check should run.
+    #[arg(long)]
+    no_recursive: bool,
+}
+
+/// Traverse the ModNode tree to find the full condition (root→leaf) for the
+/// innermost item whose span contains `target`. Returns None when the item
+/// is unconditional (reachable regardless of features).
+fn find_condition_for_span<'a>(
+    node: &nostd::visitor::ModNode<'a>,
+    target: &nostd::types::ReadableSpan,
+    ctx: &'a z3::Context,
+    inherited: Option<z3::ast::Bool<'a>>,
+) -> Option<z3::ast::Bool<'a>> {
+    let module_gate = match (&inherited, &node.entry_condition) {
+        (Some(i), Some(e)) => Some(z3::ast::Bool::and(ctx, &[i, e])),
+        (Some(i), None) => Some(i.clone()),
+        (None, Some(e)) => Some(e.clone()),
+        (None, None) => None,
+    };
+
+    // Only inspect items/children that belong to the same source file as target.
+    let node_file = node.source_file.to_string_lossy();
+    if node_file == target.file {
+        for item in &node.local_items {
+            if item.span_matches(target) {
+                return Some(match (&module_gate, &item.own_condition) {
+                    (Some(g), Some(c)) => z3::ast::Bool::and(ctx, &[g, c]),
+                    (Some(g), None) => g.clone(),
+                    (None, Some(c)) => c.clone(),
+                    (None, None) => z3::ast::Bool::from_bool(ctx, true),
+                });
+            }
+        }
+    }
+
+    for child in &node.children {
+        if let Some(cond) = find_condition_for_span(child, target, ctx, module_gate.clone()) {
+            return Some(cond);
+        }
+    }
+
+    // Target file matched this node but no item-level span matched —
+    // the use site is in this module's scope, so return the module gate.
+    if node_file == target.file {
+        return module_gate;
+    }
+
+    None
+}
+
+/// For every covering-run PathRecord that references an external crate,
+/// find the full condition (root→leaf) for the containing item in the main
+/// crate's tree. If that condition is compatible with no_std (condition AND
+/// NOT(hard) is SAT, or there are no hard constraints), include the item in
+/// the result set.
+fn compute_valid_cross_crate_items<'a>(
+    root: &nostd::visitor::ModNode<'a>,
+    records: &[nostd::types::PathRecord],
+    hard: Option<&z3::ast::Bool<'a>>,
+    ctx: &'a z3::Context,
+) -> std::collections::HashSet<(String, String)> {
+    let mut result = std::collections::HashSet::new();
+
+    // Collect all external records grouped by dep for the initial summary print.
+    let mut all_by_dep: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for record in records {
+        if record.definition_crate == "LOCAL" || record.is_extern_crate {
+            continue;
+        }
+        let item_name = record
+            .path_text
+            .split("::")
+            .last()
+            .unwrap_or(&record.path_text)
+            .to_string();
+        if !item_name.is_empty() {
+            all_by_dep
+                .entry(record.definition_crate.replace('-', "_"))
+                .or_default()
+                .push(item_name);
+        }
+    }
+    println!("[cross_crate] All external items referenced by main crate in covering runs:");
+    for (dep, items) in &all_by_dep {
+        let mut sorted = items.clone();
+        sorted.sort();
+        sorted.dedup();
+        println!("  dep={}: {:?}", dep, sorted);
+    }
+
+    for record in records {
+        if record.definition_crate == "LOCAL" || record.is_extern_crate {
+            continue;
+        }
+        let item_name = record
+            .path_text
+            .split("::")
+            .last()
+            .unwrap_or(&record.path_text)
+            .to_string();
+        if item_name.is_empty() {
+            continue;
+        }
+
+        let dep_norm = record.definition_crate.replace('-', "_");
+
+        let is_accessible = match hard {
+            None => true,
+            Some(h) => {
+                match find_condition_for_span(root, &record.span, ctx, None) {
+                    None => true, // unconditional
+                    Some(c) => {
+                        let sat = {
+                            let s = z3::Solver::new(ctx);
+                            s.assert(&c);
+                            s.assert(&h.not());
+                            s.check() == z3::SatResult::Sat
+                        };
+                        println!(
+                            "[cross_crate] dep={} item={} condition_AND_NOT_hard={}",
+                            dep_norm,
+                            item_name,
+                            if sat {
+                                "SAT (accessible)"
+                            } else {
+                                "UNSAT (blocked by hard)"
+                            }
+                        );
+                        sat
+                    }
+                }
+            }
+        };
+
+        if is_accessible {
+            result.insert((dep_norm, item_name));
+        }
+    }
+
+    println!("[cross_crate] Final valid cross-crate items (no_std-accessible):");
+    let mut final_sorted: Vec<_> = result.iter().collect();
+    final_sorted.sort();
+    for (dep, item) in &final_sorted {
+        println!("  dep={} item={}", dep, item);
+    }
+
+    result
 }
 
 fn process_dep_crate_wrapper(
     exchange: &mut nostd::DataExchange,
     dep: &mut Attributes,
-    dep_and_feats: &nostd::TupleVec,
+    dep_and_feats: &mut nostd::types::TupleVec,
     main_features: &mut Vec<String>,
     disable_default: &mut bool,
     enable: &mut Vec<String>,
     deps_args: &mut Vec<String>,
     previously_disabled: &mut HashSet<String>,
+    non_minimalizable: &HashSet<String>,
 ) -> anyhow::Result<()> {
-    debug!("Processing dependency: {}", dep.crate_name);
+    // Check the DB first: if we already have a result for this dep, skip the expensive
+    // gather_crate_info + analyze_crate_wrapper + process_crate path entirely.
+    let (local_dep_args, dep_disable, dep_enable) =
+        if let Some(db_entry) = db::get_from_db_data(&exchange.db_data, &dep.crate_name) {
+            debug!(
+                "DB hit for dependency {}, skipping analysis",
+                dep.crate_name
+            );
+            let (enable, disable) = (db_entry.features.0.clone(), db_entry.features.1.clone());
+            // DB hit — no dep_root available; pass empty map (no protection check for this dep).
+            parser::finalize_dep_crate(
+                exchange,
+                dep,
+                enable,
+                disable,
+                std::collections::HashMap::new(),
+            )?
+        } else {
+            parser::process_dep_crate(exchange, dep)?
+        };
 
-    let (local_dep_args, dep_disable, dep_enable) = parser::process_dep_crate(exchange, dep)?;
+    println!(
+        "Dependency {} enable features: {:?}, disable features: {:?}",
+        dep.crate_name, dep_enable, dep_disable
+    );
 
     deps_args.extend(local_dep_args);
 
@@ -69,6 +243,11 @@ fn process_dep_crate_wrapper(
         &mut exchange.telemetry,
     );
 
+    println!(
+        "Dependency {} temp flexible features: {:?}, to disable: {:?}, temp disable default: {}",
+        dep.crate_name, temp_flexible, to_disable, temp_disable_default
+    );
+
     previously_disabled.extend(to_disable.clone());
     temp_flexible.retain(|f| !previously_disabled.contains(f));
 
@@ -83,14 +262,12 @@ fn process_dep_crate_wrapper(
         &exchange.crate_info,
         dep_and_feats,
         main_features,
-        &HashSet::new(),
+        non_minimalizable,
+        *disable_default,
+        &exchange.name_with_version,
+        None,
+        None,
     );
-
-    // TODO: For the crate watchface, we process and get to the state where the disable list of the dependency
-    // contains the feature that originally enabled that optional dependency. Once the std visitor issue is fixed,
-    // come back to this and see if we need to change how we process it here. It is possible that the original 
-    // features that we discovered for the dependency might be difference once the std visitor issue is fixed,
-    // and if that is the case, we might be able to build the crate with this dependency enabled.
 
     parser::move_unnecessary_dep_feats(
         &exchange.name_with_version,
@@ -100,6 +277,7 @@ fn process_dep_crate_wrapper(
         &dep_enable,
         &mut exchange.telemetry,
         *disable_default,
+        &exchange.protected_dep_features,
     );
     Ok(())
 }
@@ -191,49 +369,103 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    let mut top_level_deps: Vec<(String, String)> = Vec::new();
     let no_std = downloader::download_all_dependencies(
         &name,
         &mut worklist,
         &mut crate_info,
         depth,
         &mut telemetry,
+        &mut top_level_deps,
     )?;
 
     let mut exchange = nostd::DataExchange {
-        ctx: Some(ctx),
         name_with_version: name,
         db_data,
         crate_info,
         telemetry,
         crate_name_rename,
+        valid_cross_crate_items: std::collections::HashSet::new(),
+        main_enable: Vec::new(),
+        protected_dep_features: std::collections::HashSet::new(),
     };
 
     stats.crate_info = Some(exchange.crate_info.clone());
     exchange.telemetry.no_std = found;
     exchange.telemetry.dep_not_no_std = !no_std;
 
-    // We need to do it here because our features retension logic relies on this
-    hir::hir_visit(
+    let ctx = z3::Context::new(&z3::Config::new());
+    let (
+        all_hard,
+        hard_constraints,
+        coverage_comparison,
+        _compile_error_constraints,
+        main_root,
+        covering_records,
+    ) = driver::analyze_crate_wrapper(
+        &ctx,
         &exchange.name_with_version,
-        Some(&mut exchange.telemetry),
-        true,
-        Some(&exchange.crate_info),
         None,
+        &mut exchange.telemetry,
     );
 
-    let mut main_attributes = parser::parse_crate(&exchange.name_with_version, true, None);
+    // Build valid cross-crate item set while main ctx (and its Z3 Bools) is live.
+    exchange.valid_cross_crate_items = compute_valid_cross_crate_items(
+        &main_root,
+        &covering_records,
+        hard_constraints.as_ref(),
+        &ctx,
+    );
 
-    let readable_spans = hir::proc_macro_spans_to_readables(&main_attributes.spans);
-    let dep_and_feats = parser::features_for_optional_deps(&exchange.crate_info);
+    stats.coverage_comparison = coverage_comparison;
+
+    let mut failed = false;
+    let mut reason = "";
+
+    if !all_hard.is_empty() {
+        exchange.telemetry.unguarded_std_usages = true;
+        debug!("ERROR: Found unguarded std usage in the main crate");
+        reason = "Found unguarded std usage in the main crate";
+        stats.std_usage_matches = all_hard;
+        stats.dump(true);
+        return Err(anyhow::anyhow!(reason));
+    }
+
+    let mut main_attributes =
+        parser::parse_crate(&exchange.name_with_version, true, None, &all_hard);
+
+    let mut dep_and_feats = parser::features_for_optional_deps(&exchange.crate_info);
 
     let (mut enable, disable) = parser::process_crate(
         &mut exchange,
+        &ctx,
         &mut main_attributes,
         None,
         None,
         true,
-        &dep_and_feats,
+        &mut dep_and_feats,
+        hard_constraints,
     )?;
+
+    exchange.main_enable = enable.clone();
+
+    // Derive non_minimalizable from the intersection of the solved enable list and the feature
+    // names mentioned in any compile_error condition. This avoids arbitrary Z3 picks from
+    // disjunctive constraints (e.g. uom's "at least one storage type" rule) that could select
+    // a feature which pulls in std. Only features already needed for no_std can appear here.
+    let non_minimalizable: HashSet<String> = {
+        let ce_features = parser::compile_error_feature_names(&main_attributes, &ctx);
+        enable
+            .iter()
+            .filter(|f| ce_features.contains(*f))
+            .cloned()
+            .collect()
+    };
+
+    println!(
+        "Initial main crate features to enable: {:?}, features to disable: {:?}",
+        enable, disable
+    );
 
     if cli.dry_run {
         println!("Dry run enabled, exiting now!");
@@ -248,18 +480,42 @@ fn main() -> anyhow::Result<()> {
         None,
         &mut exchange.telemetry,
     );
-    parser::minimize(
-        &exchange.crate_info,
-        &dep_and_feats,
-        &mut main_features,
-        &HashSet::new(),
+
+    println!(
+        "Main crate features after solving: {:?}, to disable: {:?}, disable default: {}",
+        main_features, to_disable, disable_default
     );
 
     debug!("Dependency and features: {:?}", dep_and_feats);
 
     println!("Main crate arguments: {:?}", main_features);
+    main_features.extend(enable.clone());
+    println!(
+        "Main crate arguments after extending with enable: {:?}",
+        main_features
+    );
 
-    let deps_attrs = parser::parse_deps_crate(&exchange.name_with_version);
+    parser::minimize(
+        &exchange.crate_info,
+        &mut dep_and_feats,
+        &mut main_features,
+        &non_minimalizable,
+        disable_default,
+        &exchange.name_with_version,
+        None,
+        None,
+    );
+
+    println!(
+        "Main crate arguments after minimization: {:?}",
+        main_features
+    );
+
+    let deps_attrs = parser::parse_deps_crate(
+        &exchange.name_with_version,
+        &mut exchange.telemetry,
+        &exchange.db_data,
+    );
     let mut skipped = Vec::new();
     // We keep track of the features we have already disabled for dependencies.
     // This way we don't accidentally re-enable some feature for a later dependency
@@ -277,6 +533,7 @@ fn main() -> anyhow::Result<()> {
     // ADD test for yaxpeax-m16c
     // To look at: watchface-0.4.0: optional dependency getting enabled/use lock file to get the dep version here, world_magnetic_model-0.2.0: dep feature not correct, uom-0.36.0: last crate uses this but this shows std usage when there is not one requires changes to ast visitor here (chrono-0.4.19 same issue here).
     let mut deps_args = Vec::new();
+    let mut enabled_optional_deps: HashSet<String> = HashSet::new();
     for mut dep in deps_attrs {
         if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {
             debug!(
@@ -299,15 +556,21 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
 
+        let dep_name = dep.crate_name.split(':').next().unwrap_or("").to_string();
+        if parser::is_dep_optional(&exchange.crate_info, &dep_name) {
+            enabled_optional_deps.insert(dep_name);
+        }
+
         process_dep_crate_wrapper(
             &mut exchange,
             &mut dep,
-            &dep_and_feats,
+            &mut dep_and_feats,
             &mut main_features,
             &mut disable_default,
             &mut enable,
             &mut deps_args,
             &mut previously_disabled,
+            &non_minimalizable,
         )?;
     }
 
@@ -331,32 +594,54 @@ fn main() -> anyhow::Result<()> {
                 dep.crate_name
             );
 
+            let dep_name = dep.crate_name.split(':').next().unwrap_or("").to_string();
+            if parser::is_dep_optional(&exchange.crate_info, &dep_name) {
+                enabled_optional_deps.insert(dep_name);
+            }
+
             process_dep_crate_wrapper(
                 &mut exchange,
                 &mut dep,
-                &dep_and_feats,
+                &mut dep_and_feats,
                 &mut main_features,
                 &mut disable_default,
                 &mut enable,
                 &mut dep_args_skipped,
                 &mut previously_disabled,
+                &non_minimalizable,
             )?;
         }
     }
 
+    println!(
+        "Dependecies that got enabled after processing skipped deps: {:?}",
+        enabled_optional_deps
+    );
+
     parser::minimize(
         &exchange.crate_info,
-        &dep_and_feats,
+        &mut dep_and_feats,
         &mut main_features,
-        &enable.iter().cloned().collect(),
+        &non_minimalizable,
+        disable_default,
+        &exchange.name_with_version,
+        None,
+        Some(&enabled_optional_deps),
     );
 
     deps_args.extend(dep_args_skipped);
 
+    println!("Dep arguments: {:?}", deps_args);
+    println!(
+        "Main crate arguments after processing deps: {:?}",
+        main_features
+    );
+
     let mut final_args = Vec::new();
     let mut combined_features = Vec::new();
     let mut final_features_len = main_features.len();
-    main_features.extend(enable.clone());
+    main_features.sort();
+    main_features.dedup();
     let main_feature_string = main_features.join(",");
 
     if !deps_args.is_empty() {
@@ -379,6 +664,8 @@ fn main() -> anyhow::Result<()> {
         combined_features.push(deps_args.join(","));
     }
     if !combined_features.is_empty() {
+        combined_features.sort();
+        combined_features.dedup();
         final_args.push("--features".to_string());
         final_args.push(combined_features.join(","));
     }
@@ -397,9 +684,6 @@ fn main() -> anyhow::Result<()> {
         Ok(false)
     }?;
 
-    let mut failed = false;
-    let mut reason = "";
-
     if one_succeeded {
         exchange.telemetry.build_success = true;
         db::add_to_db_data(
@@ -409,21 +693,18 @@ fn main() -> anyhow::Result<()> {
         );
     } else {
         exchange.telemetry.hir_analysis_done = true;
-        if hir::check_for_unguarded_std_usages(
-            &exchange.name_with_version,
-            &readable_spans,
-            &main_attributes,
-            &mut stats,
-        ) {
-            exchange.telemetry.unguarded_std_usages = true;
-            debug!("ERROR: Found unguarded std usage in the main crate");
-            failed = true;
-            reason = "Found unguarded std usage in the main crate";
-        }
         // We add no_std here but not for the previous condition becase, we want to know
         // even if some deps are not no_std compatible, whether the main would have built successfully
         // if not for the unsupported deps.
-        else if no_std && !parser::recursive_dep_requirement_check(&mut exchange, depth) {
+        if no_std
+            && !cli.no_recursive
+            && !parser::recursive_dep_requirement_check(
+                &mut exchange,
+                depth,
+                &top_level_deps,
+                &enabled_optional_deps,
+            )
+        {
             // This is the last resort since this has a high chance of false positives
             debug!(
                 "ERROR: Some dependency at some level does not have a way to enable all its required features in no_std mode"
