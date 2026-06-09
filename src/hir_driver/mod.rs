@@ -7,244 +7,310 @@ extern crate rustc_resolve;
 extern crate rustc_session;
 extern crate rustc_span;
 
-use rustc_ast::{
-    node_id::NodeId,
-    visit::{self, Visitor as AstVisitor},
-};
+use rustc_ast::token::{Delimiter, TokenKind};
+use rustc_ast::tokenstream::TokenTree;
+use rustc_ast::visit::{self, Visitor as AstVisitor};
 use rustc_driver::Compilation;
-// use rustc_hir::{
-//     self as hir, Item, def,
-// intravisit::{self, Visitor},
-// };
-use rustc_hir::def;
 use rustc_interface::interface;
-// use rustc_middle::hir::nested_filter;
 use rustc_middle::ty::{ResolverAstLowering, TyCtxt};
-// use rustc_span::{ExpnKind, FileNameDisplayPreference, MacroKind, Span, def_id::DefId};
-use rustc_span::{FileNameDisplayPreference, Span, def_id::DefId};
+use rustc_span::hygiene::ExpnKind;
+use rustc_span::source_map::SourceMap;
+use rustc_span::{FileNameDisplayPreference, Span, Symbol};
+
+use std::collections::HashMap;
 
 use rustc_plugin::{CrateFilter, RustcPlugin, RustcPluginArgs, Utf8Path};
 
+use std::borrow::Cow;
+use std::env;
 use std::process::Command;
-use std::{borrow::Cow, collections::HashSet};
-use std::{
-    env,
-    path::{Path, PathBuf},
-};
 
 use clap::Parser;
 use log::debug;
 use serde::{Deserialize, Serialize};
 
-use crate::ReadableSpan;
 use crate::consts;
+use crate::types::*;
 
-// struct MyVisitor<'tcx> {
-//     tcx: TyCtxt<'tcx>,
-//     spans: HashSet<ReadableSpan>,
-//     skipped_spans: Vec<Span>,
-// }
-
-// impl<'tcx> MyVisitor<'tcx> {
-//     fn new(tcx: TyCtxt<'tcx>) -> Self {
-//         MyVisitor {
-//             tcx,
-//             spans: HashSet::new(),
-//             skipped_spans: Vec::new(),
-//         }
-//     }
-// }
-
-struct PathResolutionInfo {
-    path_text: String,
-    // final_def_id: DefId,
-    // The DefId of the first segment (e.g., 'std' or 'core')
-    root_segment_def_id: Option<DefId>,
-    // is_macro: bool,
-    span: Span,
-}
-
-struct MyVisitor<'r> {
-    // We hold a reference to the data struct
+struct PathResolver<'r, 'tcx> {
     resolver: &'r ResolverAstLowering,
-    results: Vec<PathResolutionInfo>,
-    skipped_spans: Vec<Span>,
+    tcx: TyCtxt<'tcx>,
+    records: Vec<PathRecord>,
+    current_context: PathContext,
+    current_module_path: Vec<String>,
+    macro_module_imports: Vec<(String, String)>, // filename, module name
+    /// Map from macro name to full `#[cfg(…)]` attribute strings extracted from the macro body.
+    macro_cfg_map: HashMap<Symbol, Vec<String>>,
 }
 
-fn res_to_def_id(res: &def::Res<NodeId>) -> Option<DefId> {
-    match res {
-        def::Res::Def(_, def_id) => Some(*def_id),
-        def::Res::SelfTyAlias { alias_to, .. } => Some(*alias_to),
-        def::Res::SelfTyParam { trait_ } => Some(*trait_),
-        _ => None,
-    }
-}
-
-impl<'r, 'a> AstVisitor<'a> for MyVisitor<'r> {
-    fn visit_path(&mut self, path: &'a rustc_ast::Path) -> Self::Result {
-        // println!("AST Path: {:?}", path);
-        // let is_macro = path.span.from_expansion();
-        let span = path.span.source_callsite();
-        // if let Some(last_segment) = path.segments.last()
-        //     && let Some(partial_res) = self.resolver.partial_res_map.get(&last_segment.id)
-        //     && let Some(final_def_id) = res_to_def_id(&partial_res.base_res())
-        // {
-        let mut root_def_id = None;
-
-        // We iterate through the segments of the path to find the root segment that corresponds to an external crate
-        // Or if that doesn't exist, we take the first segment as the root segment
-        for segment in path.segments.iter() {
-            if let Some(res) = self
-                .resolver
-                .partial_res_map
-                .get(&segment.id)
-                .map(|r| r.base_res())
-                && let Some(def_id) = res.opt_def_id()
-            {
-                // If the usage comes directly from another crate, we stop the processing
-                if !def_id.is_local() {
-                    root_def_id = Some(def_id);
-                    break;
-                }
-
-                // If the usage comes from the same crate, we check if it is an external crate import
-                // Cases like `extern crate std as foo; use foo::...` would be caught here,
-                // where the root segment is `foo`, first segment is from the current crate,
-                // but the root_def_id would be from `std`
-                // TODO: Does this actually do what is says it does?
-                if let rustc_hir::def::Res::Def(rustc_hir::def::DefKind::ExternCrate, _) = res {
-                    root_def_id = Some(def_id);
-                    break;
+/// Walks `tokens` and returns the full source text of every `#[cfg(…)]`
+/// attribute found at any nesting depth, using the source map to reconstruct
+/// the original text.  Recurses into delimited groups so attributes inside
+/// `not(…)` / `all(…)` arms are also captured.
+fn collect_cfg_attrs_from_tokens(
+    tokens: &rustc_ast::tokenstream::TokenStream,
+    source_map: &SourceMap,
+) -> Vec<String> {
+    let mut result = Vec::new();
+    let trees: Vec<TokenTree> = tokens.iter().cloned().collect();
+    let mut i = 0;
+    while i < trees.len() {
+        match &trees[i] {
+            TokenTree::Token(tok, _) if tok.kind == TokenKind::Pound => {
+                if let Some(TokenTree::Delimited(
+                    delim_span,
+                    _,
+                    Delimiter::Bracket,
+                    bracket_inner,
+                )) = trees.get(i + 1)
+                {
+                    let inner: Vec<TokenTree> = bracket_inner.iter().cloned().collect();
+                    // First token inside `[…]` must be the ident `cfg`
+                    let is_cfg = inner.first().is_some_and(|t| {
+                        matches!(t, TokenTree::Token(id, _)
+                            if matches!(id.kind, TokenKind::Ident(s, _) if s.as_str() == "cfg"))
+                    });
+                    if is_cfg {
+                        // Span from `#` to the closing `]`
+                        let full_span = tok.span.to(delim_span.entire());
+                        if let Ok(snippet) = source_map.span_to_snippet(full_span) {
+                            result.push(snippet);
+                        }
+                        i += 2;
+                        continue;
+                    }
                 }
             }
+            TokenTree::Delimited(_, _, _, inner) => {
+                result.extend(collect_cfg_attrs_from_tokens(inner, source_map));
+            }
+            _ => {}
         }
-
-        if root_def_id.is_none()
-            && let Some(first) = path.segments.first()
-            && let Some(res) = self.resolver.partial_res_map.get(&first.id)
-        {
-            root_def_id = res.base_res().opt_def_id();
-        }
-
-        // if let Some(first_segment) = path.segments.first()
-        //     && let Some(root_res) = self.resolver.partial_res_map.get(&first_segment.id)
-        // {
-        //     root_def_id = res_to_def_id(&root_res.base_res());
-        // }
-        let path_text = path
-            .segments
-            .iter()
-            .map(|s| s.ident.to_string())
-            .collect::<Vec<_>>()
-            .join("::");
-
-        self.results.push(PathResolutionInfo {
-            path_text,
-            // final_def_id,
-            root_segment_def_id: root_def_id,
-            // is_macro,
-            span,
-        });
-        // }
-        visit::walk_path(self, path);
+        i += 1;
     }
+    result
+}
 
+impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
     fn visit_item(&mut self, item: &'a rustc_ast::Item) {
-        if let rustc_ast::ItemKind::Mod(_, ident, _) = &item.kind {
-            debug!("Found module: {}", ident.name);
-            if ident.name.as_str() == "test" {
-                debug!("Ignoring test module");
-                self.skipped_spans.push(item.span);
-                return;
+        let old_context = self.current_context;
+
+        // 1. Track module hierarchy
+        let is_mod = matches!(item.kind, rustc_ast::ItemKind::Mod(..));
+        if is_mod {
+            let (ident, kind) = match &item.kind {
+                rustc_ast::ItemKind::Mod(_, ident, kind) => (ident, kind),
+                _ => unreachable!(),
+            };
+            self.current_module_path.push(ident.name.to_string());
+
+            let span = item.span;
+            if span.from_expansion() {
+                let record = match kind {
+                    rustc_ast::ModKind::Loaded(_, rustc_ast::Inline::No { .. }, _) => {
+                        debug!("Tracking module from macro expansion: {}", ident.name);
+                        true
+                    }
+                    rustc_ast::ModKind::Loaded(_, rustc_ast::Inline::Yes, _) => {
+                        debug!(
+                            "Skipping inline module from macro expansion: {}",
+                            ident.name
+                        );
+                        false
+                    }
+                    rustc_ast::ModKind::Unloaded => {
+                        unreachable!(
+                            "Tracking unloaded module from macro expansion: {}",
+                            ident.name
+                        );
+                    }
+                };
+                if record {
+                    let root_callsite = span
+                        .macro_backtrace()
+                        .last()
+                        .map(|bt| bt.call_site)
+                        .unwrap_or(span);
+                    let source_file = self.tcx.sess.source_map().span_to_filename(root_callsite);
+                    self.macro_module_imports.push((
+                        source_file.prefer_local().to_string(),
+                        ident.name.to_string(),
+                    ));
+                }
             }
         }
+
+        // 2. Handle context and manual extraction
+        match &item.kind {
+            rustc_ast::ItemKind::Use(..) => {
+                self.current_context = PathContext::ImportDeclaration;
+            }
+            rustc_ast::ItemKind::ExternCrate(orig_name, extern_ident) => {
+                if item.span.is_dummy() {
+                    debug!(
+                        "Skipping dummy extern crate declaration: {}",
+                        extern_ident.name
+                    );
+                    return;
+                }
+                self.current_context = PathContext::ImportDeclaration;
+
+                let alias_name = extern_ident.to_string();
+                let target_crate = orig_name
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| alias_name.clone());
+
+                let defining_module = Some(self.current_module_path.join("::"));
+                let readable_span =
+                    get_readable_span(&self.tcx, item.span.source_callsite(), &target_crate);
+
+                self.records.push(PathRecord {
+                    path_text: alias_name,
+                    definition_crate: target_crate.to_string(),
+                    local_route: None,
+                    defining_module,
+                    context: PathContext::ImportDeclaration,
+                    span: readable_span,
+                    macro_body_cfgs: vec![],
+                    is_extern_crate: true,
+                });
+            }
+            _ => {
+                self.current_context = PathContext::Other;
+            }
+        }
+
+        // 3. Walk the item (this will trigger visit_path for inner things like `Use`)
         visit::walk_item(self, item);
+
+        // 4. Clean up
+        if is_mod {
+            self.current_module_path.pop();
+        }
+        self.current_context = old_context;
+    }
+
+    fn visit_block(&mut self, b: &'a rustc_ast::Block) {
+        let old_ctx = self.current_context;
+        self.current_context = PathContext::Expression;
+        visit::walk_block(self, b);
+        self.current_context = old_ctx;
+    }
+
+    fn visit_ty(&mut self, t: &'a rustc_ast::Ty) {
+        let old_ctx = self.current_context;
+        self.current_context = PathContext::Type;
+        visit::walk_ty(self, t);
+        self.current_context = old_ctx;
+    }
+
+    fn visit_path(&mut self, path: &'a rustc_ast::Path) -> Self::Result {
+        // If the path is from a macro expansion, trace back to the original call
+        // site. Also look up any #[cfg(…)] guards from that macro's body.
+        let (effective_span, macro_body_cfgs) = if path.span.from_expansion() {
+            let last_expn = path.span.macro_backtrace().last();
+            let span = last_expn
+                .as_ref()
+                .map(|bt| bt.call_site)
+                .unwrap_or(path.span);
+            let cfgs = last_expn
+                .and_then(|expn| {
+                    if let ExpnKind::Macro(_, name) = expn.kind {
+                        self.macro_cfg_map.get(&name).cloned()
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+            (span, cfgs)
+        } else {
+            (path.span, vec![])
+        };
+
+        let mut deepest_res_def_id = None;
+
+        for segment in path.segments.iter().rev() {
+            if let Some(res) = self.resolver.partial_res_map.get(&segment.id)
+                && let Some(def_id) = res.base_res().opt_def_id()
+            {
+                deepest_res_def_id = Some(def_id);
+                break;
+            }
+        }
+
+        if let Some(final_def_id) = deepest_res_def_id {
+            let mut root_def_id = None;
+            let mut local_route_segments = Vec::new();
+            let mut local_route = None;
+
+            for segment in &path.segments {
+                let seg_name = segment.ident.to_string();
+
+                if let Some(res) = self.resolver.partial_res_map.get(&segment.id)
+                    && let Some(def_id) = res.base_res().opt_def_id()
+                    && !def_id.is_local()
+                {
+                    root_def_id = Some(def_id);
+                    if !local_route_segments.is_empty() {
+                        local_route = Some(local_route_segments.join("::"));
+                    }
+                    break;
+                }
+
+                local_route_segments.push(seg_name);
+            }
+
+            if root_def_id.is_none()
+                && let Some(first) = path.segments.first()
+                && let Some(res) = self.resolver.partial_res_map.get(&first.id)
+            {
+                root_def_id = res.base_res().opt_def_id();
+            }
+
+            let path_text = path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect::<Vec<_>>()
+                .join("::");
+
+            let definition_crate = self.tcx.crate_name(final_def_id.krate).to_string();
+            let gateway_crate = if let Some(root_id) = root_def_id {
+                self.tcx.crate_name(root_id.krate).to_string()
+            } else {
+                "LOCAL".to_string()
+            };
+
+            let readable_span = get_readable_span(&self.tcx, effective_span, &gateway_crate);
+
+            let defining_module = if self.current_context == PathContext::ImportDeclaration {
+                Some(self.current_module_path.join("::"))
+            } else {
+                None
+            };
+
+            self.records.push(PathRecord {
+                path_text,
+                definition_crate,
+                local_route,
+                defining_module,
+                context: self.current_context,
+                span: readable_span,
+                macro_body_cfgs,
+                is_extern_crate: false,
+            });
+        }
+
+        visit::walk_path(self, path)
     }
 }
-
-// impl<'tcx> Visitor<'tcx> for MyVisitor<'tcx> {
-//     type MaybeTyCtxt = TyCtxt<'tcx>;
-//     type NestedFilter = nested_filter::All;
-
-//     fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
-//         self.tcx
-//     }
-
-//     fn visit_path(&mut self, path: &hir::Path<'tcx>, _id: hir::HirId) {
-//         // println!("Visiting path: {:?}", path);
-//         // let segment = path.segments.last();
-//         for segment in path.segments.iter() {
-//             let def_id = match &segment.res {
-//                 def::Res::Def(_, def_id) => def_id,
-//                 def::Res::Local(hir_id) => &hir_id.owner.to_def_id(),
-//                 def::Res::SelfTyAlias { alias_to, .. } => alias_to,
-//                 def::Res::SelfTyParam { trait_ } => trait_,
-//                 _ => {
-//                     debug!("Not a definition or local");
-//                     intravisit::walk_path(self, path);
-//                     return;
-//                 }
-//             };
-//             let expn = path.span.ctxt().outer_expn_data();
-//             println!("Expr expansion kind: {:?}", expn.kind);
-//             // println!("Segment {:#?}", segment);
-//             match expn.kind {
-//                 ExpnKind::Macro(MacroKind::Derive, _) => {
-//                     println!("Ignoring path from derive macro");
-//                     return;
-//                 }
-//                 _ => { /* continue */ }
-//             }
-//             let def_path_debug = self.tcx.def_path_debug_str(*def_id);
-//             // let def_path = self.tcx.def_path_str(*def_id);
-//             println!("Path resolved to definition {}", def_path_debug);
-//             println!("Path span: {:?}", path.span);
-//             let span = path.span.source_callsite();
-//             if self.skipped_spans.iter().any(|&s| s.contains(span)) {
-//                 debug!("Ignoring path in skipped span");
-//                 return;
-//             }
-//             if def_path_string_with_std(&def_path_debug) {
-//                 self.spans.insert(get_readable_span(&self.tcx, span));
-//             }
-//         }
-//         intravisit::walk_path(self, path);
-//     }
-
-//     fn visit_item(&mut self, item: &'tcx Item) {
-//         if let hir::ItemKind::Mod(ident, _) = item.kind {
-//             debug!("Found module: {}", ident.name);
-//             if ident.name.as_str() == "test" {
-//                 debug!("Ignoring test module");
-//                 self.skipped_spans.push(item.span);
-//                 return;
-//             }
-//         }
-//         intravisit::walk_item(self, item);
-//     }
-// }
-
-// fn def_path_string_with_std(def_path: &str) -> bool {
-//     if let Some((left, right)) = def_path.split_once(" as ") {
-//         let left = left.strip_prefix("<").unwrap_or(left);
-//         let right = right.strip_suffix(">").unwrap_or(right);
-//         starts_with_std(left) || starts_with_std(right)
-//     } else {
-//         starts_with_std(def_path)
-//     }
-// }
-
-// fn starts_with_std(def_path: &str) -> bool {
-//     let def_path = def_path.strip_prefix("::").unwrap_or(def_path);
-//     def_path.starts_with("std[") || def_path.starts_with("std::")
-// }
 
 fn get_readable_span(tcx: &TyCtxt, span: Span, usage_crate: &str) -> ReadableSpan {
     let source_map = tcx.sess.source_map();
     let loc = source_map.lookup_char_pos(span.lo());
     let end_loc = source_map.lookup_char_pos(span.hi());
 
-    let span = ReadableSpan {
+    ReadableSpan {
         file: loc
             .file
             .name
@@ -255,20 +321,11 @@ fn get_readable_span(tcx: &TyCtxt, span: Span, usage_crate: &str) -> ReadableSpa
         end_line: end_loc.line,
         end_col: end_loc.col.0,
         usage_crate: Some(usage_crate.to_string()),
-    };
-    println!("Found span: {:?}", span);
-    span
-}
-
-fn dump_spans_as_json(filename: &PathBuf, spans: &HashSet<ReadableSpan>) {
-    let json = serde_json::to_string_pretty(spans).unwrap();
-    std::fs::write(filename, json).expect("Unable to write file");
+    }
 }
 
 struct MyCompilerCalls {
     compilation: Compilation,
-    crate_name: Option<String>,
-    crate_version: Option<String>,
 }
 
 impl rustc_driver::Callbacks for MyCompilerCalls {
@@ -281,103 +338,55 @@ impl rustc_driver::Callbacks for MyCompilerCalls {
             return self.compilation;
         }
 
-        let mut skipped_spans: Vec<Span> = Vec::new();
-        let mut spans = HashSet::new();
-
-        let results = {
+        let (records, macro_imports) = {
             let resolver_wrapper = tcx.resolver_for_lowering().borrow();
             let (resolver, krate) = &*resolver_wrapper;
 
-            let mut visitor = MyVisitor {
-                resolver,
-                results: Vec::new(),
-                skipped_spans: Vec::new(),
-            };
-
-            skipped_spans.extend(visitor.skipped_spans.iter());
-            visitor.visit_crate(krate);
-            visitor.results
-        };
-
-        println!("=== Resolved Paths ===");
-        println!(
-            "{:<30} | {:<15} | {:<15}",
-            "User Path", "Used Via (Crate)", "Defined In (Crate)"
-        );
-        println!("{:-<30} | {:-<15} | {:-<15}", "", "", "");
-
-        for info in results {
-            // The crate where the item *actually* lives (e.g., core)
-            // let definition_crate = tcx.crate_name(info.final_def_id.krate);
-
-            // The crate the user *referenced* (e.g., std)
-            let usage_crate = if let Some(root_id) = info.root_segment_def_id {
-                tcx.crate_name(root_id.krate)
-            } else {
-                rustc_span::symbol::Symbol::intern("LOCAL")
-            };
-
-            if skipped_spans.iter().any(|&s| s.contains(info.span)) {
-                debug!("Ignoring path in skipped span: {:?}", info.path_text);
-                continue;
+            // Pre-scan all macro_rules! definitions to collect #[cfg(…)] attribute
+            // strings from their bodies, keyed by macro name.
+            let source_map = tcx.sess.source_map();
+            let mut macro_cfg_map: HashMap<Symbol, Vec<String>> = HashMap::new();
+            for item in krate.items.iter() {
+                if let rustc_ast::ItemKind::MacroDef(ident, mac_def) = &item.kind {
+                    let cfgs = collect_cfg_attrs_from_tokens(&mac_def.body.tokens, source_map);
+                    if !cfgs.is_empty() {
+                        macro_cfg_map.entry(ident.name).or_default().extend(cfgs);
+                    }
+                }
             }
 
-            // if usage_crate.as_str() == "std" {
-            spans.insert(get_readable_span(&tcx, info.span, usage_crate.as_str()));
-            // }
+            let mut visitor = PathResolver {
+                resolver,
+                tcx,
+                records: Vec::new(),
+                current_context: PathContext::Other,
+                current_module_path: vec!["crate".to_string()],
+                macro_module_imports: Vec::new(),
+                macro_cfg_map,
+            };
 
-            println!(
-                "{:<30} | {:<15} | {:<15}",
-                info.path_text, usage_crate, "definition_crate"
-            );
+            visitor.visit_crate(krate);
+            (visitor.records, visitor.macro_module_imports)
+        };
+
+        let output_data = FeatureRunOutput {
+            records,
+            macro_module_imports: macro_imports,
+        };
+
+        let filename = env::var(consts::PLUGIN_OUTPUT_ENV).unwrap_or_else(|_| {
+            panic!(
+                "Expected environment variable {} to be set",
+                consts::PLUGIN_OUTPUT_ENV
+            )
+        });
+
+        if let Ok(file) = std::fs::File::create(&filename) {
+            serde_json::to_writer(file, &output_data).unwrap();
         }
-
-        println!("Found spans: {:?}", spans);
-
-        // We are directly calling unwrap here because at this point, we are
-        // guaranteed to have the crate name and version from the command line args
-        let path = Path::new(consts::RESULTS_PATH).join(format!(
-            "{}-{}-{}",
-            self.crate_name
-                .as_deref()
-                .expect("crate_name should be set"),
-            self.crate_version
-                .as_deref()
-                .expect("crate_version should be set"),
-            consts::HIR_VISITOR_VISIT_FILE_SUFFIX
-        ));
-        dump_spans_as_json(&path, &spans);
 
         self.compilation
     }
-
-    // fn after_analysis<'tcx>(
-    //     &mut self,
-    //     _compiler: &interface::Compiler,
-    //     tcx: TyCtxt<'tcx>,
-    // ) -> Compilation {
-    //     if self.compilation == Compilation::Continue {
-    //         return self.compilation;
-    //     }
-
-    //     println!("=== Starting analysis... ===");
-
-    //     let mut visitor = MyVisitor::new(tcx);
-    //     let module_items = tcx.hir_crate_items(());
-    //     for item_id in module_items.free_items() {
-    //         visitor.visit_item(tcx.hir_item(item_id));
-    //     }
-    //     for item_id in module_items.impl_items() {
-    //         visitor.visit_impl_item(tcx.hir_impl_item(item_id));
-    //     }
-    //     for item_id in module_items.trait_items() {
-    //         visitor.visit_trait_item(tcx.hir_trait_item(item_id));
-    //     }
-
-    //     println!("Found spans: {:?}", visitor.spans);
-    //     dump_spans_as_json(consts::HIR_VISITOR_SPAN_DUMP, &visitor.spans);
-    //     self.compilation
-    // }
 }
 
 pub struct Plugin;
@@ -414,31 +423,12 @@ impl RustcPlugin for Plugin {
         _plugin_args: Self::Args,
     ) -> rustc_interface::interface::Result<()> {
         let mut action = Compilation::Stop;
-        // We hit `build.rs` first if it exists, so continue compilation in that case.
         if compiler_args.iter().any(|arg| arg == "build_script_build") {
             action = Compilation::Continue;
         }
 
-        let mut crate_name = None;
-        let mut crate_version = None;
-
-        if !compiler_args.iter().any(|arg| arg == "-vV") {
-            crate_name = compiler_args
-                .windows(2)
-                .find(|w| w[0] == "--crate-name")
-                .map(|w| w[1].clone());
-
-            crate_version = std::env::var("CARGO_PKG_VERSION").ok();
-            debug!(
-                "Running plugin for crate: {:?} version: {:?}",
-                crate_name, crate_version
-            );
-        }
-
         let mut callbacks = MyCompilerCalls {
             compilation: action,
-            crate_name,
-            crate_version,
         };
         rustc_driver::run_compiler(&compiler_args, &mut callbacks);
         Ok(())

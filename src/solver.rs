@@ -1,10 +1,12 @@
 use anyhow::Context;
 use log::debug;
-use std::fs;
+use std::{fs, vec};
 use toml;
+use z3::ast::Ast;
 use z3::{self, ast::Bool};
 
-use crate::{CrateInfo, DoubleTupleVecString, Telemetry, consts::CUSTOM_FEATURES_ENABLED, parser};
+use crate::types::*;
+use crate::{CrateInfo, Telemetry, consts::CUSTOM_FEATURES_ENABLED, parser};
 
 /// Given a context, a main equation and a list of
 /// filtered equations, solve for the main equation
@@ -19,10 +21,14 @@ pub fn solve<'a>(
     ctx: &'a z3::Context,
     main_equation: &Option<Bool>,
     filtered: &Vec<Bool>,
+    hard_constraints: &[Bool<'a>],
 ) -> (Option<z3::Model<'a>>, usize, usize) {
     let solver = z3::Solver::new(ctx);
-    let possible = find_possible_equations(ctx, main_equation, filtered);
+    let possible = find_possible_equations(ctx, main_equation, filtered, hard_constraints);
     let (mut len, mut depth) = (0, 0);
+    for hc in hard_constraints {
+        solver.assert(hc);
+    }
     if !possible.is_empty() {
         for p in possible {
             let (l, d) = length_and_depth(p.to_string());
@@ -45,6 +51,86 @@ pub fn solve<'a>(
     };
     assert_eq!(result, z3::SatResult::Sat);
     (model, len, depth)
+}
+
+pub fn eqs_to_features(ctx: &z3::Context, eqs: &[Bool]) -> (Vec<String>, Vec<String>) {
+    let solver = z3::Solver::new(ctx);
+    for eq in eqs {
+        solver.assert(eq);
+    }
+    assert!(solver.check() == z3::SatResult::Sat);
+    let model = solver.get_model();
+    model_to_features(&model)
+}
+
+/// Returns a list of covering sets. Each entry is a pair:
+/// - `full_set`: the set including hard/forbidden constraints (pass this to `eqs_to_features`)
+/// - `soft_items`: the original (non-simplified) pool items assigned to this set, useful
+///   for tracking which input equations each covering set covers
+pub fn get_solved_sets<'a>(
+    ctx: &'a z3::Context,
+    crate_name: &str,
+    eqs: Vec<Bool<'a>>,
+    hard_constraints: &[Bool<'a>],
+    forbidden: &[Bool<'a>],
+    telemetry: &mut Telemetry,
+) -> Vec<(Vec<Bool<'a>>, Vec<Bool<'a>>)> {
+    // Merge hard constraints with forbidden-combination constraints so the seed
+    // checks and compatibility searches both respect them.
+    let effective_hard: Vec<Bool<'a>> = hard_constraints
+        .iter()
+        .chain(forbidden.iter())
+        .cloned()
+        .collect();
+
+    let mut sets: Vec<(Vec<Bool>, Vec<Bool>)> = Vec::new();
+    let mut remaining: Vec<Bool> = eqs;
+
+    while !remaining.is_empty() {
+        let seed = remaining.remove(0);
+        debug!("Seed: {:?}", seed);
+        // Track the original pool items (pre-simplify) assigned to this set separately
+        // so callers can match them back to input items by reference equality.
+        let mut soft_items: Vec<Bool<'a>> = vec![seed.clone()];
+        let mut current_set: Vec<Bool<'a>> = std::iter::once(seed)
+            .chain(effective_hard.iter().cloned())
+            .collect();
+
+        // Skip seeds that are contradicted by hard constraints (e.g. a feature
+        // that transitively enables std while not(std) is a hard constraint).
+        let check = z3::Solver::new(ctx);
+        for c in &current_set {
+            check.assert(c);
+        }
+        if check.check() != z3::SatResult::Sat {
+            debug!(
+                "Skipping seed {:?} because it is unsatisfiable with hard constraints",
+                current_set
+            );
+            telemetry.unsatisfied_features.push((
+                crate_name.to_string(),
+                current_set.iter().map(|c| c.to_string()).collect(),
+            ));
+            continue;
+        }
+
+        let compatible = find_possible_equations_set(ctx, &current_set, &remaining);
+
+        remaining.retain(|eq| {
+            if compatible.contains(eq) {
+                soft_items.push(eq.clone());
+                current_set.push(eq.clone());
+                false
+            } else {
+                true
+            }
+        });
+
+        current_set = current_set.into_iter().map(|eq| eq.simplify()).collect();
+        sets.push((current_set, soft_items));
+    }
+
+    sets
 }
 
 fn length_and_depth(ast: String) -> (usize, usize) {
@@ -297,11 +383,9 @@ pub fn new_feats_to_add(
 
     // We don't want to add features that are implicitly added by cargo for
     // optional dependencies.
-    let (removed, kept): DoubleTupleVecString = not_found
+    let (_removed, kept): DoubleTupleVecString = not_found
         .into_iter()
         .partition(|feat| optional_deps.iter().any(|dep| feat == dep));
-
-    // enable.retain(|feat| !removed.contains(feat));
 
     kept
 }
@@ -376,7 +460,7 @@ pub fn disable_in_default_indirect(crate_info: &CrateInfo, disable: &[String]) -
     disable.iter().any(|feat| all_enabled.contains(feat))
 }
 
-fn all_enabled_for_feat(all_enabled: &mut Vec<String>, crate_info: &CrateInfo) {
+pub(crate) fn all_enabled_for_feat(all_enabled: &mut Vec<String>, crate_info: &CrateInfo) {
     let mut to_check = all_enabled.clone();
 
     while let Some(f) = to_check.pop() {
@@ -431,28 +515,129 @@ fn model_to_disabled_features(model: &z3::Model) -> Vec<String> {
     features
 }
 
-fn find_possible_equations<'a>(
+/// Given a context, a main equation and a list of
+/// filtered equations, return the list of equations that are
+/// satisfiable with the main equation
+/// # Arguments
+/// * `ctx` - The Z3 context
+/// * `main_equation` - The main equation to solve for
+/// * `filtered` - The list of filtered equations
+/// # Returns
+/// * `Vec<Bool>` - The list of equations that are satisfiable with the main equation
+pub fn find_possible_equations<'a>(
     ctx: &z3::Context,
     main_equation: &Option<Bool>,
     filtered: &Vec<Bool<'a>>,
+    hard_constraints: &[Bool<'a>],
 ) -> Vec<Bool<'a>> {
     let mut possible: Vec<Bool<'a>> = Vec::new();
     let solver = z3::Solver::new(ctx);
+
+    if let Some(eq) = main_equation {
+        solver.assert(eq);
+    }
+    for hc in hard_constraints {
+        solver.assert(hc);
+    }
+
     for eq in filtered {
-        if let Some(eq) = main_equation {
-            solver.assert(eq);
-        }
-        if !possible.is_empty() {
-            for p in &possible {
-                solver.assert(p);
-            }
+        solver.push();
+
+        for p in &possible {
+            solver.assert(p);
         }
         solver.assert(eq);
         let result = solver.check();
         if result == z3::SatResult::Sat {
             possible.push(eq.clone());
         }
-        solver.reset();
+        solver.pop(1);
     }
     possible
+}
+
+/// Given a Cargo.toml feature map, produce Z3 implication constraints for all
+/// plain feature-to-feature links (e.g. `parallel = ["std"]` -> `parallel -> std`).
+/// These are passed as hard constraints to `get_solved_sets` so the solver
+/// doesn't produce covering sets where an enabled feature transitively re-enables
+/// a feature that the set requires to be disabled (e.g. `{not std, parallel}`).
+pub fn feature_implication_constraints<'a>(
+    ctx: &'a z3::Context,
+    features: &[(String, TupleVec)],
+) -> Vec<Bool<'a>> {
+    let mut constraints = Vec::new();
+    for (feat_name, deps) in features {
+        let feat_var = Bool::new_const(ctx, feat_name.as_str());
+        for (dep_name, qualifier) in deps {
+            if qualifier != "dep:" && dep_name == qualifier {
+                // Plain feature-to-feature link: feat_name => dep_name
+                let dep_var = Bool::new_const(ctx, dep_name.as_str());
+                constraints.push(Bool::or(ctx, &[&feat_var.not(), &dep_var]));
+            }
+        }
+    }
+    constraints
+}
+
+/// Similar to `find_possible_equations`, but we are given a set of equations that
+/// are already known to be satisfiable together. We want to find the equations
+/// from the others that are satisfiable with the set.
+/// # Arguments
+/// * `ctx` - The Z3 context
+/// * `set` - The set of equations that are already known to be satisfiable together
+/// * `others` - The list of other equations to check for satisfiability with the set
+/// # Returns
+/// * `Vec<Bool>` - The list of equations from the others that are satisfiable with the set
+pub fn find_possible_equations_set<'a>(
+    ctx: &z3::Context,
+    set: &[Bool<'a>],
+    others: &[Bool<'a>],
+) -> Vec<Bool<'a>> {
+    let mut possible: Vec<Bool<'a>> = Vec::new();
+    let solver = z3::Solver::new(ctx);
+
+    for s in set {
+        solver.assert(s);
+    }
+
+    for eq in others {
+        solver.push();
+        for p in &possible {
+            solver.assert(p);
+        }
+        solver.assert(eq);
+        if solver.check() == z3::SatResult::Sat {
+            possible.push(eq.clone());
+        }
+        solver.pop(1);
+    }
+
+    possible
+}
+
+/// Builds a Z3 constraint that forbids the exact feature assignment described
+/// by `enable` (features that must be on) and `disable` (features that must be off).
+///
+/// The result is `¬(e1 ∧ e2 ∧ … ∧ ¬d1 ∧ ¬d2 ∧ …)`.
+/// Adding this to the solver forces it to find a model that differs from the
+/// given assignment in at least one feature dimension.
+///
+/// If both slices are empty, returns `true` (no-op constraint).
+pub fn build_forbidden_constraint<'a>(
+    ctx: &'a z3::Context,
+    enable: &[String],
+    disable: &[String],
+) -> Bool<'a> {
+    let mut conjuncts: Vec<Bool<'a>> = Vec::new();
+    for f in enable {
+        conjuncts.push(Bool::new_const(ctx, f.as_str()));
+    }
+    for f in disable {
+        conjuncts.push(Bool::new_const(ctx, f.as_str()).not());
+    }
+    if conjuncts.is_empty() {
+        return Bool::from_bool(ctx, true);
+    }
+    let refs: Vec<&Bool> = conjuncts.iter().collect();
+    Bool::and(ctx, &refs).not()
 }

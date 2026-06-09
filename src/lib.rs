@@ -5,35 +5,30 @@ use bincode::{Decode, Encode};
 use lazy_static::lazy_static;
 use proc_macro2::Span;
 use serde::{Deserialize, Serialize};
-use std::{
-    fs,
-    hash::{Hash, Hasher},
-    path,
-    sync::Mutex,
-};
+use std::{fs, path, sync::Mutex};
 use syn::Attribute;
 
 pub mod compiler;
 pub mod consts;
 pub mod db;
 pub mod downloader;
-pub mod hir;
+pub mod driver;
 pub mod parser;
+pub mod phases;
 pub mod solver;
+pub mod types;
+pub mod visitor;
 
 pub mod hir_driver;
+
+use crate::types::*;
+use std::collections::HashSet;
 
 lazy_static! {
     // This is a list of all dependencies for a crate.
     // TODO: Convert this to a variable passed between functions instead of a global variable
     pub static ref DEPENDENCIES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 }
-
-/// A vector of (String, String) tuples.
-pub type TupleVec = Vec<(String, String)>;
-
-pub type DoubleTupleVecString = (Vec<String>, Vec<String>);
-pub type TripleTupleVecString = (Vec<String>, Vec<String>, Vec<String>);
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -114,12 +109,23 @@ pub struct Attributes {
 /// Used to pass huge amount of params between functions
 #[derive(Default)]
 pub struct DataExchange {
-    pub ctx: Option<z3::Context>,
     pub name_with_version: String,
     pub db_data: Vec<DBData>,
     pub crate_info: CrateInfo,
     pub telemetry: Telemetry,
     pub crate_name_rename: TupleVec,
+    /// (dep_crate_name_norm, item_name) pairs used by the main crate in a
+    /// no_std-compatible context. Populated before the dep processing loop
+    /// so finalize_dep_crate can skip removal of features that gate these items.
+    pub valid_cross_crate_items: HashSet<(String, String)>,
+    /// The main crate's no_std enable list — used by finalize_dep_crate to
+    /// check if a main [features] entry references a protected dep feature.
+    pub main_enable: Vec<String>,
+    /// (dep_crate_name_norm, feat_name) pairs that must not be removed from
+    /// either the dep declaration or the main crate's [features] table.
+    /// Accumulated across finalize_dep_crate calls and consumed by
+    /// move_unnecessary_dep_feats.
+    pub protected_dep_features: HashSet<(String, String)>,
 }
 
 /// We store already resolved features for a crate
@@ -144,58 +150,6 @@ pub struct CrateInfo {
     pub git: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReadableSpan {
-    file: String,
-    start_line: usize,
-    start_col: usize,
-    end_line: usize,
-    end_col: usize,
-    // This field is used only during the ast visitor call to track the usage crate of the current span.
-    // It is then used to filter out spans where there are conflicting usage_crates.
-    usage_crate: Option<String>,
-}
-
-impl PartialEq for ReadableSpan {
-    fn eq(&self, other: &Self) -> bool {
-        self.file == other.file
-            && self.start_line == other.start_line
-            && self.start_col == other.start_col
-            && self.end_line == other.end_line
-            && self.end_col == other.end_col
-    }
-}
-
-impl Eq for ReadableSpan {}
-
-impl Hash for ReadableSpan {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.file.hash(state);
-        self.start_line.hash(state);
-        self.start_col.hash(state);
-        self.end_line.hash(state);
-        self.end_col.hash(state);
-    }
-}
-
-impl ReadableSpan {
-    pub fn contains(&self, other: &ReadableSpan) -> bool {
-        if self.file != other.file {
-            return false;
-        }
-        if self.start_line > other.start_line || self.end_line < other.end_line {
-            return false;
-        }
-        if self.start_line == other.start_line && self.start_col > other.start_col {
-            return false;
-        }
-        if self.end_line == other.end_line && self.end_col < other.end_col {
-            return false;
-        }
-        true
-    }
-}
-
 #[derive(Debug, Default, Serialize)]
 pub struct AllStats {
     pub name: String,
@@ -204,6 +158,7 @@ pub struct AllStats {
     // Collects all unguarded std usages found by hir analysis
     pub std_usage_matches: Vec<ReadableSpan>,
     pub telemetry: Option<Telemetry>,
+    pub coverage_comparison: Option<types::CoverageComparison>,
 }
 
 impl AllStats {
@@ -214,6 +169,7 @@ impl AllStats {
             crate_info: None,
             std_usage_matches: Vec::new(),
             telemetry: None,
+            coverage_comparison: None,
         }
     }
 
@@ -230,6 +186,10 @@ impl AllStats {
         let dir = std::path::Path::new(consts::DOWNLOAD_PATH).join(self.name.replace(':', "-"));
         if manifest {
             let manifest = parser::determine_manifest_file(&self.name, None);
+            // Copy the current Cargo.toml to a backup for later use.
+            fs::copy(&manifest, dir.join("Cargo.toml.modified"))
+                .context("Failed to backup original Cargo.toml")
+                .unwrap();
             fs::copy(dir.join("Cargo.toml.bak"), &manifest)
                 .context("Failed to restore original Cargo.toml")
                 .unwrap();
@@ -255,6 +215,10 @@ impl AllStats {
         let std_usage_data = serde_json::to_string_pretty(&self.std_usage_matches).unwrap();
         std::fs::write(compilation_res_file, compilation_res_data).unwrap();
         std::fs::write(std_usage_file, std_usage_data).unwrap();
+        if let Some(cov) = &self.coverage_comparison {
+            let cov_data = serde_json::to_string_pretty(cov).unwrap();
+            std::fs::write(stats_dir.join("coverage_comparison.json"), cov_data).unwrap();
+        }
     }
 }
 
@@ -376,4 +340,11 @@ pub struct Telemetry {
     pub unknown_idents_in_attrs: bool,
     /// List of unknown keywords found in attributes for dependencies
     pub unknown_idents_in_attrs_deps: Vec<(String, bool)>,
+    /// When the implicit conditions + hard constraints are considered together with a seed, we are getting Unsat. This means the code guarded by this
+    /// condition is dead code.
+    pub unsatisfied_features: Vec<(String, Vec<String>)>,
+    /// Crates where the solved feature set did not satisfy an excluded compile_error constraint.
+    /// An excluded constraint is one whose features have no overlap with the no_std condition features,
+    /// so it was not added to the solver's filtered list.
+    pub compile_error_constraint_unsatisfied: Vec<String>,
 }
