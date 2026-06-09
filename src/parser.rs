@@ -1,363 +1,34 @@
 use anyhow::Context;
 use log::debug;
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::TokenStream;
 // use quote::ToTokens;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     time::Instant,
 };
-use syn::{
-    Attribute, ExprBlock, Item, ItemExternCrate, Meta, Stmt, spanned::Spanned, visit::Visit,
-};
+use syn::{Attribute, ItemExternCrate, Meta, visit::Visit};
 use walkdir::WalkDir;
 use z3::{self, ast::Bool};
 
 use strsim::levenshtein;
 
 use crate::{
-    Attributes, CrateInfo, DEPENDENCIES, DataExchange, DoubleTupleVecString, Telemetry,
-    TripleTupleVecString, TupleVec, consts, db, downloader, hir, solver,
+    Attributes, CrateInfo, DBData, DEPENDENCIES, DataExchange, Telemetry, consts, db, downloader,
+    driver,
+    solver::{self, model_to_features},
+    visitor::{GetItemExternCrate, ItemExternCrates, ItemExternCratesAll, ParsedAttr},
 };
 
+use crate::types::*;
+
 #[derive(Debug, Clone, PartialEq)]
-enum Logic {
+pub enum Logic {
     And,
     Or,
     Not,
     Any,
-}
-
-#[derive(Default, Clone, Debug)]
-pub struct ParsedAttr {
-    constants: Vec<String>,
-    /// Did we find a typo? Specifically, did we find "feature"
-    /// in a typoed form
-    typoed_keyword: bool,
-    pub features: Vec<String>,
-    pub filepath: Option<String>,
-    logic: Vec<Logic>,
-}
-
-#[derive(Default, Clone, Debug)]
-pub struct ItemExternCrates {
-    itemexterncrates: Vec<ItemExternCrate>,
-}
-
-#[derive(Default, Clone, Debug)]
-pub struct ItemExternCratesAll {
-    itemexterncrates: Vec<ItemExternCrate>,
-}
-
-trait GetItemExternCrate {
-    fn get_item_extern_crate(&mut self) -> Option<&mut Vec<ItemExternCrate>> {
-        None
-    }
-    fn get_spans(&mut self) -> Option<&mut Vec<(Span, Option<String>)>> {
-        None
-    }
-    fn set_current_file(&mut self, _file: String) {}
-}
-
-impl GetItemExternCrate for Attributes {
-    fn get_spans(&mut self) -> Option<&mut Vec<(Span, Option<String>)>> {
-        Some(&mut self.spans)
-    }
-    fn set_current_file(&mut self, file: String) {
-        self.current_file = file;
-    }
-}
-
-impl GetItemExternCrate for ItemExternCrates {
-    fn get_item_extern_crate(&mut self) -> Option<&mut Vec<ItemExternCrate>> {
-        Some(&mut self.itemexterncrates)
-    }
-}
-impl GetItemExternCrate for ItemExternCratesAll {
-    fn get_item_extern_crate(&mut self) -> Option<&mut Vec<ItemExternCrate>> {
-        Some(&mut self.itemexterncrates)
-    }
-}
-
-impl<'a> Visit<'a> for ItemExternCrates {
-    fn visit_item_extern_crate(&mut self, i: &ItemExternCrate) {
-        // We will save all the extern crates that have an
-        // attribute associated with them.
-        if !i.attrs.is_empty() {
-            self.itemexterncrates.push(i.clone());
-        }
-    }
-
-    fn visit_expr_block(&mut self, i: &'a ExprBlock) {
-        visit_expr_block_common(self, i);
-    }
-}
-
-impl<'a> Visit<'a> for ItemExternCratesAll {
-    fn visit_item_extern_crate(&mut self, i: &ItemExternCrate) {
-        self.itemexterncrates.push(i.clone());
-    }
-
-    fn visit_expr_block(&mut self, i: &'a syn::ExprBlock) {
-        visit_expr_block_common(self, i);
-    }
-}
-
-/// Visit ExprBlocks of the form
-/// ```ignore
-/// #[cfg(feature = "use-locks")]
-/// {
-///     self.source.lock.unlock();
-///
-///     #[cfg(feature = "std")]
-///     {
-///         extern crate std;
-///         if std::thread::panicking() {
-///             self.source.state.set(State::Poisoned);
-///         }
-///     }
-/// }
-/// ```
-/// and recurse until it finds an extern crate std.
-/// Once this is found, all the attributes in its path in the
-/// ast will be added to the `item_extern_crate`
-/// # Arguments
-/// * `typ` - The type which we update with the new extern crate std
-/// * `expr_block` - The expression block to visit
-fn visit_expr_block_common<'a, T: Visit<'a> + GetItemExternCrate>(
-    typ: &mut T,
-    expr_block: &'a ExprBlock,
-) {
-    let old_len = typ.get_item_extern_crate().unwrap_or(&mut Vec::new()).len();
-    syn::visit::visit_expr_block(typ, expr_block);
-    let get_item_extern_crate = typ.get_item_extern_crate().unwrap();
-    let changed = get_item_extern_crate.len() > old_len;
-    if !expr_block.attrs.is_empty() {
-        let stmts = &expr_block.block.stmts;
-        let attrs = expr_block.attrs.clone();
-        for stmt in stmts {
-            match stmt {
-                Stmt::Item(Item::ExternCrate(item)) => {
-                    get_item_extern_crate.retain(|i| i != item);
-                    let new = ItemExternCrate {
-                        attrs: attrs.clone(),
-                        ..item.clone()
-                    };
-                    get_item_extern_crate.push(new);
-                }
-                _ if changed => {
-                    let extern_item = get_item_extern_crate.last().unwrap();
-                    let new = ItemExternCrate {
-                        attrs: attrs.clone(),
-                        ..extern_item.clone()
-                    };
-                    get_item_extern_crate.push(new);
-                }
-                _ => {
-                    debug!(
-                        "Found unexpected statement in extern crate block: {:?}",
-                        stmt
-                    );
-                }
-            }
-        }
-    }
-}
-
-impl<'a> Visit<'a> for Attributes {
-    fn visit_attribute(&mut self, i: &Attribute) {
-        if let Some(ident) = i.path().get_ident() {
-            if ident == "cfg" || ident == "cfg_attr" {
-                match i.meta.clone() {
-                    Meta::List(meta_list) => {
-                        let tokens = meta_list.tokens.clone();
-                        let negated: Attribute = syn::parse_quote!(
-                        #[cfg(not(#tokens))]
-                        );
-                        if self.compile_error_attrs.iter().any(|a| a == &negated) {
-                            debug!(
-                                "Attribute {:?} is already negated in compile_error_attrs, skipping",
-                                i
-                            );
-                            return;
-                        }
-                    }
-                    _ => {
-                        debug!("Not meta list type for cfg/cfg_attr: {:?}", i.meta);
-                    }
-                }
-                // Only add the attributes which we are not negating.
-                self.attributes.push(i.clone());
-            }
-            if ident == "no_std" {
-                match i.style {
-                    syn::AttrStyle::Outer => {
-                        self.wrong_unconditional_setup = true;
-                        debug!("Error: no_std attribute should be inner attribute");
-                    }
-                    _ => {
-                        self.unconditional_no_std = true;
-                    }
-                }
-            }
-        }
-    }
-
-    fn visit_item_macro(&mut self, i: &syn::ItemMacro) {
-        if i.mac.path.is_ident("compile_error") {
-            let attrs = i.attrs.clone();
-            if attrs.is_empty() {
-                debug!("No attributes found for compile_error macro");
-                return;
-            }
-            // Remove the attribute from the list which are
-            // compiler_error attributes.
-            let attr = attrs.iter().find(|a| a.path().is_ident("cfg")).unwrap();
-            self.attributes.retain(|a| a != attr);
-            // Negate the attrs[0] and add it to the attributes
-            match attr.meta.clone() {
-                Meta::List(meta_list) => {
-                    let path = meta_list.path.get_ident();
-                    if path.is_some() && path.unwrap() == "cfg" {
-                        let tokens = meta_list.tokens.clone();
-                        let negated: Attribute = syn::parse_quote!(
-                        #[cfg(not(#tokens))]
-                        );
-                        self.compile_error_attrs.push(negated.clone());
-                        self.attributes.push(negated);
-                    }
-                }
-                _ => {
-                    debug!("Unexpected meta type for compiler_error: {:?}", attr.meta);
-                }
-            }
-        }
-    }
-
-    fn visit_item_mod(&mut self, i: &'a syn::ItemMod) {
-        if i.ident != "test" {
-            debug!("Visiting module: {}", i.ident);
-            syn::visit::visit_item_mod(self, i);
-        }
-    }
-
-    fn visit_variant(&mut self, i: &'a syn::Variant) {
-        let attrs: &Vec<Attribute> = &i.attrs;
-        let span: Span = i.span();
-        check_attr_save_span(self, attrs, span);
-        syn::visit::visit_variant(self, i);
-    }
-
-    fn visit_field(&mut self, i: &'a syn::Field) {
-        let attrs: &Vec<Attribute> = &i.attrs;
-        let span: Span = i.span();
-        check_attr_save_span(self, attrs, span);
-        syn::visit::visit_field(self, i);
-    }
-
-    fn visit_impl_item_fn(&mut self, i: &'a syn::ImplItemFn) {
-        let attrs: &Vec<Attribute> = &i.attrs;
-        let span: Span = i.span();
-        check_attr_save_span(self, attrs, span);
-        syn::visit::visit_impl_item_fn(self, i);
-    }
-
-    // All visitors that collect Span
-    fn visit_item(&mut self, i: &'a Item) {
-        let attrs: &Vec<Attribute>;
-        let span: Span;
-        match i {
-            Item::Fn(func) => {
-                attrs = &func.attrs;
-                span = func.span();
-            }
-            Item::Struct(struc) => {
-                attrs = &struc.attrs;
-                span = struc.span();
-            }
-            Item::Enum(enm) => {
-                attrs = &enm.attrs;
-                span = enm.span();
-            }
-            Item::Const(konst) => {
-                attrs = &konst.attrs;
-                span = konst.span();
-            }
-            Item::Static(stat) => {
-                attrs = &stat.attrs;
-                span = stat.span();
-            }
-            Item::Type(ty) => {
-                attrs = &ty.attrs;
-                span = ty.span();
-            }
-            Item::Union(un) => {
-                attrs = &un.attrs;
-                span = un.span();
-            }
-            Item::Trait(trt) => {
-                attrs = &trt.attrs;
-                span = trt.span();
-            }
-            Item::Impl(imp) => {
-                attrs = &imp.attrs;
-                span = imp.span();
-            }
-            Item::Mod(m) => {
-                attrs = &m.attrs;
-                span = m.span();
-                if attrs.iter().any(|a| a.path().is_ident("cfg")) {
-                    debug!("Found cfg attribute for module: {}", m.ident);
-                    // Get the first `cfg` attribute
-                    let attr = attrs.iter().find(|a| a.path().is_ident("cfg")).unwrap();
-                    self.mods.push((m.ident.to_string(), attr.clone()));
-                }
-            }
-            Item::Use(u) => {
-                attrs = &u.attrs;
-                span = u.span();
-            }
-            _ => {
-                syn::visit::visit_item(self, i);
-                return;
-            }
-        }
-
-        if let Some(cfg_attr) = attrs.iter().find(|a| a.path().is_ident("cfg")) {
-            let attr_span =
-                hir::proc_macro_span_to_readable(&span, Some(self.current_file.clone()));
-            if self.hir_spans.iter().any(|span| attr_span.contains(span)) {
-                match cfg_attr.meta.clone() {
-                    Meta::List(meta_list) => {
-                        let tokens = meta_list.tokens.clone();
-                        let negated: Attribute = syn::parse_quote!(
-                        #[cfg(not(#tokens))]
-                        );
-                        debug!(
-                            "Adding negated cfg/cfg_attr span: {:?} for file: {}",
-                            attr_span, self.current_file
-                        );
-                        self.compile_error_attrs.push(negated);
-                    }
-                    _ => {
-                        debug!("Not meta list type for cfg/cfg_attr: {:?}", cfg_attr.meta);
-                    }
-                }
-                self.attributes.retain(|a| a != cfg_attr);
-            }
-        }
-
-        check_attr_save_span(self, attrs, span);
-        syn::visit::visit_item(self, i);
-    }
-    // TODO: Add visit_field and visit_variant if required
-}
-
-fn check_attr_save_span(attributes: &mut Attributes, attr: &[Attribute], span: Span) {
-    if attr.iter().any(|a| a.path().is_ident("cfg")) {
-        attributes.spans.push((span, None));
-    }
 }
 
 /// Parse the extern crates of the main crate
@@ -455,9 +126,15 @@ pub fn get_item_extern_std(itemexterncrates: &ItemExternCrates) -> Vec<Attribute
 /// * `crate_name` - The name of the main crate
 /// # Returns
 /// The attributes of the main crate
-pub fn parse_crate(crate_name: &str, recurse: bool, main_name: Option<&str>) -> Attributes {
+/// TODO: This should not need to take hir_spans anymore
+pub fn parse_crate(
+    crate_name: &str,
+    recurse: bool,
+    main_name: Option<&str>,
+    hir_spans: &[ReadableSpan],
+) -> Attributes {
     let mut attributes = Attributes {
-        hir_spans: hir::read_hir_spans(crate_name),
+        hir_spans: hir_spans.to_vec(),
         ..Default::default()
     };
 
@@ -492,7 +169,8 @@ pub fn check_for_no_std(
     // We need to re-parse this instead of using already existing attributes
     // since files in non root directory might have `no_std` attribute
     // and we don't want to include those.
-    let base_attrs = parse_crate(name, false, main_name);
+    // TODO: Remove the file parser here to use the files returned by analyze_crate
+    let base_attrs = parse_crate(name, false, main_name, &[]);
 
     if let Some(telemetry) = telemetry {
         telemetry.wrong_unconditional_setup = base_attrs.wrong_unconditional_setup;
@@ -508,11 +186,35 @@ pub fn check_for_no_std(
 /// Parse the dependencies of the main crate
 /// # Returns
 /// A vector containing the attributes of each dependency
-pub fn parse_deps_crate(main_name: &str) -> Vec<Attributes> {
+pub fn parse_deps_crate(
+    main_name: &str,
+    telemetry: &mut Telemetry,
+    db_data: &[DBData],
+) -> Vec<Attributes> {
     let mut attributes = Vec::new();
     let deps_lock = DEPENDENCIES.lock().unwrap();
     for dep in deps_lock.iter() {
-        attributes.push(parse_crate(&dep.clone(), true, Some(main_name)));
+        if is_proc_macro(dep, Some(main_name)) {
+            debug!("Skipping proc macro dependency: {}", dep);
+            continue;
+        }
+
+        // If this dep is already in the DB we only need its name for the later
+        // finalize_dep_crate call — skip the expensive analysis and parsing.
+        if db::get_from_db_data(db_data, dep).is_some() {
+            debug!("Dependency {} found in DB, skipping analysis", dep);
+            attributes.push(Attributes {
+                crate_name: dep.clone(),
+                ..Default::default()
+            });
+            continue;
+        }
+
+        // Create a new ctx per dependency
+        let ctx = z3::Context::new(&z3::Config::new());
+        let (all_hard, _, _, _, _, _) =
+            driver::analyze_crate_wrapper(&ctx, &dep.clone(), Some(main_name), telemetry);
+        attributes.push(parse_crate(&dep.clone(), true, Some(main_name), &all_hard));
     }
     drop(deps_lock);
     attributes
@@ -532,21 +234,18 @@ pub fn parse_deps_crate(main_name: &str) -> Vec<Attributes> {
 /// * `crate_info` - The crate info of the main crate. Exchange crate info is used if None is provided.
 /// * `is_main` - A boolean indicating whether the crate is the main crate
 /// * `optional_dep_feats` - The features that enable the optional dependencies of the crate
-/// # Returns
-/// A tuple containing the features to enable, the features to disable,
-/// a boolean indicating whether `no_std` was found, and a boolean indicating
-/// whether to recurse further if it was the main crate.
 pub fn process_crate(
     exchange: &mut DataExchange,
+    ctx: &z3::Context,
     attrs: &mut Attributes,
     name_with_version: Option<&str>,
     crate_info: Option<&CrateInfo>,
     is_main: bool,
-    optional_dep_feats: &TupleVec,
+    optional_dep_feats: &mut TupleVec,
+    hard_constraints: Option<Bool>,
 ) -> anyhow::Result<DoubleTupleVecString> {
     let (mut enable, mut disable): DoubleTupleVecString = (Vec::new(), Vec::new());
 
-    let ctx = exchange.ctx.as_ref().unwrap();
     let name_with_version = name_with_version.unwrap_or(&exchange.name_with_version);
     let crate_info = crate_info.unwrap_or(&exchange.crate_info);
 
@@ -618,46 +317,36 @@ pub fn process_crate(
                     .direct_extern_std_usage_deps
                     .push(name_with_version.to_string());
             }
-            let features = db::get_from_db_data(&exchange.db_data, name_with_version);
-            if let Some(feats) = features {
-                debug!(
-                    "Features to enable and disable for crate {} from db: {:?}",
-                    name_with_version, feats
-                );
-                (enable, disable) = feats.features.clone();
-            } else {
-                debug!("No features to enable for crate {}", name_with_version);
-                let (local_equation, local_parsed_attr) = std_attrs.into_iter().fold(
-                    (None::<Bool>, None::<ParsedAttr>),
-                    |(local_eq, local_attr), std_attr| {
-                        let (eq, mut attr) = parse_main_attributes_direct(&std_attr, ctx);
-                        if eq.is_none() {
-                            debug!("No equation found for attribute: {:?}", std_attr);
-                            return (local_eq, local_attr);
+            debug!("No features to enable for crate {}", name_with_version);
+            let (local_equation, local_parsed_attr) = std_attrs.into_iter().fold(
+                (None::<Bool>, None::<ParsedAttr>),
+                |(local_eq, local_attr), std_attr| {
+                    let (eq, mut attr) = parse_main_attributes_direct(&std_attr, ctx);
+                    if eq.is_none() {
+                        debug!("No equation found for attribute: {:?}", std_attr);
+                        return (local_eq, local_attr);
+                    }
+                    let combined_eq = match local_eq {
+                        Some(prev_eq) => Some(Bool::and(ctx, &[&prev_eq, &eq.unwrap()])),
+                        None => Some(eq.unwrap()),
+                    };
+                    let combined_attr = match local_attr {
+                        Some(prev_attr) => {
+                            attr.features.extend(prev_attr.features);
+                            Some(ParsedAttr {
+                                features: attr.features,
+                                ..prev_attr
+                            })
                         }
-                        let combined_eq = match local_eq {
-                            Some(prev_eq) => Some(Bool::and(ctx, &[&prev_eq, &eq.unwrap()])),
-                            None => Some(eq.unwrap()),
-                        };
-                        let combined_attr = match local_attr {
-                            Some(prev_attr) => {
-                                attr.features.extend(prev_attr.features);
-                                Some(ParsedAttr {
-                                    features: attr.features,
-                                    ..prev_attr
-                                })
-                            }
-                            None => Some(attr),
-                        };
-                        (combined_eq, combined_attr)
-                    },
-                );
-                (equation, parsed_attr) = (local_equation, local_parsed_attr.unwrap_or_default());
-                // We need to negate the equation since we are
-                // trying to remove std features.
-                equation = equation.map(|eq| eq.not());
-                debug!("Main equation: {:?}", equation);
-            }
+                        None => Some(attr),
+                    };
+                    (combined_eq, combined_attr)
+                },
+            );
+            (equation, parsed_attr) = (local_equation, local_parsed_attr.unwrap_or_default());
+            // We need to negate the equation since we are
+            // trying to remove std features.
+            equation = equation.map(|eq| eq.not());
         } else if !is_main {
             debug!("Leaf level crate reached {}", name_with_version);
             let (name, version) = name_with_version.split_once(':').unwrap();
@@ -687,7 +376,6 @@ pub fn process_crate(
                     }
                 }
             }
-            debug!("main equation: {:?}", equation);
         }
     }
     let equations = parse_attributes(attrs, ctx);
@@ -695,59 +383,49 @@ pub fn process_crate(
 
     let mut non_minimalizable_features: HashSet<String> = HashSet::new();
 
-    // All the negated compile_error attributes should be added to the filtered list
-    // This might add duplicate equations, but that is fine since Z3 will handle it.
+    // Negated compile_error attributes are added to filtered only when they share at least one
+    // feature with the main no_std equation. Unrelated constraints (e.g. "at least one storage
+    // type" in uom, which shares no features with `not(feature="std")`) would cause Z3 to make
+    // arbitrary disjunction picks that can break the build. Track excluded equations for the
+    // post-solve satisfiability check below.
+    let mut excluded_compile_error_eqs: Vec<Bool> = Vec::new();
     for negated_attr in attrs.compile_error_attrs.iter() {
         let (neg_eq, neg_parsed_attr) = parse_main_attributes_direct(negated_attr, ctx);
-        non_minimalizable_features.extend(neg_parsed_attr.features);
+        non_minimalizable_features.extend(neg_parsed_attr.features.iter().cloned());
         if let Some(neg_eq) = neg_eq {
-            filtered.push(neg_eq);
-        }
-    }
-
-    // Now we check for `mod my_mod;` statements that are guarded by
-    // cfg attributes. If any of those modules contains direct std usages,
-    // we need to add the negated cfg attribute to the equations while also
-    // removing the original attribute from the list (Currently in equation form).
-    let mut hir_spans = hir::read_hir_spans(name_with_version);
-    let proc_macro_spans = hir::proc_macro_spans_to_readables(&attrs.spans);
-
-    // We are filtering the HIR spans where there is some attribute associated with it. In
-    // this case, we don't consider it as a direct usage of std since it is possible
-    // to disable the uasge of std by negating the attribute gating it. This
-    // case is handled separately. Here we only care about `mod my_mod;` statements and
-    // whether to negate the `cfg` attribute gating it or not.
-    hir_spans.retain(|span| {
-        !proc_macro_spans
-            .iter()
-            .any(|proc_span| proc_span.contains(span))
-    });
-
-    for (mod_name, attr) in attrs.mods.iter() {
-        let pat1 = format!("{}.rs", mod_name);
-        let pat2 = format!("{}/mod.rs", mod_name);
-        let file_contains_std = hir_spans
-            .iter()
-            .any(|span| span.file.ends_with(&pat1) || span.file.ends_with(&pat2));
-        if file_contains_std {
-            debug!(
-                "Module {} contains direct std usage, adding negated cfg attribute",
-                mod_name
-            );
-            let (neg_eq, neg_parsed_attr) = parse_main_attributes_direct(attr, ctx);
-            non_minimalizable_features.extend(neg_parsed_attr.features);
-            if let Some(neg_eq) = neg_eq {
-                let neg = neg_eq.not();
-                // Remove the original attribute equation from the list
-                // since we are adding the negated one.
-                filtered.retain(|e| e != &neg_eq);
-                filtered.push(neg);
+            let has_overlap = neg_parsed_attr
+                .features
+                .iter()
+                .any(|f| parsed_attr.features.contains(f));
+            if has_overlap {
+                filtered.push(neg_eq);
+            } else {
+                excluded_compile_error_eqs.push(neg_eq);
             }
         }
     }
 
+    let hard_constraint_vec: Vec<Bool> = if let Some(hard) = hard_constraints {
+        let solver = z3::Solver::new(ctx);
+        solver.assert(&hard);
+        if solver.check() == z3::SatResult::Sat {
+            let model = solver.get_model();
+            let feats = model_to_features(&model);
+            non_minimalizable_features.extend(feats.0);
+        } else {
+            debug!(
+                "Hard constraints are unsatisfiable for crate {}",
+                name_with_version
+            );
+        }
+        vec![hard]
+    } else {
+        vec![]
+    };
+
     // This part adds equations if there are attributes that conditionally include
     // files which might contain unguarded `extern crate std`.
+    // TODO: Remove the following as well
     let files_and_equations = get_files_in_attributes(attrs, ctx);
     if is_main {
         files_and_equations.iter().for_each(|(f, _)| {
@@ -764,7 +442,6 @@ pub fn process_crate(
                 .push((name_with_version.to_string(), true));
         }
     }
-    debug!("Files in attributes: {:?}", files_and_equations);
     let files_unguarded = parse_item_extern_crates_for_files(name_with_version, main_name);
     debug!(
         "Files with unguarded extern crate std: {:?}",
@@ -801,7 +478,11 @@ pub fn process_crate(
 
     let now = Instant::now();
     // Finally, we solve the equations
-    let (model, len, depth) = solver::solve(ctx, &equation, &filtered);
+    let (model, len, depth) = solver::solve(ctx, &equation, &filtered, &hard_constraint_vec);
+    debug!(
+        "Solver result for crate {}: model={:?}, len={}, depth={}",
+        name_with_version, model, len, depth
+    );
     exchange
         .telemetry
         .constraint_solving_time_ms
@@ -818,30 +499,306 @@ pub fn process_crate(
         (enable, disable) = solver::model_to_features(&model);
     }
 
+    // Stage 2: verify that the solved feature set satisfies excluded compile_error constraints.
+    // These constraints were not added to the solver because they share no features with the
+    // main no_std condition. A failure here means the compile_error requirement is not met by
+    // the features the solver chose — log a warning and record it in telemetry.
+    if !excluded_compile_error_eqs.is_empty() {
+        let check_solver = z3::Solver::new(ctx);
+        for f in &enable {
+            let var = z3::ast::Bool::new_const(ctx, f.as_str());
+            check_solver.assert(&var);
+        }
+        for eq in &excluded_compile_error_eqs {
+            check_solver.push();
+            check_solver.assert(eq);
+            if check_solver.check() != z3::SatResult::Sat {
+                println!(
+                    "[process_crate] WARNING: solved feature set for {} does not satisfy \
+                     a compile_error constraint: {:?}",
+                    name_with_version, eq
+                );
+                exchange
+                    .telemetry
+                    .compile_error_constraint_unsatisfied
+                    .push(name_with_version.to_string());
+            }
+            check_solver.pop(1);
+        }
+    }
+
     minimize(
         crate_info,
         optional_dep_feats,
         &mut enable,
         &non_minimalizable_features,
+        true,
+        name_with_version,
+        main_name,
+        None,
     );
 
     Ok((enable, disable))
+}
+
+/// Returns the Cargo.toml string representation of how `dep_name` is enabled
+/// in `values` (e.g. `"dep:somedep"` or `"somedep"`), or `None` if not present.
+fn dep_entry_string_in_toml(dep_name: &str, values: &TupleVec) -> Option<String> {
+    values.iter().find_map(|(k, v)| {
+        if k == dep_name {
+            if v == "dep:" {
+                Some(format!("dep:{}", dep_name))
+            } else if v.as_str() == dep_name {
+                Some(dep_name.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    })
+}
+
+/// Walks the feature chain from `feat_name` and returns the name of the feature
+/// Returns `true` if `feat_name` and every feature reachable from it transitively
+/// serves no purpose other than enabling optional deps — i.e. every leaf value in
+/// the subtree is an optional-dep reference and no feature in the subtree is
+/// non-minimalizable. When this holds, `feat_name` can be dropped from the enable
+/// list entirely, regardless of how many branches the subtree has.
+fn all_subtree_deps_only(
+    feat_name: &str,
+    crate_info: &CrateInfo,
+    optional_deps: &[String],
+    non_minimalizable_features: &HashSet<String>,
+    visited: &mut HashSet<String>,
+) -> bool {
+    if !visited.insert(feat_name.to_string()) {
+        return true; // already verified (cycle-safe)
+    }
+    if non_minimalizable_features.contains(feat_name) {
+        return false;
+    }
+    let Some(values) = crate_info
+        .features
+        .iter()
+        .find(|(name, _)| name == feat_name)
+        .map(|(_, v)| v)
+    else {
+        return false;
+    };
+    for (k, v) in values {
+        let is_dep_ref = optional_deps.contains(k) && (v == "dep:" || v.as_str() == k.as_str());
+        if is_dep_ref {
+            continue;
+        }
+        if k == v {
+            // Pure feature reference — recurse into sub-feature.
+            if !all_subtree_deps_only(
+                k,
+                crate_info,
+                optional_deps,
+                non_minimalizable_features,
+                visited,
+            ) {
+                return false;
+            }
+        } else {
+            // Something other than a dep ref or plain feature ref (e.g. crate/feat).
+            return false;
+        }
+    }
+    true
+}
+
+/// Returns `true` if `feat_name` and every feature reachable from it transitively
+/// serves no purpose other than enabling features of optional deps that are NOT in
+/// `enabled_optional_deps`. If a dep/feat entry points to a dep that IS enabled, or
+/// if the subtree contains any dep-enabling ref (`dep:X` / `X`), returns `false` —
+/// the former means the configuration is live, the latter means the existing minimize
+/// loop handles it. Non-minimalizable features also return `false`.
+fn all_subtree_dep_feat_only(
+    feat_name: &str,
+    crate_info: &CrateInfo,
+    optional_deps: &[String],
+    enabled_optional_deps: &HashSet<String>,
+    non_minimalizable_features: &HashSet<String>,
+    visited: &mut HashSet<String>,
+) -> bool {
+    if !visited.insert(feat_name.to_string()) {
+        return true; // cycle-safe
+    }
+    if non_minimalizable_features.contains(feat_name) {
+        return false;
+    }
+    let Some(values) = crate_info
+        .features
+        .iter()
+        .find(|(name, _)| name == feat_name)
+        .map(|(_, v)| v)
+    else {
+        return false;
+    };
+    if values.is_empty() {
+        return false;
+    }
+    for (k, v) in values {
+        let is_dep_enabler = optional_deps.contains(k) && (v == "dep:" || v.as_str() == k.as_str());
+        if is_dep_enabler {
+            // Handled by the existing dep-enabling loop; don't overlap.
+            return false;
+        }
+        let is_dep_feat = optional_deps.contains(k) && v != "dep:" && v.as_str() != k.as_str();
+        if is_dep_feat {
+            if enabled_optional_deps.contains(k) {
+                return false; // dep is present — this configuration is active
+            }
+            continue; // dep not enabled — this entry is inert, droppable
+        }
+        if k == v {
+            // Pure feature reference — recurse.
+            if !all_subtree_dep_feat_only(
+                k,
+                crate_info,
+                optional_deps,
+                enabled_optional_deps,
+                non_minimalizable_features,
+                visited,
+            ) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+/// that *directly* has the dep reference for `dep_name` in its value list.
+fn find_direct_dep_enabler(
+    feat_name: &str,
+    dep_name: &str,
+    crate_info: &CrateInfo,
+    visited: &mut HashSet<String>,
+) -> Option<String> {
+    if !visited.insert(feat_name.to_string()) {
+        return None;
+    }
+    let values = crate_info
+        .features
+        .iter()
+        .find(|(name, _)| name == feat_name)
+        .map(|(_, v)| v)?;
+
+    if dep_entry_string_in_toml(dep_name, values).is_some() {
+        return Some(feat_name.to_string());
+    }
+
+    for (k, v) in values {
+        if k == v
+            && let Some(found) = find_direct_dep_enabler(k, dep_name, crate_info, visited)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Returns `true` if `feat_name` has any value that is NOT an optional-dep reference
+/// (i.e. the feature also enables other features or sub-crate features).
+fn feat_has_non_dep_values(
+    feat_name: &str,
+    crate_info: &CrateInfo,
+    optional_deps: &[String],
+) -> bool {
+    crate_info
+        .features
+        .iter()
+        .find(|(name, _)| name == feat_name)
+        .map(|(_, values)| {
+            values.iter().any(|(k, v)| {
+                let is_dep_ref =
+                    optional_deps.contains(k) && (v == "dep:" || v.as_str() == k.as_str());
+                !is_dep_ref
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Removes `dep_entry` (e.g. `"dep:somedep"`) from `feat_name`'s array in the
+/// `[features]` table of `main_toml`. Returns `true` if an entry was removed.
+/// Adds to `handled` every `(dep_name, feat)` pair in `optional_dep_feats` whose
+/// direct-enabler chain resolves to `leaf`. This covers both the leaf itself and
+/// every feature that reaches the dep transitively through `leaf`.
+fn invalidate_through_leaf(
+    dep_name: &str,
+    leaf: &str,
+    crate_info: &CrateInfo,
+    optional_dep_feats: &TupleVec,
+    handled: &mut Vec<(String, String)>,
+) {
+    for (d, f) in optional_dep_feats {
+        if d != dep_name {
+            continue;
+        }
+        if handled.contains(&(d.clone(), f.clone())) {
+            continue;
+        }
+        let mut vis = HashSet::new();
+        if find_direct_dep_enabler(f, dep_name, crate_info, &mut vis)
+            .map(|l| l == leaf)
+            .unwrap_or(false)
+        {
+            handled.push((d.clone(), f.clone()));
+        }
+    }
+}
+
+fn remove_dep_from_toml_feature(
+    main_toml: &mut toml::Value,
+    feat_name: &str,
+    dep_entry: &str,
+) -> bool {
+    main_toml
+        .get_mut("features")
+        .and_then(|f| f.as_table_mut())
+        .and_then(|t| t.get_mut(feat_name))
+        .and_then(|f| f.as_array_mut())
+        .map(|arr| {
+            let before = arr.len();
+            arr.retain(|v| v.as_str() != Some(dep_entry));
+            arr.len() < before
+        })
+        .unwrap_or(false)
 }
 
 /// If there are features that got enabled, but are the only reason an optional
 /// dependency is included, we can drop those features from the main crate's
 /// feature list.
 /// # Arguments
-/// * `crate_info` - The crate info of the main crate
-/// * `optional_dep_feats` - The list of features that enable optional dependencies
-/// * `enable` - The list of features to enable for the main crate
-/// * `non_minimalizable_features` - The set of features that should not be removed
+/// * `crate_info` - The crate info of the crate being minimized
+/// * `optional_dep_feats` - The list of (dep, feature) pairs from `features_for_optional_deps`
+/// * `enable` - The list of features to enable; modified in place
+/// * `non_minimalizable_features` - Features that must stay in `enable`
+/// * `disable_default` - Whether Cargo's `default` feature is disabled; if `false`,
+///   `"default"` is also analyzed for optional-dep enabling
+/// * `crate_name` - The name-with-version of the crate whose Cargo.toml to modify
+/// * `main_name` - When minimizing a dep crate, the name-with-version of the main
+///   crate (needed to locate the dep's manifest); `None` when minimizing the main crate
 pub fn minimize(
     crate_info: &CrateInfo,
-    optional_dep_feats: &TupleVec,
+    optional_dep_feats: &mut TupleVec,
     enable: &mut Vec<String>,
     non_minimalizable_features: &HashSet<String>,
+    disable_default: bool,
+    crate_name: &str,
+    main_name: Option<&str>,
+    enabled_optional_deps: Option<&HashSet<String>>,
 ) {
+    debug!(
+        "Non-minimalizable features for crate '{}': {:?}",
+        crate_name, non_minimalizable_features
+    );
+
     let optional_deps: Vec<String> = crate_info
         .deps_and_features
         .iter()
@@ -849,62 +806,205 @@ pub fn minimize(
         .map(|(dep, _)| dep.name.clone())
         .collect();
 
-    let common: Vec<String> = enable
+    // Build the analysis set: explicitly enabled features + "default" if implicitly active
+    // and the crate actually defines a default feature.
+    let mut to_analyze: Vec<String> = enable.clone();
+    let default_is_defined = crate_info
+        .features
         .iter()
-        .filter(|f| non_minimalizable_features.contains(*f))
-        .cloned()
-        .collect();
+        .any(|(name, _)| name == "default");
+    if !disable_default && default_is_defined && !to_analyze.contains(&"default".to_string()) {
+        to_analyze.push("default".to_string());
+    }
 
-    enable.retain(|f| optional_dep_feats.iter().all(|(_, feat)| feat != f));
-    enable.retain(|f| !optional_deps.contains(f));
+    let manifest = determine_manifest_file(crate_name, main_name);
+    let mut main_toml: toml::Value =
+        toml::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+    let mut toml_modified = false;
+    let mut custom_disabled: Vec<String> = Vec::new();
+    let mut to_drop: HashSet<String> = HashSet::new();
+    // (dep_name, feat_name) pairs successfully handled — removed from optional_dep_feats
+    // at the end so should_skip_dep sees the updated state.
+    let mut handled: Vec<(String, String)> = Vec::new();
 
-    enable.extend(common);
+    for feat_name in &to_analyze {
+        println!(
+            "\n[minimize] Analyzing feature '{}' for potential removal from enable list...",
+            feat_name
+        );
+        // Collect optional deps that this feature (transitively) enables.
+        let enabled_deps: Vec<String> = optional_dep_feats
+            .iter()
+            .filter(|(_, f)| f == feat_name)
+            .map(|(dep, _)| dep.clone())
+            .collect();
+
+        for dep_name in enabled_deps {
+            let mut visited = HashSet::new();
+            let leaf = find_direct_dep_enabler(feat_name, &dep_name, crate_info, &mut visited)
+                .unwrap_or_else(|| feat_name.to_string());
+
+            let dep_entry = crate_info
+                .features
+                .iter()
+                .find(|(name, _)| name.as_str() == leaf.as_str())
+                .and_then(|(_, values)| dep_entry_string_in_toml(&dep_name, values));
+
+            let is_direct = leaf == *feat_name;
+            let leaf_only_dep_values = !feat_has_non_dep_values(&leaf, crate_info, &optional_deps);
+            let can_drop =
+                leaf_only_dep_values && !non_minimalizable_features.contains(leaf.as_str());
+
+            let subtree_deps_only = enable.contains(feat_name)
+                && all_subtree_deps_only(
+                    feat_name,
+                    crate_info,
+                    &optional_deps,
+                    non_minimalizable_features,
+                    &mut HashSet::new(),
+                );
+
+            println!(
+                "[minimize] Checking if feature '{}' can be dropped for dep '{}': is_direct={}, leaf='{}', leaf_only_dep_values={}, can_drop={}, subtree_deps_only={}, non_minimalizable={}",
+                feat_name,
+                dep_name,
+                is_direct,
+                leaf,
+                leaf_only_dep_values,
+                can_drop,
+                subtree_deps_only,
+                non_minimalizable_features.contains(leaf.as_str())
+            );
+
+            if subtree_deps_only {
+                // Every branch of feat_name's subtree only enables optional deps — drop it.
+                println!(
+                    "[minimize] DROP feature '{}': entire subtree only enables optional deps (dep='{}')",
+                    feat_name, dep_name
+                );
+                to_drop.insert(feat_name.clone());
+                // Invalidate every pair whose chain goes through this leaf.
+                invalidate_through_leaf(
+                    &dep_name,
+                    &leaf,
+                    crate_info,
+                    optional_dep_feats,
+                    &mut handled,
+                );
+            } else if is_direct
+                && leaf_only_dep_values
+                && non_minimalizable_features.contains(leaf.as_str())
+            {
+                // The feature's sole purpose is enabling this dep, AND the feature itself must
+                // stay enabled. Stripping dep:D from the feature would make it hollow while still
+                // being required. Leave both the feature and the dep alone.
+                debug!(
+                    "[minimize] KEEP dep '{}' in feature '{}': feature is non-minimalizable and only exists to enable this dep — dep is also required",
+                    dep_name, leaf
+                );
+            } else if let Some(entry) = dep_entry {
+                // Surgical removal is safe here because:
+                // - transitive chain: the leaf feature can lose dep D while the higher-level
+                //   feature continues to work for other reasons, OR
+                // - leaf has other values: strip dep D, keep the rest, OR
+                // - leaf_only_dep_values but non-minimalizable would be caught above already
+                let reason = if !is_direct {
+                    format!("transitive enabler (leaf='{leaf}', not direct feat '{feat_name}')")
+                } else if !leaf_only_dep_values {
+                    format!("leaf '{leaf}' has non-dep values — surgical removal of entry")
+                } else {
+                    format!("leaf '{leaf}' is non-minimalizable")
+                };
+                if remove_dep_from_toml_feature(&mut main_toml, &leaf, &entry) {
+                    debug!(
+                        "[minimize] MOVE entry '{}' from feature '{}' to custom-disabled (dep='{}', feat='{}', reason: {})",
+                        entry, leaf, dep_name, feat_name, reason
+                    );
+                    custom_disabled.push(entry);
+                    toml_modified = true;
+                    // Invalidate every pair (dep, feat) whose chain goes through leaf,
+                    // including the direct (dep, leaf) pair itself.
+                    invalidate_through_leaf(
+                        &dep_name,
+                        &leaf,
+                        crate_info,
+                        optional_dep_feats,
+                        &mut handled,
+                    );
+                }
+            } else {
+                debug!(
+                    "[minimize] SKIP dep '{}' via feat '{}' (leaf='{}'): is_direct={}, can_drop={}, dep_entry=None",
+                    dep_name, feat_name, leaf, is_direct, can_drop
+                );
+            }
+        }
+    }
+
+    // Remove handled pairs so should_skip_dep sees the updated state.
+    optional_dep_feats.retain(|pair| !handled.contains(pair));
+
+    // Second pass: drop features whose entire subtree only enables dep/feat entries
+    // for optional deps that were never included in the build.
+    if let Some(enabled_deps) = enabled_optional_deps {
+        for feat_name in &to_analyze {
+            if to_drop.contains(feat_name) || !enable.contains(feat_name) {
+                continue;
+            }
+            if all_subtree_dep_feat_only(
+                feat_name,
+                crate_info,
+                &optional_deps,
+                enabled_deps,
+                non_minimalizable_features,
+                &mut HashSet::new(),
+            ) {
+                println!(
+                    "[minimize] DROP feature '{}': subtree only enables dep/feat for non-enabled optional deps",
+                    feat_name
+                );
+                to_drop.insert(feat_name.clone());
+            }
+        }
+    }
+
+    if !to_drop.is_empty() {
+        debug!(
+            "[minimize] Dropping features from enable list: {:?}",
+            to_drop
+        );
+    }
+    if !custom_disabled.is_empty() {
+        debug!(
+            "[minimize] Entries moved to custom-disabled in Cargo.toml: {:?}",
+            custom_disabled
+        );
+    }
+    enable.retain(|f| !to_drop.contains(f));
     enable.sort();
     enable.dedup();
+
+    if toml_modified {
+        add_feats_to_custom_feature(
+            &mut main_toml,
+            consts::CUSTOM_FEATURES_DISABLED,
+            &custom_disabled,
+        );
+        fs::write(&manifest, toml::to_string(&main_toml).unwrap()).unwrap();
+    }
 }
 
-/// Process the dependency crate.
-/// This function will call `process_crate` for the dependency crate.
-/// But this does some additional checks and updates the main crate's
-/// toml file if required.
-/// # Arguments
-/// * `exchange` - The data exchange struct that contains all the necessary data for processing the crate
-/// * `dep` - The attributes of the dependency crate
-/// # Returns
-/// A Result indicating success or failure.
-pub fn process_dep_crate(
+/// Performs the post-processing for a dependency after `(enable, disable)` features are known,
+/// whether from the DB or computed via `process_crate`. Calls `final_feature_list_dep`,
+/// optionally updates the main crate's default feature list, and formats the disable vector
+/// with the dep name prefix.
+pub fn finalize_dep_crate(
     exchange: &mut DataExchange,
-    dep: &mut Attributes,
+    dep: &Attributes,
+    enable: Vec<String>,
+    disable: Vec<String>,
+    feature_to_items: HashMap<String, HashSet<String>>,
 ) -> Result<TripleTupleVecString, anyhow::Error> {
-    let (enable, disable) = match db::get_from_db_data(&exchange.db_data, &dep.crate_name) {
-        Some(dbdata) => (dbdata.features.0.clone(), dbdata.features.1.clone()),
-        None => {
-            let (.., dep_crate_info) = downloader::gather_crate_info(
-                &dep.crate_name,
-                true,
-                Some(&exchange.name_with_version),
-            )?;
-            let optional_dep_feats = features_for_optional_deps(&dep_crate_info);
-            hir::hir_visit(
-                &dep.crate_name,
-                None,
-                true,
-                Some(&dep_crate_info),
-                Some(&exchange.name_with_version),
-            );
-            let dep_crate_name = dep.crate_name.clone();
-            let (enable, disable) = process_crate(
-                exchange,
-                dep,
-                Some(&dep_crate_name),
-                Some(&dep_crate_info),
-                false,
-                &optional_dep_feats,
-            )?;
-            (enable, disable)
-        }
-    };
-
     debug!(
         "Dependency {}: enable: {:?}, disable: {:?}",
         dep.crate_name, enable, disable
@@ -912,11 +1012,131 @@ pub fn process_dep_crate(
 
     let dep_original_name = dep.crate_name.split(":").next().unwrap_or("").to_string();
 
+    let dep_crate_name_norm = exchange
+        .crate_name_rename
+        .iter()
+        .find(|(_, pkg)| pkg.as_str() == dep_original_name.as_str())
+        .map(|(cname, _)| cname.replace('-', "_"))
+        .unwrap_or_else(|| dep_original_name.replace('-', "_"));
+
+    // Print all main items that reference this dep.
+    let main_items_for_dep: Vec<&String> = exchange
+        .valid_cross_crate_items
+        .iter()
+        .filter(|(cname, _)| cname == &dep_crate_name_norm)
+        .map(|(_, iname)| iname)
+        .collect();
+    {
+        let mut sorted = main_items_for_dep
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>();
+        sorted.sort();
+        println!(
+            "[finalize] dep={} (norm={}) — main uses {} items from this dep: {:?}",
+            dep.crate_name,
+            dep_crate_name_norm,
+            sorted.len(),
+            sorted
+        );
+    }
+
+    // Determine which features in the disable list must be protected because:
+    // 1. Main uses items from this dep that require the feature, OR
+    // 2. A main [features] entry in the enable list references dep/feat.
+    let protected: HashSet<String> = disable
+        .iter()
+        .filter(|feat| {
+            // Check 1: items usage
+            if let Some(gated_items) = feature_to_items.get(*feat) {
+                let has_glob = gated_items.contains("*");
+                let matching_items: Vec<&String> = gated_items
+                    .iter()
+                    .filter(|iname| {
+                        exchange
+                            .valid_cross_crate_items
+                            .contains(&(dep_crate_name_norm.clone(), (*iname).clone()))
+                    })
+                    .collect();
+                println!(
+                    "[finalize]   feature='{}' gates {} items — main uses {:?}{}",
+                    feat,
+                    gated_items.len(),
+                    matching_items,
+                    if has_glob { " (+ glob *)" } else { "" }
+                );
+                if has_glob || !matching_items.is_empty() {
+                    println!(
+                        "[finalize]   => PROTECT '{}' (items check: {:?})",
+                        feat, matching_items
+                    );
+                    return true;
+                }
+            } else {
+                println!(
+                    "[finalize]   feature='{}' not in feature_to_items (no gated items known)",
+                    feat
+                );
+            }
+            // Check 2: features table
+            let protected_by_table =
+                exchange
+                    .crate_info
+                    .features
+                    .iter()
+                    .any(|(main_feat, tuples)| {
+                        exchange.main_enable.contains(main_feat)
+                            && tuples.iter().any(|(d, f)| {
+                                d.replace('-', "_") == dep_crate_name_norm && f == *feat
+                            })
+                    });
+            if protected_by_table {
+                println!("[finalize]   => PROTECT '{}' (features table check)", feat);
+            } else {
+                println!("[finalize]   => ALLOW REMOVAL of '{}'", feat);
+            }
+            protected_by_table
+        })
+        .cloned()
+        .collect();
+
+    println!(
+        "[finalize] dep={} protected features: {:?}, will remove: {:?}",
+        dep.crate_name,
+        {
+            let mut v: Vec<_> = protected.iter().collect();
+            v.sort();
+            v
+        },
+        {
+            let mut v: Vec<_> = disable.iter().filter(|f| !protected.contains(*f)).collect();
+            v.sort();
+            v
+        }
+    );
+
+    debug!(
+        "Dependency {}: protected features (not removing): {:?}",
+        dep.crate_name, protected
+    );
+
+    for feat in &protected {
+        exchange
+            .protected_dep_features
+            .insert((dep_crate_name_norm.clone(), feat.clone()));
+    }
+
+    let filtered_disable: Vec<String> = disable
+        .iter()
+        .filter(|f| !protected.contains(*f))
+        .cloned()
+        .collect();
+
     let (args, update_default_config) = solver::final_feature_list_dep(
         &exchange.crate_info,
         &dep_original_name,
         &enable,
-        &disable,
+        &filtered_disable,
         &exchange.crate_name_rename,
         &mut exchange.telemetry,
     );
@@ -963,9 +1183,94 @@ pub fn process_dep_crate(
     Ok((args, formatted_disable, enable))
 }
 
+/// Process the dependency crate (non-DB path).
+/// Gathers crate info, runs the AST/HIR analysis, solves for features, then delegates
+/// post-processing to `finalize_dep_crate`.
+/// Callers are responsible for checking the DB before invoking this — see
+/// `process_dep_crate_wrapper` in `main.rs`.
+pub fn process_dep_crate(
+    exchange: &mut DataExchange,
+    dep: &mut Attributes,
+) -> Result<TripleTupleVecString, anyhow::Error> {
+    let (.., dep_crate_info) =
+        downloader::gather_crate_info(&dep.crate_name, true, Some(&exchange.name_with_version))?;
+    let mut optional_dep_feats = features_for_optional_deps(&dep_crate_info);
+    let dep_crate_name = dep.crate_name.clone();
+    let ctx = z3::Context::new(&z3::Config::new());
+    let (_hard_std, hard_constraints, _, _, dep_root, _) = driver::analyze_crate_wrapper(
+        &ctx,
+        &dep.crate_name,
+        Some(&exchange.name_with_version),
+        &mut exchange.telemetry,
+    );
+    let (enable, disable) = process_crate(
+        exchange,
+        &ctx,
+        dep,
+        Some(&dep_crate_name),
+        Some(&dep_crate_info),
+        false,
+        &mut optional_dep_feats,
+        hard_constraints,
+    )?;
+
+    // Build feature→items map from the dep's tree while dep ctx is live.
+    // dep_root's Z3 Bools are tied to `ctx` — must not outlive this scope.
+    let named = crate::visitor::collect_named_items_with_conditions(&dep_root, &ctx);
+
+    println!(
+        "[dep_tree] All named items collected from dep {} tree ({} items):",
+        dep.crate_name,
+        named.len()
+    );
+    let mut named_sorted: Vec<_> = named.iter().map(|(n, _)| n.as_str()).collect();
+    named_sorted.sort();
+    named_sorted.dedup();
+    for name in &named_sorted {
+        println!("  {}", name);
+    }
+
+    let feature_to_items: HashMap<String, HashSet<String>> = disable
+        .iter()
+        .map(|feat| {
+            let f_var = z3::ast::Bool::new_const(&ctx, feat.as_str());
+            let gated: HashSet<String> = named
+                .iter()
+                .filter(|(_, cond)| {
+                    let s = z3::Solver::new(&ctx);
+                    s.assert(cond);
+                    s.assert(&f_var.not());
+                    s.check() == z3::SatResult::Unsat
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            (feat.clone(), gated)
+        })
+        .collect();
+
+    println!(
+        "[dep_tree] Feature→items map for dep {} (features in disable list):",
+        dep.crate_name
+    );
+    let mut feats_sorted: Vec<_> = feature_to_items.keys().collect();
+    feats_sorted.sort();
+    for feat in feats_sorted {
+        let mut items: Vec<_> = feature_to_items[feat].iter().collect();
+        items.sort();
+        println!(
+            "  feature='{}' gates {} items: {:?}",
+            feat,
+            items.len(),
+            items
+        );
+    }
+
+    finalize_dep_crate(exchange, dep, enable, disable, feature_to_items)
+}
+
 /// Sometimes main might enable a feature that enables a dependency feature
 /// that is not required for no_std build and can cause build failure.
-/// If such a feature exists in a main feature which is not necessary,
+/// If such a feature exists in a main feature which is not necessary
 /// for the main, it is dropped from the enabled features of main crate.
 /// If the feature is part of a fixed feature list, it is moved to a
 /// custom feature list called `dep-unnecessary-features`.
@@ -984,6 +1289,7 @@ pub fn move_unnecessary_dep_feats(
     deps_args: &[String],
     telemetry: &mut Telemetry,
     disable_default: bool,
+    protected_dep_features: &std::collections::HashSet<(String, String)>,
 ) {
     let main_manifest = determine_manifest_file(main_name, None);
     let mut main_toml: toml::Value =
@@ -1071,6 +1377,7 @@ pub fn move_unnecessary_dep_feats(
             })
     });
 
+    let dep_norm = dep_name_only.replace('-', "_");
     let mut removed = HashSet::new();
     for feature in fixed_main_args.iter() {
         if let Some(arr) = main_features
@@ -1083,6 +1390,9 @@ pub fn move_unnecessary_dep_feats(
                 {
                     let key = extract_key(s);
                     if !deps_args.contains(&key.to_string()) {
+                        if protected_dep_features.contains(&(dep_norm.clone(), key.to_string())) {
+                            return true;
+                        }
                         debug!("Removing unnecessary feature {} from main crate", s);
                         removed.insert(s.to_string());
                         return false;
@@ -1104,6 +1414,9 @@ pub fn move_unnecessary_dep_feats(
                 {
                     let key = extract_key(s);
                     if !deps_args.contains(&key.to_string()) {
+                        if protected_dep_features.contains(&(dep_norm.clone(), key.to_string())) {
+                            return true;
+                        }
                         removed.insert(s.to_string());
                         return false;
                     }
@@ -1170,6 +1483,7 @@ pub fn determine_n_depth_dep_no_std(
     visited: &mut HashSet<(String, String)>,
     ctx: &z3::Context,
     main_name: &str,
+    fail_on_nostd: bool,
 ) -> (bool, u32) {
     let mut local_initlist = Vec::new();
     if current_depth >= depth || initlist.is_empty() {
@@ -1210,7 +1524,7 @@ pub fn determine_n_depth_dep_no_std(
                 .split_once(':')
                 .unwrap_or((&name_with_version, ""));
 
-            if !check_for_no_std(&name_with_version, ctx, None, Some(main_name)) {
+            if fail_on_nostd && !check_for_no_std(&name_with_version, ctx, None, Some(main_name)) {
                 debug!(
                     "ERROR: Dependency {} of dependency {} does not support no_std build at depth {}",
                     name_with_version, name, current_depth
@@ -1229,6 +1543,7 @@ pub fn determine_n_depth_dep_no_std(
         visited,
         ctx,
         main_name,
+        fail_on_nostd,
     )
 }
 
@@ -1252,7 +1567,7 @@ pub fn parse_main_attributes<'a>(
         if attr.path().get_ident().unwrap() == "cfg_attr" {
             // println!("{}", attr.to_token_stream());
             (equation, parsed) = parse_meta_for_cfg_attr(&attr.meta, ctx);
-            if is_no_std(&parsed) {
+            if is_no_std(&parsed, false) {
                 atleast_one_no_std = true;
                 debug!("Found no_std");
                 break;
@@ -1277,6 +1592,19 @@ pub fn parse_main_attributes_direct<'a>(
     ctx: &'a z3::Context,
 ) -> (Option<Bool<'a>>, ParsedAttr) {
     parse_meta_for_cfg_attr(&attr.meta, ctx)
+}
+
+/// Collect all feature names mentioned across all compile_error attributes.
+/// Used by callers that cannot access the private `compile_error_attrs` field directly.
+pub fn compile_error_feature_names(attrs: &Attributes, ctx: &z3::Context) -> HashSet<String> {
+    attrs
+        .compile_error_attrs
+        .iter()
+        .flat_map(|attr| {
+            let (_, parsed) = parse_main_attributes_direct(attr, ctx);
+            parsed.features
+        })
+        .collect()
 }
 
 /// Parse the attributes of a dependency crate.
@@ -1923,66 +2251,35 @@ pub fn add_feats_to_custom_feature(
 /// # Returns
 /// A vector of tuples, each containing the dependency name and the feature name.
 pub fn features_for_optional_deps(crate_info: &CrateInfo) -> TupleVec {
-    let deps_and_feats = &crate_info.deps_and_features;
-    let main_feats = &crate_info.features;
-
-    let optional_deps: Vec<String> = deps_and_feats
+    let optional_deps: Vec<String> = crate_info
+        .deps_and_features
         .iter()
         .filter(|(dep, _)| dep.optional)
         .map(|(dep, _)| dep.name.clone())
         .collect();
 
-    // There are the two most common ways to enable an optional dependency
-    // via features. `somefeat = ["depname"]` or `somefeat = ["dep:depname"]`
-    // `read_local_features` function already handles parsing these correctly.
-    // Cargo by default generates an implicit `depname = ["dep:depname"]` feature
-    // for each optional dependency. But if the user has explicitly defined
-    // a feature with "dep:depname", then that will override the implicit one.
-    let common = |deps: &Vec<String>, implicit: bool| {
-        {
-            deps.iter().flat_map(|dep| {
-                main_feats.iter().filter_map(|(feat_name, dep_feats)| {
-                    let has_dep = dep_feats.iter().any(|f| {
-                        f.0 == dep.as_str()
-                            && if implicit {
-                                f.1 == "dep:"
-                            } else {
-                                f.1 == dep.as_str()
-                            }
-                    });
-                    if has_dep {
-                        Some((dep.clone(), feat_name.clone()))
-                    } else {
-                        None
-                    }
-                })
-            })
+    let mut result: TupleVec = Vec::new();
+
+    for (feat_name, _) in &crate_info.features {
+        let mut all_enabled = vec![feat_name.clone()];
+        solver::all_enabled_for_feat(&mut all_enabled, crate_info);
+
+        for dep_name in &optional_deps {
+            // `dep:depname` is encoded as "{dep_name}/dep:" in the expanded set.
+            let explicit = all_enabled.contains(&format!("{}/dep:", dep_name));
+            // `depname` (bare, enabling the implicit Cargo feature) is encoded as
+            // dep_name itself. Skip index 0 to avoid a false positive when
+            // feat_name == dep_name but the user overrode that feature to not enable the dep.
+            let implicit = all_enabled[1..].contains(dep_name);
+            if explicit || implicit {
+                result.push((dep_name.clone(), feat_name.clone()));
+            }
         }
-        .collect::<Vec<_>>()
-    };
+    }
 
-    // We first find all optional dependencies that have the implicit feature
-    // overridden by the user.
-    let mut direct_feat_match: TupleVec = common(&optional_deps, true);
-
-    let found: Vec<String> = direct_feat_match
-        .iter()
-        .map(|(dep, _)| dep.clone())
-        .collect();
-
-    // Now for the features that are not overridden, we find the implicit ones.
-    let not_found: Vec<String> = optional_deps
-        .iter()
-        .filter(|dep| !found.contains(dep))
-        .cloned()
-        .collect();
-
-    let indirect_feat_match: TupleVec = common(&not_found, false);
-
-    direct_feat_match.extend(indirect_feat_match);
-    direct_feat_match.sort();
-    direct_feat_match.dedup();
-    direct_feat_match
+    result.sort();
+    result.dedup();
+    result
 }
 
 /// Determine if a dependency should be skipped.
@@ -2144,27 +2441,25 @@ pub fn is_dep_optional(crate_info: &CrateInfo, name: &str) -> bool {
 /// # Returns
 /// A boolean indicating whether all dependencies can satisfy their
 /// no_std requirements.
-pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) -> bool {
+pub fn recursive_dep_requirement_check(
+    exchange: &mut DataExchange,
+    depth: u32,
+    top_level_deps: &[(String, String)],
+    enabled_optional_deps: &std::collections::HashSet<String>,
+) -> bool {
     exchange.telemetry.recursive_requirement_check_done = true;
     println!("Starting recursive dependency requirement check...");
-    let top_level_deps: TupleVec = exchange
-        .crate_info
-        .deps_and_features
-        .iter()
-        .filter(|(info, _)| !info.optional)
-        .map(|(dep, _)| (dep.name.clone(), dep.version.clone()))
-        .collect();
-
     // Throwaway telemetry
     let mut telemetry = Telemetry::default();
 
     let mut seen: HashSet<(String, String)> = HashSet::new();
-    let mut worklist: TupleVec = top_level_deps.clone();
-    let mut threshold = top_level_deps.len();
-    let mut current_threshold = 0;
-    let mut current_depth = 1;
+    // Each entry carries its depth (1 = direct dep of main crate).
+    let mut worklist: Vec<(String, String, u32)> = top_level_deps
+        .iter()
+        .map(|(n, v)| (n.clone(), v.clone(), 1u32))
+        .collect();
 
-    debug!("Original worklist: {:?}", worklist);
+
 
     let client = downloader::create_client().unwrap();
     // For the crates that we already processed, save the requirements
@@ -2172,18 +2467,38 @@ pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) 
     let mut visited_dep_require: Vec<(String, DoubleTupleVecString)> = Vec::new();
     let instant = std::time::Instant::now();
 
-    while let Some((name, version)) = worklist.pop() {
-        current_threshold += 1;
-        if current_threshold > threshold {
-            current_depth += 1;
-            threshold = worklist.len();
-            current_threshold = 0;
-            debug!("Recursion depth increased to: {}", current_depth);
+    while let Some((name, version, item_depth)) = worklist.pop() {
+        // Optional top-level deps that were never enabled don't need checking —
+        // their sub-deps may not have been downloaded and they won't appear in the build.
+        if item_depth == 1
+            && is_dep_optional(&exchange.crate_info, &name)
+            && !enabled_optional_deps.contains(&name)
+        {
+            debug!(
+                "Optional dep {} was not enabled, skipping recursive check",
+                name
+            );
+            continue;
         }
-        println!("Checking dependency: {}:{}", name, version);
-        let crate_data = client.get_crate(&name).unwrap();
-        let resolved_version = downloader::resolve_version(&Some(&version), &crate_data).unwrap();
-        let name_with_version = format!("{}:{}", name, resolved_version);
+
+        // `version` is already the exact downloaded version — do not re-resolve via
+        // resolve_version, which applies semver-compat rules and can return a different
+        // version than what is on disk (e.g. "0.4.19" → "0.4.45").
+        let name_with_version = format!("{}:{}", name, version);
+        debug!("Checking at depth {}: {}", item_depth, name_with_version);
+        // Only process crates that were actually downloaded.
+        let dep_dir = std::path::PathBuf::from(consts::DOWNLOAD_PATH)
+            .join(format!(
+                "{}_deps",
+                exchange.name_with_version.replace(':', "-")
+            ))
+            .join(name_with_version.replace(':', "-"));
+        if !dep_dir.exists() {
+            panic!(
+                "Dependency {} not found on disk. This should not happen since the dependency should have been downloaded if it is in the lock file.",
+                name_with_version
+            );
+        }
 
         if is_proc_macro(&name_with_version, Some(&exchange.name_with_version)) {
             debug!(
@@ -2208,6 +2523,7 @@ pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) 
             let dep_name_with_version = format!("{}:{}", dep.name.clone(), dep_resolved_version);
 
             println!("Processing dependency: {}", dep_name_with_version);
+
             if is_dep_optional(&crate_info, &dep.name)
                 || is_proc_macro(&dep_name_with_version, Some(&exchange.name_with_version))
             {
@@ -2218,7 +2534,18 @@ pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) 
                 continue;
             }
 
-            debug!("Seen so far: {:?}", seen);
+            let sub_dep_dir = std::path::PathBuf::from(consts::DOWNLOAD_PATH)
+                .join(format!(
+                    "{}_deps",
+                    exchange.name_with_version.replace(':', "-")
+                ))
+                .join(dep_name_with_version.replace(':', "-"));
+            if !sub_dep_dir.exists() {
+                panic!(
+                    "Dependency {} not found on disk. This should not happen since the dependency should have been downloaded if it is in the lock file.",
+                    dep_name_with_version
+                );
+            }
 
             let (.., dep_crate_info) = downloader::gather_crate_info(
                 &dep_name_with_version,
@@ -2227,7 +2554,7 @@ pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) 
             )
             .unwrap();
 
-            let optional_dep_feats = features_for_optional_deps(&dep_crate_info);
+            let mut optional_dep_feats = features_for_optional_deps(&dep_crate_info);
 
             let (enable, disable): DoubleTupleVecString = if let Some(reqs) = visited_dep_require
                 .iter()
@@ -2240,25 +2567,28 @@ pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) 
                 );
                 reqs.clone()
             } else {
-                hir::hir_visit(
+                let ctx = z3::Context::new(&z3::Config::new());
+                let (all_hard, hard_constraints, _, _, _, _) = driver::analyze_crate_wrapper(
+                    &ctx,
                     &dep_name_with_version,
-                    None,
-                    true,
-                    Some(&dep_crate_info),
                     Some(&exchange.name_with_version),
+                    &mut telemetry,
                 );
                 let mut crate_attrs = parse_crate(
                     &dep_name_with_version,
                     false,
                     Some(&exchange.name_with_version),
+                    &all_hard,
                 );
                 let (enable, disable) = process_crate(
                     exchange,
+                    &ctx,
                     &mut crate_attrs,
                     Some(&dep_name_with_version),
                     Some(&dep_crate_info),
-                    true,
-                    &optional_dep_feats,
+                    false,
+                    &mut optional_dep_feats,
+                    hard_constraints,
                 )
                 .unwrap();
 
@@ -2283,14 +2613,19 @@ pub fn recursive_dep_requirement_check(exchange: &mut DataExchange, depth: u32) 
             // We use the resolved version here because multiple versions of the same crate
             // can resolve to the same version and are required by different dependencies.
             // In that case, we don't want to check the same crate multiple times.
-            if current_depth <= depth
-                && seen.insert((dep.name.clone(), dep_resolved_version.clone()))
+            if item_depth <= depth && seen.insert((dep.name.clone(), dep_resolved_version.clone()))
             {
                 debug!(
-                    "Adding dependency: {} to worklist for requirement check with version: {}",
-                    dep.name, dep_resolved_version
+                    "Adding dependency: {} to worklist for requirement check with version: {} at depth {}",
+                    dep.name,
+                    dep_resolved_version,
+                    item_depth + 1
                 );
-                worklist.push((dep.name.clone(), dep_resolved_version.clone()));
+                worklist.push((
+                    dep.name.clone(),
+                    dep_resolved_version.clone(),
+                    item_depth + 1,
+                ));
             }
 
             if !dependency_requirement_possible(
@@ -2628,8 +2963,15 @@ fn is_any_logic(logic: &str) -> Option<Logic> {
     }
 }
 
-fn is_no_std(parsed: &ParsedAttr) -> bool {
-    parsed.constants.iter().any(|c| c == "no_std")
+pub(crate) fn is_no_std(parsed: &ParsedAttr, check_all: bool) -> bool {
+    let mut to_check = vec!["no_std"];
+    if check_all {
+        to_check.append(&mut vec!["no_core"]);
+    }
+    parsed
+        .constants
+        .iter()
+        .any(|c| to_check.contains(&c.as_str()))
 }
 
 fn parse_token_stream<'a>(
@@ -2665,10 +3007,7 @@ fn parse_token_stream<'a>(
                     Logic::Or | Logic::Any => {
                         Some(Bool::or(ctx, local_group_items_refs.as_slice()))
                     }
-                    Logic::Not => {
-                        current_expr = local_group_items.first().map(|first| first.not());
-                        None
-                    }
+                    Logic::Not => local_group_items.first().map(|first| first.not()),
                 };
 
                 if let Some(local) = local_expr {
