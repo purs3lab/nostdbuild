@@ -2820,9 +2820,9 @@ fn parse_n_level_externs(
             parent_name,
         )
         .unwrap();
-        name = new_name_with_version
+        let (name, version) = new_name_with_version
             .split_once(':')
-            .map_or(name, |(n, _)| n);
+            .unwrap_or((name, version));
         let names_and_versions =
             downloader::read_dep_names_and_versions(name, version, false, main_name).unwrap();
         let unfiltered = parse_item_extern_crates(&new_name_with_version, Some(main_name));
