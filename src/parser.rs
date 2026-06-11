@@ -2757,9 +2757,6 @@ fn parse_n_level_externs_entry<'a>(
 ) -> (Option<Bool<'a>>, ParsedAttr) {
     let mut worklists = Vec::new();
     let mut depth = 2;
-    worklist.iter().for_each(|(name_with_version, _, _)| {
-        worklists.push((name_with_version.clone(), Vec::<String>::new()));
-    });
 
     worklist.iter().for_each(|(name_with_version, _, _)| {
         let (name, version) = name_with_version.split_once(':').unwrap();
@@ -2771,6 +2768,8 @@ fn parse_n_level_externs_entry<'a>(
             .collect::<Vec<String>>();
         worklists.push((name_with_version.clone(), initial_worklist));
     });
+
+    let mut visited: HashSet<String> = HashSet::new();
 
     loop {
         if worklists.iter().all(|(_, remaining)| remaining.is_empty()) {
@@ -2791,6 +2790,7 @@ fn parse_n_level_externs_entry<'a>(
                 telemetry,
                 main_name,
                 Some(name_with_version),
+                &mut visited,
             ) {
                 telemetry.indirect_extern_std_usage_depth = depth;
                 return (equation.clone(), parsed_attr.clone());
@@ -2805,10 +2805,14 @@ fn parse_n_level_externs(
     telemetry: &mut Telemetry,
     main_name: &str,
     parent_name: Option<&str>,
+    visited: &mut HashSet<String>,
 ) -> bool {
     let mut local_worklist = Vec::new();
     for name_with_version in worklist.drain(..) {
-        let (mut name, version) = name_with_version.split_once(':').unwrap();
+        if !visited.insert(name_with_version.clone()) {
+            continue;
+        }
+        let (name, version) = name_with_version.split_once(':').unwrap();
         let new_name_with_version = downloader::clone_from_crates(
             name,
             Some(&version.to_string()),
