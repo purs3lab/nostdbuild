@@ -1,5 +1,4 @@
 use anyhow::Context;
-use crates_io_api::{CrateResponse, SyncClient};
 use flate2::read::GzDecoder;
 use git2::Repository;
 use log::debug;
@@ -18,7 +17,7 @@ use walkdir::WalkDir;
 use crate::types::*;
 use crate::{
     CrateInfo, DEPENDENCIES, Dependency, Telemetry,
-    consts::{CRATE_IO, DOWNLOAD_PATH},
+    consts::{INDEX_CRATES_IO, STATIC_CRATES_IO, DOWNLOAD_PATH},
     parser,
 };
 
@@ -33,6 +32,31 @@ pub fn clone_repo(url: &str, name: &str) -> Result<(), git2::Error> {
     Repository::clone(url, &dir).map(|_| {
         debug!("Cloned {} into {}", url, dir.display());
     })
+}
+
+const MAX_RETRIES: u32 = 3;
+
+fn is_permanent_error(e: &anyhow::Error) -> bool {
+    let s = e.to_string();
+    s.contains("could not be found") || s.contains("Known:") || s.contains("404")
+}
+
+fn with_retries<T>(
+    max: u32,
+    mut f: impl FnMut() -> Result<T, anyhow::Error>,
+) -> Result<T, anyhow::Error> {
+    let mut last = anyhow::anyhow!("no attempts");
+    for attempt in 0..max {
+        match f() {
+            Ok(v) => return Ok(v),
+            Err(e) if is_permanent_error(&e) => return Err(e),
+            Err(e) => {
+                debug!("Attempt {}/{} failed: {}", attempt + 1, max, e);
+                last = e;
+            }
+        }
+    }
+    Err(last)
 }
 
 /// Download and extract a crate from crates.io
@@ -56,48 +80,22 @@ pub fn clone_from_crates(
 
     let filename = format!("{}.crate", name);
 
-    let client = create_client()?;
-    let (mut download_url, mut ver, mut newname): (String, String, String);
-    // Try until successful
-    loop {
-        (download_url, ver, newname) =
-            match get_download_url(&client, name, &version, main_name, parent_name) {
-                Ok((url, ver, newname)) => (url, ver, newname),
-                Err(e) => {
-                    debug!("Failed to get download URL: {}", e);
-                    if e.to_string().contains("could not be found") {
-                        return Err(anyhow::anyhow!("Crate not found"));
-                    }
-                    if e.to_string().contains("Known: ") {
-                        return Err(anyhow::anyhow!("Version not found"));
-                    }
-                    debug!("Retrying download");
-                    continue;
-                }
-            };
-        debug!("Download URL: {}", download_url);
+    let (download_url, ver, newname) = with_retries(MAX_RETRIES, || {
+        get_download_url(name, &version, main_name, parent_name)
+    })?;
+    debug!("Download URL: {}", download_url);
 
-        let crate_path = dir.join(format!("{}-{}", newname, ver));
-        if Path::new(&crate_path).exists() {
-            if contains_one_rs_file(crate_path.to_str().unwrap()) {
-                debug!("Crate with name {} already downloaded", newname);
-                return Ok(format!("{}:{}", newname, ver));
-            }
-            // Delete the crate if it doesn't contain any .rs files
-            fs::remove_dir_all(crate_path)?;
+    let crate_path = dir.join(format!("{}-{}", newname, ver));
+    if crate_path.exists() {
+        if contains_one_rs_file(crate_path.to_str().unwrap()) {
+            debug!("Crate with name {} already downloaded", newname);
+            return Ok(format!("{}:{}", newname, ver));
         }
-
-        match download_crate(&download_url, &filename) {
-            Ok(_) => break,
-            Err(e) => {
-                debug!("Failed to download crate: {}", e);
-                if e.to_string().contains("Not found") || e.to_string().contains("404") {
-                    return Err(anyhow::anyhow!("Crate not found"));
-                }
-                debug!("Retrying download");
-            }
-        };
+        fs::remove_dir_all(&crate_path)?;
     }
+
+    with_retries(MAX_RETRIES, || download_crate(&download_url, &filename))?;
+
     extract_crate(&filename, &dir)?;
     fs::remove_file(&filename).context("Failed to delete crate file")?;
 
@@ -434,13 +432,30 @@ pub(crate) fn read_local_features(toml: &toml::Value) -> Vec<(String, TupleVec)>
         .collect()
 }
 
-/// Create a new crates.io API client
-pub fn create_client() -> Result<SyncClient, anyhow::Error> {
-    SyncClient::new(
-        "downloader (contact@sourag.com)",
-        std::time::Duration::from_secs(1),
-    )
-    .context("Failed to create client")
+fn index_path(name: &str) -> String {
+    let lower = name.to_lowercase();
+    match lower.len() {
+        1 => format!("1/{}", lower),
+        2 => format!("2/{}", lower),
+        3 => format!("3/{}/{}", &lower[..1], lower),
+        _ => format!("{}/{}/{}", &lower[..2], &lower[2..4], lower),
+    }
+}
+
+pub fn fetch_index(name: &str) -> Result<Vec<serde_json::Value>, anyhow::Error> {
+    let url = format!("{}/{}", INDEX_CRATES_IO, index_path(name));
+    debug!("Fetching index from {}", url);
+    let response = blocking::get(&url).context("Failed to fetch index")?;
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!("{} could not be found", name));
+    }
+    response
+        .text()
+        .context("Failed to read index")?
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::from_str(l).context("Failed to parse index entry"))
+        .collect()
 }
 
 fn traverse_and_add_dep_names(
@@ -512,14 +527,19 @@ fn update_name(old_name: &str, new_name: &str, crate_info: &mut CrateInfo) {
 }
 
 fn get_download_url(
-    client: &SyncClient,
     name: &str,
     version: &Option<&String>,
     main_name: Option<&str>,
     parent_name: Option<&str>,
 ) -> Result<(String, String, String), anyhow::Error> {
-    let crate_data = client.get_crate(name)?;
-    let mut resolved_version: String = String::new();
+    let entries = fetch_index(name)?;
+    let canonical_name = entries
+        .first()
+        .and_then(|e| e.get("name").and_then(|v| v.as_str()))
+        .unwrap_or(name)
+        .to_string();
+
+    let mut resolved_version = String::new();
 
     // main_name None means this the download of the main crate itself. So there is no
     // parent or version to look for in the lock file.
@@ -557,13 +577,13 @@ fn get_download_url(
                     }
                 }
             }
-            debug!("No exact version match found in Cargo.lock, falling back to crates.io API");
+            debug!("No exact version match found in Cargo.lock, falling back to index");
         }
     }
 
     if resolved_version.is_empty() {
-        debug!("Resolving version using crates.io API");
-        resolved_version = resolve_version(version, &crate_data)?;
+        debug!("Resolving version using index");
+        resolved_version = resolve_version(version, &entries)?;
     } else {
         debug!(
             "Resolved version for {} using Cargo.lock: {}",
@@ -571,58 +591,67 @@ fn get_download_url(
         );
     }
 
-    let dl_path = crate_data
-        .versions
-        .iter()
-        .find(|v| v.num == resolved_version)
-        .unwrap()
-        .dl_path
-        .clone();
-    let download_url: String = format!("{}{}", CRATE_IO, dl_path);
+    let download_url = format!(
+        "{}/crates/{}/{}-{}.crate",
+        STATIC_CRATES_IO, canonical_name, canonical_name, resolved_version
+    );
 
-    Ok((
-        download_url,
-        resolved_version,
-        crate_data.crate_data.name.clone(),
-    ))
+    Ok((download_url, resolved_version, canonical_name))
 }
 
 /// Resolve the version of a crate given a version requirement
 /// # Arguments
 /// * `version` - The version requirement as a string
-/// * `crate_data` - The crate data from crates.io
+/// * `entries` - Index entries for the crate from index.crates.io
 /// # Returns
 /// * `Result` - The resolved version as a string if successful, an `Error` otherwise
 pub fn resolve_version(
     version: &Option<&String>,
-    crate_data: &CrateResponse,
+    entries: &[serde_json::Value],
 ) -> Result<String, anyhow::Error> {
+    let available: Vec<(&str, semver::Version)> = entries
+        .iter()
+        .filter(|e| !e.get("yanked").and_then(|v| v.as_bool()).unwrap_or(false))
+        .filter_map(|e| {
+            let vers = e.get("vers")?.as_str()?;
+            let sv = semver::Version::parse(vers).ok()?;
+            Some((vers, sv))
+        })
+        .collect();
+
+    let latest = || {
+        available
+            .iter()
+            .max_by(|(_, a), (_, b)| a.cmp(b))
+            .map(|(s, _)| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("No versions available"))
+    };
+
     match version {
-        None => Ok(crate_data.versions[0].num.clone()),
-        Some(version) => {
-            if *version == "latest" {
-                Ok(crate_data.versions[0].num.clone())
-            } else {
-                let ver = VersionReq::parse(version).context("Known: Failed to parse version")?;
-                let resolved_versions = crate_data
-                    .versions
-                    .iter()
-                    .filter(|v| ver.matches(&semver::Version::parse(&v.num).unwrap()))
-                    .collect::<Vec<_>>();
-                if resolved_versions.is_empty() {
-                    return Err(anyhow::anyhow!("Known: No matching version found"));
-                }
-                Ok(resolved_versions.first().unwrap().num.clone())
-            }
+        None => latest(),
+        Some(v) if v.as_str() == "latest" => latest(),
+        Some(req_str) => {
+            let req = VersionReq::parse(req_str).context("Known: Failed to parse version")?;
+            available
+                .iter()
+                .filter(|(_, sv)| req.matches(sv))
+                .max_by(|(_, a), (_, b)| a.cmp(b))
+                .map(|(s, _)| s.to_string())
+                .ok_or_else(|| anyhow::anyhow!("Known: No matching version found"))
         }
     }
 }
 
 fn download_crate(url: &str, filename: &str) -> Result<(), anyhow::Error> {
     debug!("Downloading crate from {}", url);
-    let response = blocking::get(url)?;
+    let response = blocking::get(url).context("Failed to fetch crate")?;
+    if response.status().as_u16() == 404 {
+        return Err(anyhow::anyhow!("404: crate not found at {}", url));
+    }
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!("Download failed: HTTP {}", response.status()));
+    }
     let bytes = response.bytes().context("Failed to read response")?;
-
     fs::write(filename, bytes).context("Failed to write crate file")
 }
 

@@ -1,5 +1,6 @@
 pub const DOWNLOAD_PATH: &str = "/evaldisk/sourag/downloads";
-pub const CRATE_IO: &str = "https://crates.io";
+pub const INDEX_CRATES_IO: &str = "https://index.crates.io";
+pub const STATIC_CRATES_IO: &str = "https://static.crates.io";
 pub const DB_FILE_NAME: &str = "db.bin";
 pub const RESULTS_PATH: &str = "/evaldisk/sourag/results/";
 

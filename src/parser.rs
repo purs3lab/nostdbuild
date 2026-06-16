@@ -2461,7 +2461,6 @@ pub fn recursive_dep_requirement_check(
 
 
 
-    let client = downloader::create_client().unwrap();
     // For the crates that we already processed, save the requirements
     // so that we don't have to recompute them.
     let mut visited_dep_require: Vec<(String, DoubleTupleVecString)> = Vec::new();
@@ -2517,9 +2516,9 @@ pub fn recursive_dep_requirement_check(
         .unwrap();
 
         for (dep, _) in crate_info.deps_and_features.iter() {
-            let dep_crate_data = client.get_crate(&dep.name).unwrap();
+            let dep_index_entries = downloader::fetch_index(&dep.name).unwrap();
             let dep_resolved_version =
-                downloader::resolve_version(&Some(&dep.version), &dep_crate_data).unwrap();
+                downloader::resolve_version(&Some(&dep.version), &dep_index_entries).unwrap();
             let dep_name_with_version = format!("{}:{}", dep.name.clone(), dep_resolved_version);
 
             println!("Processing dependency: {}", dep_name_with_version);
