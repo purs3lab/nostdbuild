@@ -405,20 +405,35 @@ pub fn process_crate(
         }
     }
 
-    let hard_constraint_vec: Vec<Bool> = if let Some(hard) = hard_constraints {
+    let hard_constraint_vec: Vec<Bool> = if let Some(hard) = &hard_constraints {
         let solver = z3::Solver::new(ctx);
-        solver.assert(&hard);
+        solver.assert(hard);
         if solver.check() == z3::SatResult::Sat {
             let model = solver.get_model();
             let feats = model_to_features(&model);
             non_minimalizable_features.extend(feats.0);
+            // Only feed the hard constraint into the solver when it is actually satisfiable;
+            // constructing `vec![hard]` in the unsat branch too (the previous bug) made
+            // `solve` assert a contradiction and panic.
+            vec![hard.clone()]
         } else {
+            // Hard constraints alone are contradictory (e.g. the parent imposes conflicting
+            // feature requirements). The crate cannot be made no_std under them — record it and
+            // bail rather than feeding an unsatisfiable constraint into the solver.
             debug!(
                 "Hard constraints are unsatisfiable for crate {}",
                 name_with_version
             );
+            if is_main {
+                exchange.telemetry.hard_unsat_main = Some(hard.to_string());
+            } else {
+                exchange
+                    .telemetry
+                    .hard_unsat_deps
+                    .push((name_with_version.to_string(), hard.to_string()));
+            }
+            return Ok((Vec::new(), Vec::new()));
         }
-        vec![hard]
     } else {
         vec![]
     };
@@ -474,6 +489,36 @@ pub fn process_crate(
             .telemetry
             .conditional_files_with_std_deps
             .push((name_with_version.to_string(), imported_files));
+    }
+
+    // Now that the no_std equation is fully assembled (including the file-block contributions
+    // above), verify the crate is actually satisfiable: the hard constraints together with the
+    // equation must have a solution. Reaching here means the hard constraints alone were sat
+    // (otherwise we returned early above), so this specifically catches the case where the
+    // crate's own no_std equation conflicts with the parent's requirements. Bail before the
+    // solver is handed an unsatisfiable system.
+    if let Some(hard) = &hard_constraints
+        && let Some(eq) = &equation
+    {
+        let solver = z3::Solver::new(ctx);
+        solver.assert(hard);
+        solver.assert(eq);
+        if solver.check() != z3::SatResult::Sat {
+            let cond = Bool::and(ctx, &[hard, eq]).to_string();
+            debug!(
+                "Hard constraints together with the no_std equation are unsatisfiable for crate {}",
+                name_with_version
+            );
+            if is_main {
+                exchange.telemetry.hard_with_main_unsat_main = Some(cond);
+            } else {
+                exchange
+                    .telemetry
+                    .hard_with_main_unsat_deps
+                    .push((name_with_version.to_string(), cond));
+            }
+            return Ok((Vec::new(), Vec::new()));
+        }
     }
 
     let now = Instant::now();

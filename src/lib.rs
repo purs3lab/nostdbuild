@@ -353,4 +353,14 @@ pub struct Telemetry {
     /// An excluded constraint is one whose features have no overlap with the no_std condition features,
     /// so it was not added to the solver's filtered list.
     pub compile_error_constraint_unsatisfied: Vec<String>,
+    /// Main crate whose hard constraints alone are unsatisfiable (parent-imposed requirements are
+    /// internally contradictory). Stores the stringified hard constraint.
+    pub hard_unsat_main: Option<String>,
+    /// Dependencies whose hard constraints alone are unsatisfiable: (crate:version, condition).
+    pub hard_unsat_deps: Vec<(String, String)>,
+    /// Main crate whose hard constraints together with the no_std equation are unsatisfiable
+    /// (the crate has no viable no_std configuration under the constraints). Stores the condition.
+    pub hard_with_main_unsat_main: Option<String>,
+    /// Dependencies whose hard constraints + no_std equation are unsatisfiable: (crate:version, condition).
+    pub hard_with_main_unsat_deps: Vec<(String, String)>,
 }
