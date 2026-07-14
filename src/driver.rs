@@ -200,6 +200,7 @@ pub fn run_default_features_pass(manifest: &str, crate_name: &str) -> PassOutcom
             output.status.code().unwrap_or(-1),
             stderr
         );
+        let _ = fs::remove_file(&output_path);
         return PassOutcome::CompileFailed {
             stderr,
             exit_code: output.status.code(),
@@ -349,6 +350,7 @@ pub fn run_rustc_plugin_pass(
             output.status.code().unwrap_or(-1),
             stderr
         );
+        let _ = fs::remove_file(&output_path);
         return PassOutcome::CompileFailed {
             stderr,
             exit_code: output.status.code(),
