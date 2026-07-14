@@ -290,6 +290,25 @@ fn main() -> anyhow::Result<()> {
 
     let mut dep_and_feats = parser::features_for_optional_deps(&exchange.crate_info);
 
+    // Feature names forced by the no_std hard constraints (probe-derived `final_condition`).
+    // Captured here because `hard_constraints` is moved into `process_crate` below.
+    // These must be protected from the later minimize passes (see `non_minimalizable`).
+    let hard_constraint_features: HashSet<String> = match hard_constraints.as_ref() {
+        Some(hc) => {
+            let hc_solver = z3::Solver::new(&ctx);
+            hc_solver.assert(hc);
+            if hc_solver.check() == z3::SatResult::Sat {
+                solver::model_to_features(&hc_solver.get_model())
+                    .0
+                    .into_iter()
+                    .collect()
+            } else {
+                HashSet::new()
+            }
+        }
+        None => HashSet::new(),
+    };
+
     let (mut enable, disable) = parser::process_crate(
         &mut exchange,
         &ctx,
@@ -304,14 +323,19 @@ fn main() -> anyhow::Result<()> {
     exchange.main_enable = enable.clone();
 
     // Derive non_minimalizable from the intersection of the solved enable list and the feature
-    // names mentioned in any compile_error condition. This avoids arbitrary Z3 picks from
-    // disjunctive constraints (e.g. uom's "at least one storage type" rule) that could select
-    // a feature which pulls in std. Only features already needed for no_std can appear here.
+    // names that must hold for no_std. Two sources:
+    //   - compile_error conditions: avoids arbitrary Z3 picks from disjunctive constraints
+    //     (e.g. uom's "at least one storage type" rule) selecting a feature that pulls in std.
+    //   - hard constraints (final_condition): features a probe proved are required to avoid std
+    //     (e.g. lazy_static's `spin_no_std`, which guards `extern crate std` in inline_lazy.rs).
+    //     Without this the main-level minimize would strip such a feature as a droppable
+    //     optional-dep enabler even though it is load-bearing for no_std.
+    // Only features already needed for no_std can appear here.
     let non_minimalizable: HashSet<String> = {
         let ce_features = parser::compile_error_feature_names(&main_attributes, &ctx);
         enable
             .iter()
-            .filter(|f| ce_features.contains(*f))
+            .filter(|f| ce_features.contains(*f) || hard_constraint_features.contains(*f))
             .cloned()
             .collect()
     };
