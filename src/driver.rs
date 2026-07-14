@@ -936,6 +936,157 @@ pub fn analyze_crate_wrapper<'a>(
     analyze_crate(ctx, &manifest, crate_name, telemetry)
 }
 
+/// Traverse the ModNode tree to find the full condition (root→leaf) for the
+/// innermost item whose span contains `target`. Returns None when the item
+/// is unconditional (reachable regardless of features).
+fn find_condition_for_span<'a>(
+    node: &ModNode<'a>,
+    target: &ReadableSpan,
+    ctx: &'a Context,
+    inherited: Option<Bool<'a>>,
+) -> Option<Bool<'a>> {
+    let module_gate = match (&inherited, &node.entry_condition) {
+        (Some(i), Some(e)) => Some(Bool::and(ctx, &[i, e])),
+        (Some(i), None) => Some(i.clone()),
+        (None, Some(e)) => Some(e.clone()),
+        (None, None) => None,
+    };
+
+    // Only inspect items/children that belong to the same source file as target.
+    let node_file = node.source_file.to_string_lossy();
+    if node_file == target.file {
+        for item in &node.local_items {
+            if item.span_matches(target) {
+                return Some(match (&module_gate, &item.own_condition) {
+                    (Some(g), Some(c)) => Bool::and(ctx, &[g, c]),
+                    (Some(g), None) => g.clone(),
+                    (None, Some(c)) => c.clone(),
+                    (None, None) => Bool::from_bool(ctx, true),
+                });
+            }
+        }
+    }
+
+    for child in &node.children {
+        if let Some(cond) = find_condition_for_span(child, target, ctx, module_gate.clone()) {
+            return Some(cond);
+        }
+    }
+
+    // Target file matched this node but no item-level span matched —
+    // the use site is in this module's scope, so return the module gate.
+    if node_file == target.file {
+        return module_gate;
+    }
+
+    None
+}
+
+/// For every covering-run PathRecord that references an external crate,
+/// find the full condition (root→leaf) for the containing item in the
+/// given crate's tree. If that condition is compatible with no_std
+/// (condition AND NOT(hard) is SAT, or there are no hard constraints),
+/// include the item in the result set.
+///
+/// Generic over which crate's source is being analyzed — `root` and
+/// `records` come from that crate's own `analyze_crate_wrapper` call, so
+/// this can be used for the main crate as well as for any dependency
+/// acting as a "parent" in the recursive requirement check.
+pub fn compute_valid_cross_crate_items<'a>(
+    root: &ModNode<'a>,
+    records: &[PathRecord],
+    hard: Option<&Bool<'a>>,
+    ctx: &'a Context,
+) -> HashSet<(String, String)> {
+    let mut result = HashSet::new();
+
+    // Collect all external records grouped by dep for the initial summary print.
+    let mut all_by_dep: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for record in records {
+        if record.definition_crate == "LOCAL" || record.is_extern_crate {
+            continue;
+        }
+        let item_name = record
+            .path_text
+            .split("::")
+            .last()
+            .unwrap_or(&record.path_text)
+            .to_string();
+        if !item_name.is_empty() {
+            all_by_dep
+                .entry(record.definition_crate.replace('-', "_"))
+                .or_default()
+                .push(item_name);
+        }
+    }
+    println!("[cross_crate] All external items referenced by crate in covering runs:");
+    for (dep, items) in &all_by_dep {
+        let mut sorted = items.clone();
+        sorted.sort();
+        sorted.dedup();
+        println!("  dep={}: {:?}", dep, sorted);
+    }
+
+    for record in records {
+        if record.definition_crate == "LOCAL" || record.is_extern_crate {
+            continue;
+        }
+        let item_name = record
+            .path_text
+            .split("::")
+            .last()
+            .unwrap_or(&record.path_text)
+            .to_string();
+        if item_name.is_empty() {
+            continue;
+        }
+
+        let dep_norm = record.definition_crate.replace('-', "_");
+
+        let is_accessible = match hard {
+            None => true,
+            Some(h) => {
+                match find_condition_for_span(root, &record.span, ctx, None) {
+                    None => true, // unconditional
+                    Some(c) => {
+                        let sat = {
+                            let s = z3::Solver::new(ctx);
+                            s.assert(&c);
+                            s.assert(&h.not());
+                            s.check() == z3::SatResult::Sat
+                        };
+                        println!(
+                            "[cross_crate] dep={} item={} condition_AND_NOT_hard={}",
+                            dep_norm,
+                            item_name,
+                            if sat {
+                                "SAT (accessible)"
+                            } else {
+                                "UNSAT (blocked by hard)"
+                            }
+                        );
+                        sat
+                    }
+                }
+            }
+        };
+
+        if is_accessible {
+            result.insert((dep_norm, item_name));
+        }
+    }
+
+    println!("[cross_crate] Final valid cross-crate items (no_std-accessible):");
+    let mut final_sorted: Vec<_> = result.iter().collect();
+    final_sorted.sort();
+    for (dep, item) in &final_sorted {
+        println!("  dep={} item={}", dep, item);
+    }
+
+    result
+}
+
 /// Converts the raw `#[cfg(…)]` strings stored in `PathRecord::macro_body_cfgs`
 /// into Z3 Bool ancestors, reusing the existing `parse_main_attributes_direct`
 /// path.  Returns `None` when the list is empty (so callers can chain with
