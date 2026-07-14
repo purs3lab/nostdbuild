@@ -2563,9 +2563,24 @@ pub fn recursive_dep_requirement_check(
             });
 
         for (dep, _) in crate_info.deps_and_features.iter() {
-            let dep_index_entries = downloader::fetch_index(&dep.name).unwrap();
+            // fetch_index retries transient failures internally; a surviving error
+            // means a permanent one (e.g. crate not found), so skip this dep rather
+            // than panicking the whole run.
+            let dep_index_entries = match downloader::fetch_index(&dep.name) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    debug!("Skipping dep {}: failed to fetch index: {}", dep.name, e);
+                    continue;
+                }
+            };
             let dep_resolved_version =
-                downloader::resolve_version(&Some(&dep.version), &dep_index_entries).unwrap();
+                match downloader::resolve_version(&Some(&dep.version), &dep_index_entries) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        debug!("Skipping dep {}: failed to resolve version: {}", dep.name, e);
+                        continue;
+                    }
+                };
             let dep_name_with_version = format!("{}:{}", dep.name.clone(), dep_resolved_version);
 
             println!("Processing dependency: {}", dep_name_with_version);

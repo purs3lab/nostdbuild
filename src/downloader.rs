@@ -8,7 +8,9 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
-    time::Instant,
+    sync::LazyLock,
+    thread,
+    time::{Duration, Instant},
 };
 use tar::Archive;
 use toml::{self, Value, map::Map};
@@ -36,6 +38,18 @@ pub fn clone_repo(url: &str, name: &str) -> Result<(), git2::Error> {
 
 const MAX_RETRIES: u32 = 3;
 
+/// Shared HTTP client with explicit timeouts. Using a single client (instead of
+/// the bare `blocking::get` convenience fn, which builds a fresh client per call)
+/// gives us connection pooling and, crucially, connect/request timeouts so a
+/// stalled request fails fast enough to be retried instead of hanging forever.
+static HTTP_CLIENT: LazyLock<blocking::Client> = LazyLock::new(|| {
+    blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("failed to build HTTP client")
+});
+
 fn is_permanent_error(e: &anyhow::Error) -> bool {
     let s = e.to_string();
     s.contains("could not be found") || s.contains("Known:") || s.contains("404")
@@ -53,6 +67,10 @@ fn with_retries<T>(
             Err(e) => {
                 debug!("Attempt {}/{} failed: {}", attempt + 1, max, e);
                 last = e;
+                // Exponential backoff before the next attempt (skip after the last one).
+                if attempt + 1 < max {
+                    thread::sleep(Duration::from_millis(500 * (1 << attempt)));
+                }
             }
         }
     }
@@ -445,17 +463,19 @@ fn index_path(name: &str) -> String {
 pub fn fetch_index(name: &str) -> Result<Vec<serde_json::Value>, anyhow::Error> {
     let url = format!("{}/{}", INDEX_CRATES_IO, index_path(name));
     debug!("Fetching index from {}", url);
-    let response = blocking::get(&url).context("Failed to fetch index")?;
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!("{} could not be found", name));
-    }
-    response
-        .text()
-        .context("Failed to read index")?
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| serde_json::from_str(l).context("Failed to parse index entry"))
-        .collect()
+    with_retries(MAX_RETRIES, || {
+        let response = HTTP_CLIENT.get(&url).send().context("Failed to fetch index")?;
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("{} could not be found", name));
+        }
+        response
+            .text()
+            .context("Failed to read index")?
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).context("Failed to parse index entry"))
+            .collect()
+    })
 }
 
 fn traverse_and_add_dep_names(
@@ -644,7 +664,7 @@ pub fn resolve_version(
 
 fn download_crate(url: &str, filename: &str) -> Result<(), anyhow::Error> {
     debug!("Downloading crate from {}", url);
-    let response = blocking::get(url).context("Failed to fetch crate")?;
+    let response = HTTP_CLIENT.get(url).send().context("Failed to fetch crate")?;
     if response.status().as_u16() == 404 {
         return Err(anyhow::anyhow!("404: crate not found at {}", url));
     }
