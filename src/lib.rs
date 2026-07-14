@@ -336,6 +336,12 @@ pub struct Telemetry {
     pub recursive_requirement_check_failed: bool,
     /// If the above is true, which dependency caused it to fail
     pub recursive_requirement_check_failed_dep: Option<String>,
+    /// Human-readable diagnostic for every misconfigured dependency/feature
+    /// pair found during the recursive requirement check (not just the
+    /// first one) — e.g. a dependency requiring a feature its parent never
+    /// enables, or a parent forcing on a feature the dependency does not
+    /// need and does not protect via its own item usage.
+    pub recursive_requirement_check_violations: Vec<String>,
     /// List of unknown keywords found in attributes
     pub unknown_idents_in_attrs: bool,
     /// List of unknown keywords found in attributes for dependencies

@@ -2441,6 +2441,26 @@ pub fn is_dep_optional(crate_info: &CrateInfo, name: &str) -> bool {
 /// # Returns
 /// A boolean indicating whether all dependencies can satisfy their
 /// no_std requirements.
+/// Per-crate context cached as the dependency tree is walked: this crate's
+/// own no_std solve result, plus the usage information needed to audit
+/// *its* dependencies the same way `finalize_dep_crate` audits main's direct
+/// dependencies, just read-only and one level removed.
+struct DepUsageContext {
+    /// Features this crate's own no_std solve determined it needs enabled.
+    enable: Vec<String>,
+    /// Features this crate's own no_std solve determined it does not need.
+    disable: Vec<String>,
+    /// (dep_norm_name, item_name) pairs this crate's own source actually
+    /// references from each of its dependencies, restricted to call sites
+    /// compatible with this crate's hard constraints. Mirrors
+    /// `DataExchange::valid_cross_crate_items`, just computed for an
+    /// arbitrary crate instead of only the main crate.
+    valid_cross_crate_items: HashSet<(String, String)>,
+    /// For each feature in this crate's own `disable` list, the named items
+    /// in *this crate's own* source that become unreachable without it.
+    feature_to_items: HashMap<String, HashSet<String>>,
+}
+
 pub fn recursive_dep_requirement_check(
     exchange: &mut DataExchange,
     depth: u32,
@@ -2449,7 +2469,8 @@ pub fn recursive_dep_requirement_check(
 ) -> bool {
     exchange.telemetry.recursive_requirement_check_done = true;
     println!("Starting recursive dependency requirement check...");
-    // Throwaway telemetry
+    // Throwaway telemetry for the re-run analyze_crate_wrapper/process_crate calls below —
+    // we don't want to duplicate their per-call stats into the main run's telemetry.
     let mut telemetry = Telemetry::default();
 
     let mut seen: HashSet<(String, String)> = HashSet::new();
@@ -2459,11 +2480,23 @@ pub fn recursive_dep_requirement_check(
         .map(|(n, v)| (n.clone(), v.clone(), 1u32))
         .collect();
 
+    // For the crates that we already processed, save the requirements and usage
+    // context so that we don't have to recompute them, and so a crate's context is
+    // available later when it's revisited as the *parent* of its own dependencies.
+    let mut dep_contexts: HashMap<String, DepUsageContext> = HashMap::new();
+    // Seed with the main crate's own already-computed context.
+    dep_contexts.insert(
+        exchange.name_with_version.clone(),
+        DepUsageContext {
+            enable: exchange.main_enable.clone(),
+            disable: Vec::new(),
+            valid_cross_crate_items: exchange.valid_cross_crate_items.clone(),
+            feature_to_items: HashMap::new(),
+        },
+    );
 
-
-    // For the crates that we already processed, save the requirements
-    // so that we don't have to recompute them.
-    let mut visited_dep_require: Vec<(String, DoubleTupleVecString)> = Vec::new();
+    let mut violations: Vec<String> = Vec::new();
+    let mut first_failed_dep: Option<String> = None;
     let instant = std::time::Instant::now();
 
     while let Some((name, version, item_depth)) = worklist.pop() {
@@ -2515,6 +2548,20 @@ pub fn recursive_dep_requirement_check(
         )
         .unwrap();
 
+        // This crate's own active feature set and cross-crate item usage, used below to
+        // audit *its* dependencies — populated when this crate itself was first analyzed
+        // (either the main-crate seed, or a previous iteration where it was `dep_name_with_version`).
+        let (parent_active_enable, parent_valid_cross_crate_items) = dep_contexts
+            .get(&name_with_version)
+            .map(|c| (c.enable.clone(), c.valid_cross_crate_items.clone()))
+            .unwrap_or_else(|| {
+                debug!(
+                    "No cached usage context for {} — treating it as having no active features or known item usage",
+                    name_with_version
+                );
+                (Vec::new(), HashSet::new())
+            });
+
         for (dep, _) in crate_info.deps_and_features.iter() {
             let dep_index_entries = downloader::fetch_index(&dep.name).unwrap();
             let dep_resolved_version =
@@ -2555,54 +2602,84 @@ pub fn recursive_dep_requirement_check(
 
             let mut optional_dep_feats = features_for_optional_deps(&dep_crate_info);
 
-            let (enable, disable): DoubleTupleVecString = if let Some(reqs) = visited_dep_require
-                .iter()
-                .find(|(visited_name, _)| visited_name == &dep_name_with_version)
-                .map(|(_, reqs)| reqs)
-            {
-                debug!(
-                    "Already visited dependency requirements for crate: {}",
-                    dep_name_with_version
-                );
-                reqs.clone()
-            } else {
-                let ctx = z3::Context::new(&z3::Config::new());
-                let (all_hard, hard_constraints, _, _, _, _) = driver::analyze_crate_wrapper(
-                    &ctx,
-                    &dep_name_with_version,
-                    Some(&exchange.name_with_version),
-                    &mut telemetry,
-                );
-                let mut crate_attrs = parse_crate(
-                    &dep_name_with_version,
-                    false,
-                    Some(&exchange.name_with_version),
-                    &all_hard,
-                );
-                let (enable, disable) = process_crate(
-                    exchange,
-                    &ctx,
-                    &mut crate_attrs,
-                    Some(&dep_name_with_version),
-                    Some(&dep_crate_info),
-                    false,
-                    &mut optional_dep_feats,
-                    hard_constraints,
-                )
-                .unwrap();
+            let cached = dep_contexts.get(&dep_name_with_version).map(|c| {
+                (c.enable.clone(), c.disable.clone(), c.feature_to_items.clone())
+            });
 
-                visited_dep_require.push((
-                    dep_name_with_version.clone(),
-                    (enable.clone(), disable.clone()),
-                ));
-                debug!(
-                    "Already visited dependencies requirements: {:?}",
-                    visited_dep_require
-                );
-                (enable, disable)
-            };
+            let (enable, disable, feature_to_items): (Vec<String>, Vec<String>, HashMap<String, HashSet<String>>) =
+                if let Some((enable, disable, feature_to_items)) = cached {
+                    debug!(
+                        "Already visited dependency requirements for crate: {}",
+                        dep_name_with_version
+                    );
+                    (enable, disable, feature_to_items)
+                } else {
+                    let ctx = z3::Context::new(&z3::Config::new());
+                    let (all_hard, hard_constraints, _, _, dep_root, dep_records) =
+                        driver::analyze_crate_wrapper(
+                            &ctx,
+                            &dep_name_with_version,
+                            Some(&exchange.name_with_version),
+                            &mut telemetry,
+                        );
+                    let mut crate_attrs = parse_crate(
+                        &dep_name_with_version,
+                        false,
+                        Some(&exchange.name_with_version),
+                        &all_hard,
+                    );
+                    let (enable, disable) = process_crate(
+                        exchange,
+                        &ctx,
+                        &mut crate_attrs,
+                        Some(&dep_name_with_version),
+                        Some(&dep_crate_info),
+                        false,
+                        &mut optional_dep_feats,
+                        hard_constraints.clone(),
+                    )
+                    .unwrap();
 
-            solver::new_feats_to_add(&dep_crate_info, &Vec::new(), &enable);
+                    // While `ctx` (and the Z3 Bools tied to it) is still alive, compute and
+                    // cache this dependency's own usage context, so it's available later if
+                    // it's revisited as the *parent* of its own dependencies.
+                    let named = crate::visitor::collect_named_items_with_conditions(&dep_root, &ctx);
+                    let dep_valid_cross_crate_items = driver::compute_valid_cross_crate_items(
+                        &dep_root,
+                        &dep_records,
+                        hard_constraints.as_ref(),
+                        &ctx,
+                    );
+                    let feature_to_items: HashMap<String, HashSet<String>> = disable
+                        .iter()
+                        .map(|feat| {
+                            let f_var = z3::ast::Bool::new_const(&ctx, feat.as_str());
+                            let gated: HashSet<String> = named
+                                .iter()
+                                .filter(|(_, cond)| {
+                                    let s = z3::Solver::new(&ctx);
+                                    s.assert(cond);
+                                    s.assert(&f_var.not());
+                                    s.check() == z3::SatResult::Unsat
+                                })
+                                .map(|(name, _)| name.clone())
+                                .collect();
+                            (feat.clone(), gated)
+                        })
+                        .collect();
+
+                    dep_contexts.insert(
+                        dep_name_with_version.clone(),
+                        DepUsageContext {
+                            enable: enable.clone(),
+                            disable: disable.clone(),
+                            valid_cross_crate_items: dep_valid_cross_crate_items,
+                            feature_to_items: feature_to_items.clone(),
+                        },
+                    );
+
+                    (enable, disable, feature_to_items)
+                };
 
             debug!(
                 "Dependency: {} requires features: {:?} to be enabled and features: {:?} to be disabled to support no_std",
@@ -2627,69 +2704,146 @@ pub fn recursive_dep_requirement_check(
                 ));
             }
 
-            if !dependency_requirement_possible(
+            let dep_violations = audit_dependency_requirement(
                 &crate_info,
                 &dep_crate_info,
                 &dep.name,
+                &name_with_version,
+                &dep_name_with_version,
                 &enable,
                 &disable,
-            ) {
-                debug!(
-                    "Dependency: {} cannot satisfy its no_std requirements, failing",
-                    dep_name_with_version
-                );
-                telemetry.recursive_requirement_check_time_ms = instant.elapsed().as_millis();
-                telemetry.recursive_requirement_check_failed = true;
-                telemetry.recursive_requirement_check_failed_dep =
-                    Some(dep_name_with_version.clone());
-                return false;
+                &parent_active_enable,
+                &parent_valid_cross_crate_items,
+                &feature_to_items,
+            );
+            if !dep_violations.is_empty() {
+                for v in &dep_violations {
+                    println!("[recursive_check] {}", v);
+                }
+                if first_failed_dep.is_none() {
+                    first_failed_dep = Some(dep_name_with_version.clone());
+                }
+                violations.extend(dep_violations);
             }
         }
     }
-    telemetry.recursive_requirement_check_time_ms = instant.elapsed().as_millis();
-    true
+    exchange.telemetry.recursive_requirement_check_time_ms = instant.elapsed().as_millis();
+    exchange.telemetry.recursive_requirement_check_violations = violations;
+    if let Some(failed_dep) = first_failed_dep {
+        exchange.telemetry.recursive_requirement_check_failed = true;
+        exchange.telemetry.recursive_requirement_check_failed_dep = Some(failed_dep);
+        false
+    } else {
+        true
+    }
 }
 
-fn dependency_requirement_possible(
+/// Audits one parent→dependency edge in both directions without modifying any
+/// Cargo.toml. `enable`/`disable` are the dependency's own minimal no_std solve
+/// result (what it actually needs/doesn't need, in isolation). Returns one
+/// human-readable message per problem found; an empty vec means the edge is fine.
+#[allow(clippy::too_many_arguments)]
+fn audit_dependency_requirement(
     main_crate_info: &CrateInfo,
     dep_crate_info: &CrateInfo,
     dep_name: &str,
+    parent_name_with_version: &str,
+    dep_name_with_version: &str,
     enable: &[String],
     disable: &[String],
-) -> bool {
-    if solver::disable_in_default(dep_crate_info, disable)
-        && let Some((dep, _)) = main_crate_info
-            .deps_and_features
-            .iter()
-            .find(|(dep, _)| dep.name == dep_name)
-        && dep.default_features
-    {
-        println!(
-            "Dependency: {} has default features enabled in main crate, cannot disable required features: {:?}",
-            dep_name, disable
-        );
-        return false;
-    }
+    parent_active_enable: &[String],
+    parent_valid_cross_crate_items: &HashSet<(String, String)>,
+    feature_to_items: &HashMap<String, HashSet<String>>,
+) -> Vec<String> {
+    let mut violations = Vec::new();
 
-    let dep_default_feats: Vec<String> = main_crate_info
+    let dep_edge = main_crate_info
         .deps_and_features
         .iter()
-        .find(|(dep, _)| dep.name == dep_name)
+        .find(|(dep, _)| dep.name == dep_name);
+    let dep_default_feats: Vec<String> = dep_edge
         .map(|(_, feats)| feats.clone())
-        .unwrap_or(Vec::new());
+        .unwrap_or_default();
 
+    // Features reachable from the parent's actual active feature set, walked
+    // transitively through the parent's own [features] table.
+    let mut parent_reachable = parent_active_enable.to_vec();
+    solver::all_enabled_for_feat(&mut parent_reachable, main_crate_info);
+
+    // --- Direction 1: dep requires a feature the parent has no way to enable. ---
     for feat in enable {
-        if !dep_default_feats.contains(feat)
-            && !feat_available_for_dep(main_crate_info, dep_name, feat)
-        {
-            println!(
-                "Dependency: {} cannot enable required feature: {}",
-                dep_name, feat
-            );
-            return false;
+        if dep_default_feats.contains(feat) {
+            continue;
+        }
+        if feat_available_for_dep(main_crate_info, dep_name, feat) {
+            continue;
+        }
+        violations.push(format!(
+            "{} (parent {}) requires feature '{}' for no_std, but '{}' is not declared on the \
+             dependency edge and no [features] entry of {} maps to {}/{}",
+            dep_name_with_version,
+            parent_name_with_version,
+            feat,
+            feat,
+            parent_name_with_version,
+            dep_name,
+            feat
+        ));
+    }
+
+    // --- Direction 2: parent forces on a feature the dep doesn't need. ---
+    // `disable` only means "not required in isolation," not "forbidden" — if the
+    // parent's own source genuinely uses an item gated by this feature (under the
+    // parent's own hard constraints), it's not a misconfiguration, skip it.
+    let dep_norm = dep_name.replace('-', "_");
+    for feat in disable {
+        let protected = feature_to_items.get(feat).is_some_and(|items| {
+            items.contains("*")
+                || items
+                    .iter()
+                    .any(|item| parent_valid_cross_crate_items.contains(&(dep_norm.clone(), item.clone())))
+        });
+        if protected {
+            continue;
+        }
+
+        let forced_by_edge = dep_default_feats.contains(feat);
+        let forced_by_table = main_crate_info.features.iter().any(|(main_feat, tuples)| {
+            parent_reachable.contains(main_feat)
+                && tuples.iter().any(|(d, f)| d == dep_name && f == feat)
+        });
+        let forced_by_default = dep_edge.is_some_and(|(dep, _)| dep.default_features)
+            && solver::disable_in_default(dep_crate_info, std::slice::from_ref(feat));
+
+        if forced_by_edge {
+            violations.push(format!(
+                "{} (parent {}) does not require feature '{}', but the parent declares it \
+                 explicitly on the dependency edge and {}'s own code does not use anything that \
+                 feature gates",
+                dep_name_with_version, parent_name_with_version, feat, parent_name_with_version
+            ));
+        } else if forced_by_table {
+            violations.push(format!(
+                "{} (parent {}) does not require feature '{}', but it is reachable from {}'s \
+                 active [features] table and {}'s own code does not use anything that feature \
+                 gates",
+                dep_name_with_version,
+                parent_name_with_version,
+                feat,
+                parent_name_with_version,
+                parent_name_with_version
+            ));
+        } else if forced_by_default {
+            violations.push(format!(
+                "{} (parent {}) does not require feature '{}', but default-features = true on \
+                 the edge and '{}' is part of {}'s own default feature set — default-features \
+                 should be false here",
+                dep_name_with_version, parent_name_with_version, feat, feat, dep_name
+            ));
         }
     }
-    true
+
+    violations
 }
 
 fn feat_available_for_dep(main_crate_info: &CrateInfo, dep_name: &str, feat: &str) -> bool {
