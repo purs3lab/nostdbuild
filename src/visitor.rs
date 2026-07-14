@@ -1329,14 +1329,27 @@ pub fn find_entrypoints(manifest: &str, known_modules: &mut Vec<PathBuf>) -> Pat
         .exec()
         .expect("Failed to execute cargo metadata");
 
+    // A `[lib]` target can be reported under any of the library-like kinds
+    // depending on the crate's declared `crate-type` (e.g. `rlib`, `cdylib`,
+    // `proc-macro`). Match all of them, not just the plain `lib` kind.
+    let is_lib_kind = |k: &TargetKind| {
+        matches!(
+            k,
+            TargetKind::Lib
+                | TargetKind::RLib
+                | TargetKind::DyLib
+                | TargetKind::CDyLib
+                | TargetKind::StaticLib
+                | TargetKind::ProcMacro
+        )
+    };
+
     for package in metadata.workspace_packages() {
         let targets = &package.targets;
-        let has_lib = targets
-            .iter()
-            .any(|t| t.kind.iter().any(|k| k == &TargetKind::Lib));
+        let has_lib = targets.iter().any(|t| t.kind.iter().any(is_lib_kind));
 
         for target in targets {
-            let is_lib = target.kind.iter().any(|k| k == &TargetKind::Lib);
+            let is_lib = target.kind.iter().any(is_lib_kind);
             let is_bin = target.kind.iter().any(|k| k == &TargetKind::Bin);
 
             if is_lib || (is_bin && !has_lib) {
