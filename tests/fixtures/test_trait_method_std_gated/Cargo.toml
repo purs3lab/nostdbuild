@@ -1,0 +1,14 @@
+[package]
+name = "test_trait_method_std_gated"
+description = "Test that std usage inside a #[cfg(feature = \"std\")]-gated provided trait method (zerocopy read_from_io/write_to_io pattern) is not treated as hard/unguarded std usage"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "test_trait_method_std_gated"
+
+[features]
+std = []
+
+[workspace]

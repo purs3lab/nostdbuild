@@ -104,6 +104,33 @@ fn test_feature_causes_std_usage_is_not_hard() {
     );
 }
 
+/// std usage lives inside `#[cfg(feature = "std")]`-gated *provided trait methods*
+/// (zerocopy's `read_from_io` / `write_to_io` pattern). The gate is on a
+/// `TraitItemFn`, not an `ImplItemFn`; the visitor must record it so the std
+/// usage is recognised as feature-gated and avoidable — not hard.
+#[cargo_test]
+fn test_trait_method_std_gated_is_not_hard() {
+    let (_p, manifest) = load_fixture("test_trait_method_std_gated");
+    let hard_spans = run_analyze(&manifest, "test_trait_method_std_gated");
+    assert!(
+        hard_spans.is_empty(),
+        "Expected no hard std spans — std usage is behind #[cfg(feature = \"std\")] on provided trait methods, but got: {hard_spans:?}"
+    );
+}
+
+/// std usage lives only inside a `#[cfg(feature = "std")]`-gated match arm, whose
+/// body is an `Expr` (not a `Stmt`) inside a non-gated function. Only `visit_arm`
+/// records that gate; without it the usage is misclassified as hard.
+#[cargo_test]
+fn test_cfg_gated_match_arm_is_not_hard() {
+    let (_p, manifest) = load_fixture("test_cfg_gated_match_arm");
+    let hard_spans = run_analyze(&manifest, "test_cfg_gated_match_arm");
+    assert!(
+        hard_spans.is_empty(),
+        "Expected no hard std spans — std usage is behind a #[cfg(feature = \"std\")] match arm, but got: {hard_spans:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // alloc-only — alloc usage alone must not produce hard std spans
 // ---------------------------------------------------------------------------

@@ -1,0 +1,14 @@
+[package]
+name = "test_cfg_gated_match_arm"
+description = "Test that std usage inside a #[cfg(feature = \"std\")]-gated match arm (whose body is an Expr, not a Stmt) is recorded via visit_arm and not treated as hard/unguarded std usage"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "test_cfg_gated_match_arm"
+
+[features]
+std = []
+
+[workspace]
