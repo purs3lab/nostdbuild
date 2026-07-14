@@ -578,6 +578,40 @@ impl<'a> FileVisitor<'a> {
         self.items_stack.last_mut().unwrap().push(item);
     }
 
+    /// Record a cfg-gated item as a `LocalItem` at the current nesting level.
+    ///
+    /// This is the shared body behind nearly every `visit_*` override: it skips
+    /// test-gated items (returning `false` so the caller can avoid recursing) and
+    /// otherwise pushes a `LocalItem` carrying the item's own `#[cfg(...)]`
+    /// condition (or `None`), its span and optional name. Recording the gate for
+    /// *every* syn position that can hold a std path is what lets
+    /// `ancestors_for_span` recognise gated std usage — a missing position causes
+    /// the usage to look ungated and be misclassified as hard std usage.
+    fn record_item(
+        &mut self,
+        kind: &str,
+        name: Option<String>,
+        attrs: &[syn::Attribute],
+        span: Span,
+    ) -> bool {
+        if self.should_skip(attrs) {
+            debug!(
+                "Skipping {} {} due to test attribute",
+                kind,
+                name.as_deref().unwrap_or("")
+            );
+            return false;
+        }
+        let own_condition = self.parse_cfg_gate(attrs);
+        let span = self.get_span(&span);
+        self.push_item(LocalItem {
+            own_condition,
+            span,
+            name,
+        });
+        true
+    }
+
     /// Handle `include!("path")` by parsing the included file and visiting its
     /// contents inline (same condition/items/children stacks, no new ModNode).
     fn visit_include_macro(&mut self, tokens: &proc_macro2::TokenStream) {
@@ -805,281 +839,190 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
     }
 
     fn visit_variant(&mut self, i: &'_ syn::Variant) {
-        if self.should_skip(&i.attrs) {
-            debug!("Skipping variant {} due to test attribute", i.ident);
-            return;
+        if self.record_item("variant", None, &i.attrs, i.span()) {
+            syn::visit::visit_variant(self, i);
         }
-
-        if let Some(own) = self.parse_cfg_gate(&i.attrs) {
-            self.push_item(LocalItem {
-                own_condition: Some(own),
-                span: self.get_span(&i.span()),
-                name: None,
-            });
-        } else {
-            self.push_item(LocalItem {
-                own_condition: None,
-                span: self.get_span(&i.span()),
-                name: None,
-            });
-        }
-        syn::visit::visit_variant(self, i);
     }
 
     fn visit_field(&mut self, i: &'_ syn::Field) {
-        if self.should_skip(&i.attrs) {
-            debug!("Skipping field {:?} due to test attribute", i.ident);
-            return;
+        if self.record_item("field", None, &i.attrs, i.span()) {
+            syn::visit::visit_field(self, i);
         }
-
-        if let Some(own) = self.parse_cfg_gate(&i.attrs) {
-            self.push_item(LocalItem {
-                own_condition: Some(own),
-                span: self.get_span(&i.span()),
-                name: None,
-            });
-        } else {
-            self.push_item(LocalItem {
-                own_condition: None,
-                span: self.get_span(&i.span()),
-                name: None,
-            });
-        }
-        syn::visit::visit_field(self, i);
     }
 
-    // TODO: Add other impl items here
+    // Items inside an `impl` block. A `#[cfg(feature = "std")]` gate on e.g.
+    // `type Error = std::io::Error;` must be recorded, or the std path in its
+    // value/type looks ungated. `record_item` is shared with all other positions.
     fn visit_impl_item_fn(&mut self, i: &'_ syn::ImplItemFn) {
-        if self.should_skip(&i.attrs) {
-            debug!(
-                "Skipping impl function {} due to test attribute",
-                i.sig.ident
-            );
-            return;
-        }
-
         let name = Some(i.sig.ident.to_string());
-        if let Some(own) = self.parse_cfg_gate(&i.attrs) {
-            self.push_item(LocalItem {
-                own_condition: Some(own),
-                span: self.get_span(&i.span()),
-                name,
-            });
-        } else {
-            self.push_item(LocalItem {
-                own_condition: None,
-                span: self.get_span(&i.span()),
-                name,
-            });
+        if self.record_item("impl function", name, &i.attrs, i.span()) {
+            syn::visit::visit_impl_item_fn(self, i);
         }
-        syn::visit::visit_impl_item_fn(self, i);
     }
 
-    // TODO: Make this a single method that matches on the item type instead of duplicating the logic for each item type
-    fn visit_item_fn(&mut self, i: &'_ syn::ItemFn) {
-        if self.should_skip(&i.attrs) {
-            debug!("Skipping function {} due to test attribute", i.sig.ident);
-            return;
+    fn visit_impl_item_const(&mut self, i: &'_ syn::ImplItemConst) {
+        let name = Some(i.ident.to_string());
+        if self.record_item("impl const", name, &i.attrs, i.span()) {
+            syn::visit::visit_impl_item_const(self, i);
         }
+    }
 
-        let name = Some(i.sig.ident.to_string());
-        if let Some(own) = self.parse_cfg_gate(&i.attrs) {
-            self.push_item(LocalItem {
-                own_condition: Some(own),
-                span: self.get_span(&i.span()),
-                name,
-            });
-        } else {
-            self.push_item(LocalItem {
-                own_condition: None,
-                span: self.get_span(&i.span()),
-                name,
-            });
+    fn visit_impl_item_type(&mut self, i: &'_ syn::ImplItemType) {
+        let name = Some(i.ident.to_string());
+        if self.record_item("impl type", name, &i.attrs, i.span()) {
+            syn::visit::visit_impl_item_type(self, i);
         }
-        syn::visit::visit_item_fn(self, i);
+    }
+
+    fn visit_impl_item_macro(&mut self, i: &'_ syn::ImplItemMacro) {
+        if self.record_item("impl macro", None, &i.attrs, i.span()) {
+            syn::visit::visit_impl_item_macro(self, i);
+        }
+    }
+
+    // Items inside a `trait` definition. Without this, a `#[cfg(feature = "std")]`
+    // gate on a provided (default-body) method is never recorded, so std usages
+    // inside it (e.g. zerocopy's `FromBytes::read_from_io`) appear ungated and get
+    // misclassified as hard/unguarded std usage.
+    fn visit_trait_item_fn(&mut self, i: &'_ syn::TraitItemFn) {
+        let name = Some(i.sig.ident.to_string());
+        if self.record_item("trait function", name, &i.attrs, i.span()) {
+            syn::visit::visit_trait_item_fn(self, i);
+        }
+    }
+
+    fn visit_trait_item_const(&mut self, i: &'_ syn::TraitItemConst) {
+        let name = Some(i.ident.to_string());
+        if self.record_item("trait const", name, &i.attrs, i.span()) {
+            syn::visit::visit_trait_item_const(self, i);
+        }
+    }
+
+    fn visit_trait_item_type(&mut self, i: &'_ syn::TraitItemType) {
+        let name = Some(i.ident.to_string());
+        if self.record_item("trait type", name, &i.attrs, i.span()) {
+            syn::visit::visit_trait_item_type(self, i);
+        }
+    }
+
+    fn visit_trait_item_macro(&mut self, i: &'_ syn::TraitItemMacro) {
+        if self.record_item("trait macro", None, &i.attrs, i.span()) {
+            syn::visit::visit_trait_item_macro(self, i);
+        }
+    }
+
+    fn visit_item_fn(&mut self, i: &'_ syn::ItemFn) {
+        let name = Some(i.sig.ident.to_string());
+        if self.record_item("function", name, &i.attrs, i.span()) {
+            syn::visit::visit_item_fn(self, i);
+        }
     }
 
     fn visit_item_struct(&mut self, i: &'_ syn::ItemStruct) {
-        if self.should_skip(&i.attrs) {
-            debug!("Skipping struct {} due to test attribute", i.ident);
-            return;
-        }
-
         let name = Some(i.ident.to_string());
-        if let Some(own) = self.parse_cfg_gate(&i.attrs) {
-            self.push_item(LocalItem {
-                own_condition: Some(own),
-                span: self.get_span(&i.span()),
-                name,
-            });
-        } else {
-            self.push_item(LocalItem {
-                own_condition: None,
-                span: self.get_span(&i.span()),
-                name,
-            });
+        if self.record_item("struct", name, &i.attrs, i.span()) {
+            syn::visit::visit_item_struct(self, i);
         }
-        syn::visit::visit_item_struct(self, i);
     }
 
     fn visit_item_enum(&mut self, i: &'_ syn::ItemEnum) {
-        if self.should_skip(&i.attrs) {
-            debug!("Skipping enum {} due to test attribute", i.ident);
-            return;
-        }
-
         let name = Some(i.ident.to_string());
-        if let Some(own) = self.parse_cfg_gate(&i.attrs) {
-            self.push_item(LocalItem {
-                own_condition: Some(own),
-                span: self.get_span(&i.span()),
-                name,
-            });
-        } else {
-            self.push_item(LocalItem {
-                own_condition: None,
-                span: self.get_span(&i.span()),
-                name,
-            });
+        if self.record_item("enum", name, &i.attrs, i.span()) {
+            syn::visit::visit_item_enum(self, i);
         }
-        syn::visit::visit_item_enum(self, i);
     }
 
     fn visit_item_impl(&mut self, i: &'_ syn::ItemImpl) {
-        if self.should_skip(&i.attrs) {
-            debug!("Skipping impl block due to test attribute");
-            return;
+        if self.record_item("impl block", None, &i.attrs, i.span()) {
+            syn::visit::visit_item_impl(self, i);
         }
-
-        if let Some(own) = self.parse_cfg_gate(&i.attrs) {
-            self.push_item(LocalItem {
-                own_condition: Some(own),
-                span: self.get_span(&i.span()),
-                name: None,
-            });
-        } else {
-            self.push_item(LocalItem {
-                own_condition: None,
-                span: self.get_span(&i.span()),
-                name: None,
-            });
-        }
-        syn::visit::visit_item_impl(self, i);
     }
 
     fn visit_item_type(&mut self, i: &'_ syn::ItemType) {
-        if self.should_skip(&i.attrs) {
-            debug!("Skipping type {} due to test attribute", i.ident);
-            return;
-        }
-
         let name = Some(i.ident.to_string());
-        if let Some(own) = self.parse_cfg_gate(&i.attrs) {
-            self.push_item(LocalItem {
-                own_condition: Some(own),
-                span: self.get_span(&i.span()),
-                name,
-            });
-        } else {
-            self.push_item(LocalItem {
-                own_condition: None,
-                span: self.get_span(&i.span()),
-                name,
-            });
+        if self.record_item("type", name, &i.attrs, i.span()) {
+            syn::visit::visit_item_type(self, i);
         }
-        syn::visit::visit_item_type(self, i);
     }
 
     fn visit_item_trait(&mut self, i: &'_ syn::ItemTrait) {
-        if self.should_skip(&i.attrs) {
-            debug!("Skipping trait {} due to test attribute", i.ident);
-            return;
-        }
-
         let name = Some(i.ident.to_string());
-        if let Some(own) = self.parse_cfg_gate(&i.attrs) {
-            self.push_item(LocalItem {
-                own_condition: Some(own),
-                span: self.get_span(&i.span()),
-                name,
-            });
-        } else {
-            self.push_item(LocalItem {
-                own_condition: None,
-                span: self.get_span(&i.span()),
-                name,
-            });
+        if self.record_item("trait", name, &i.attrs, i.span()) {
+            syn::visit::visit_item_trait(self, i);
         }
-        syn::visit::visit_item_trait(self, i);
+    }
+
+    fn visit_item_trait_alias(&mut self, i: &'_ syn::ItemTraitAlias) {
+        let name = Some(i.ident.to_string());
+        if self.record_item("trait alias", name, &i.attrs, i.span()) {
+            syn::visit::visit_item_trait_alias(self, i);
+        }
     }
 
     fn visit_item_const(&mut self, i: &'_ syn::ItemConst) {
-        if self.should_skip(&i.attrs) {
-            debug!("Skipping const {} due to test attribute", i.ident);
-            return;
-        }
-
         let name = Some(i.ident.to_string());
-        if let Some(own) = self.parse_cfg_gate(&i.attrs) {
-            self.push_item(LocalItem {
-                own_condition: Some(own),
-                span: self.get_span(&i.span()),
-                name,
-            });
-        } else {
-            self.push_item(LocalItem {
-                own_condition: None,
-                span: self.get_span(&i.span()),
-                name,
-            });
+        if self.record_item("const", name, &i.attrs, i.span()) {
+            syn::visit::visit_item_const(self, i);
         }
-        syn::visit::visit_item_const(self, i);
     }
 
     fn visit_item_static(&mut self, i: &'_ syn::ItemStatic) {
-        if self.should_skip(&i.attrs) {
-            debug!("Skipping static {} due to test attribute", i.ident);
-            return;
-        }
-
         let name = Some(i.ident.to_string());
-        if let Some(own) = self.parse_cfg_gate(&i.attrs) {
-            self.push_item(LocalItem {
-                own_condition: Some(own),
-                span: self.get_span(&i.span()),
-                name,
-            });
-        } else {
-            self.push_item(LocalItem {
-                own_condition: None,
-                span: self.get_span(&i.span()),
-                name,
-            });
+        if self.record_item("static", name, &i.attrs, i.span()) {
+            syn::visit::visit_item_static(self, i);
         }
-        syn::visit::visit_item_static(self, i);
     }
 
     fn visit_item_union(&mut self, i: &'_ syn::ItemUnion) {
-        if self.should_skip(&i.attrs) {
-            debug!("Skipping union {} due to test attribute", i.ident);
-            return;
-        }
-
         let name = Some(i.ident.to_string());
-        if let Some(own) = self.parse_cfg_gate(&i.attrs) {
-            self.push_item(LocalItem {
-                own_condition: Some(own),
-                span: self.get_span(&i.span()),
-                name,
-            });
-        } else {
-            self.push_item(LocalItem {
-                own_condition: None,
-                span: self.get_span(&i.span()),
-                name,
-            });
+        if self.record_item("union", name, &i.attrs, i.span()) {
+            syn::visit::visit_item_union(self, i);
         }
-        syn::visit::visit_item_union(self, i);
+    }
+
+    // `extern "C" { ... }` blocks and their items. Often cfg/target-gated, and
+    // foreign signatures can reference gated type aliases; record the gate so std
+    // usage inside is not treated as ungated.
+    fn visit_item_foreign_mod(&mut self, i: &'_ syn::ItemForeignMod) {
+        if self.record_item("foreign mod", None, &i.attrs, i.span()) {
+            syn::visit::visit_item_foreign_mod(self, i);
+        }
+    }
+
+    fn visit_foreign_item_fn(&mut self, i: &'_ syn::ForeignItemFn) {
+        let name = Some(i.sig.ident.to_string());
+        if self.record_item("foreign function", name, &i.attrs, i.span()) {
+            syn::visit::visit_foreign_item_fn(self, i);
+        }
+    }
+
+    fn visit_foreign_item_static(&mut self, i: &'_ syn::ForeignItemStatic) {
+        let name = Some(i.ident.to_string());
+        if self.record_item("foreign static", name, &i.attrs, i.span()) {
+            syn::visit::visit_foreign_item_static(self, i);
+        }
+    }
+
+    fn visit_foreign_item_type(&mut self, i: &'_ syn::ForeignItemType) {
+        let name = Some(i.ident.to_string());
+        if self.record_item("foreign type", name, &i.attrs, i.span()) {
+            syn::visit::visit_foreign_item_type(self, i);
+        }
+    }
+
+    fn visit_foreign_item_macro(&mut self, i: &'_ syn::ForeignItemMacro) {
+        if self.record_item("foreign macro", None, &i.attrs, i.span()) {
+            syn::visit::visit_foreign_item_macro(self, i);
+        }
+    }
+
+    // A `#[cfg(...)]`-gated match arm. The arm body is an `Expr`, not a `Stmt`,
+    // so `visit_stmt` never sees its gate; without this, std usage inside a gated
+    // arm looks ungated.
+    fn visit_arm(&mut self, i: &'_ syn::Arm) {
+        if self.record_item("match arm", None, &i.attrs, i.body.span()) {
+            syn::visit::visit_arm(self, i);
+        }
     }
 
     fn visit_item_use(&mut self, i: &'_ syn::ItemUse) {
