@@ -2681,38 +2681,39 @@ pub fn recursive_dep_requirement_check(
             });
 
         for (dep, _) in crate_info.deps_and_features.iter() {
-            // fetch_index retries transient failures internally; a surviving error
-            // means a permanent one (e.g. crate not found), so skip this dep rather
-            // than panicking the whole run.
-            let dep_index_entries = match downloader::fetch_index(&dep.name) {
-                Ok(entries) => entries,
-                Err(e) => {
-                    debug!("Skipping dep {}: failed to fetch index: {}", dep.name, e);
-                    continue;
-                }
-            };
-            let dep_resolved_version =
-                match downloader::resolve_version(&Some(&dep.version), &dep_index_entries) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        debug!("Skipping dep {}: failed to resolve version: {}", dep.name, e);
-                        continue;
-                    }
-                };
-            let dep_name_with_version = format!("{}:{}", dep.name.clone(), dep_resolved_version);
-
-            println!("Processing dependency: {}", dep_name_with_version);
-
-            if is_dep_optional(&crate_info, &dep.name)
-                || is_proc_macro(&dep_name_with_version, Some(&exchange.name_with_version))
-            {
+            // Optional sub-deps are never fetched by the download phase
+            // (determine_n_depth_dep_no_std reads deps with skip_optional=true), so they
+            // are not on disk. Skip them up front, before doing any resolution work.
+            if is_dep_optional(&crate_info, &dep.name) {
                 debug!(
-                    "Dependency: {} is optional or a proc-macro crate: {}, skipping requirement check",
+                    "Dependency: {} of {} is optional, skipping requirement check",
                     dep.name, name_with_version
                 );
                 continue;
             }
 
+            // Resolve the version exactly the way the download phase did: from the main
+            // crate's Cargo.lock (index fallback), so it matches what is on disk instead
+            // of re-deriving a possibly-newer version from a live index.
+            let dep_resolved_version = match downloader::resolve_dep_version(
+                &dep.name,
+                &Some(&dep.version),
+                &exchange.name_with_version,
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    debug!("Skipping dep {}: failed to resolve version: {}", dep.name, e);
+                    continue;
+                }
+            };
+            let dep_name_with_version = format!("{}:{}", dep.name.clone(), dep_resolved_version);
+
+            println!("Processing dependency: {}", dep_name_with_version);
+
+            // With optional deps skipped and the traversal depth aligned with the
+            // download, this should always be on disk; guard defensively so a stray
+            // missing dir skips the dep instead of panicking the whole run (and so the
+            // is_proc_macro manifest read below never hits a missing Cargo.toml).
             let sub_dep_dir = std::path::PathBuf::from(consts::DOWNLOAD_PATH)
                 .join(format!(
                     "{}_deps",
@@ -2720,10 +2721,19 @@ pub fn recursive_dep_requirement_check(
                 ))
                 .join(dep_name_with_version.replace(':', "-"));
             if !sub_dep_dir.exists() {
-                panic!(
-                    "Dependency {} not found on disk. This should not happen since the dependency should have been downloaded if it is in the lock file.",
+                debug!(
+                    "Dependency {} not found on disk, skipping requirement check",
                     dep_name_with_version
                 );
+                continue;
+            }
+
+            if is_proc_macro(&dep_name_with_version, Some(&exchange.name_with_version)) {
+                debug!(
+                    "Dependency: {} is a proc-macro crate, skipping requirement check",
+                    dep_name_with_version
+                );
+                continue;
             }
 
             let (.., dep_crate_info) = downloader::gather_crate_info(
@@ -2822,7 +2832,13 @@ pub fn recursive_dep_requirement_check(
             // We use the resolved version here because multiple versions of the same crate
             // can resolve to the same version and are required by different dependencies.
             // In that case, we don't want to check the same crate multiple times.
-            if item_depth <= depth && seen.insert((dep.name.clone(), dep_resolved_version.clone()))
+            //
+            // Guard is `item_depth < depth` (not `<=`): a crate popped at `item_depth`
+            // has its deps checked at `item_depth + 1`, so pushing only while
+            // `item_depth < depth` makes the deepest *checked* dep sit at `depth + 1` —
+            // exactly the depth the download phase fetches to. `<=` would check one level
+            // deeper than anything was downloaded and panic on the missing directory.
+            if item_depth < depth && seen.insert((dep.name.clone(), dep_resolved_version.clone()))
             {
                 debug!(
                     "Adding dependency: {} to worklist for requirement check with version: {} at depth {}",

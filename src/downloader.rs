@@ -550,7 +550,10 @@ fn get_download_url(
     name: &str,
     version: &Option<&String>,
     main_name: Option<&str>,
-    parent_name: Option<&str>,
+    // No longer consulted — the main crate's Cargo.lock (see resolve_from_lock) covers
+    // the whole resolved graph. Kept in the signature so clone_from_crates callers that
+    // pass a parent for context don't need to change.
+    _parent_name: Option<&str>,
 ) -> Result<(String, String, String), anyhow::Error> {
     let entries = fetch_index(name)?;
     let canonical_name = entries
@@ -563,42 +566,16 @@ fn get_download_url(
 
     // main_name None means this the download of the main crate itself. So there is no
     // parent or version to look for in the lock file.
-    if let Some(main_name) = main_name {
-        let lock_file = match parent_name {
-            Some(parent) => PathBuf::from(DOWNLOAD_PATH)
-                .join(format!("{}_deps", main_name.replace(':', "-")))
-                .join(format!(
-                    "{}-{}",
-                    parent,
-                    version.unwrap_or(&"latest".to_string())
-                ))
-                .join("Cargo.lock"),
-            None => PathBuf::from(DOWNLOAD_PATH)
-                .join(main_name.replace(':', "-"))
-                .join("Cargo.lock"),
-        };
-
-        if lock_file.exists() {
-            debug!(
-                "Lock file found at {}, trying to find exact version match",
-                lock_file.display()
-            );
-            let lock_content =
-                fs::read_to_string(&lock_file).context("Failed to read Cargo.lock")?;
-            let lock_toml: toml::Value =
-                toml::from_str(&lock_content).context("Failed to parse Cargo.lock")?;
-            if let Some(packages) = lock_toml.get("package").and_then(Value::as_array) {
-                for package in packages {
-                    if package.get("name").and_then(Value::as_str) == Some(name)
-                        && let Some(ver) = package.get("version").and_then(Value::as_str)
-                    {
-                        debug!("Exact version match found in Cargo.lock: {}", ver);
-                        resolved_version = ver.to_string();
-                    }
-                }
-            }
-            debug!("No exact version match found in Cargo.lock, falling back to index");
-        }
+    // Resolve the version from the main crate's Cargo.lock (cargo's fully-resolved
+    // graph), the source of truth for both direct and transitive deps. This keeps the
+    // download and parse phases in agreement. Falls back to the index below only when
+    // the crate is absent from the lock. `parent_name` is no longer consulted: the
+    // per-parent lock path was malformed (it never resolved) and the main lock already
+    // covers the whole graph.
+    if let Some(main_name) = main_name
+        && let Some(ver) = resolve_from_lock(name, &version, main_name)
+    {
+        resolved_version = ver;
     }
 
     if resolved_version.is_empty() {
@@ -660,6 +637,64 @@ pub fn resolve_version(
                 .ok_or_else(|| anyhow::anyhow!("Known: No matching version found"))
         }
     }
+}
+
+/// Resolve a dependency's concrete version from the main crate's Cargo.lock.
+/// The main lock is cargo's fully-resolved graph, so it is the source of truth for
+/// every direct and transitive dependency and keeps the download and parse phases in
+/// agreement. Returns `None` when the crate is absent from the lock (callers fall back
+/// to the index) or when no locked version satisfies `req`.
+/// # Arguments
+/// * `name` - The dependency crate name
+/// * `req` - The version requirement string from the parent's manifest, if any
+/// * `main_name` - The main crate `name:version`, whose Cargo.lock is consulted
+pub fn resolve_from_lock(name: &str, req: &Option<&String>, main_name: &str) -> Option<String> {
+    let lock_file = PathBuf::from(DOWNLOAD_PATH)
+        .join(main_name.replace(':', "-"))
+        .join("Cargo.lock");
+    let lock_content = fs::read_to_string(&lock_file).ok()?;
+    let lock_toml: Value = toml::from_str(&lock_content).ok()?;
+    let packages = lock_toml.get("package").and_then(Value::as_array)?;
+
+    // A crate can appear at several (semver-incompatible) versions in the lock;
+    // collect them all and pick the newest that satisfies the requirement.
+    let versions: Vec<semver::Version> = packages
+        .iter()
+        .filter(|p| p.get("name").and_then(Value::as_str) == Some(name))
+        .filter_map(|p| p.get("version").and_then(Value::as_str))
+        .filter_map(|v| semver::Version::parse(v).ok())
+        .collect();
+
+    let req_parsed = match req {
+        Some(r) if r.as_str() != "latest" => VersionReq::parse(r.as_str()).ok(),
+        _ => None,
+    };
+
+    let chosen = match req_parsed {
+        Some(vr) => versions.iter().filter(|v| vr.matches(v)).max(),
+        None => versions.iter().max(),
+    };
+    chosen.map(|v| v.to_string())
+}
+
+/// Resolve a dependency's version the same way the download phase does: prefer the
+/// main crate's Cargo.lock, falling back to the index only when the crate is not
+/// locked. Used by the parser so it references the exact versions that are on disk,
+/// rather than re-deriving them from a live index (which can drift from the download).
+/// # Arguments
+/// * `name` - The dependency crate name
+/// * `req` - The version requirement string from the parent's manifest, if any
+/// * `main_name` - The main crate `name:version`, whose Cargo.lock is consulted
+pub fn resolve_dep_version(
+    name: &str,
+    req: &Option<&String>,
+    main_name: &str,
+) -> Result<String, anyhow::Error> {
+    if let Some(v) = resolve_from_lock(name, req, main_name) {
+        return Ok(v);
+    }
+    let entries = fetch_index(name)?;
+    resolve_version(req, &entries)
 }
 
 fn download_crate(url: &str, filename: &str) -> Result<(), anyhow::Error> {
