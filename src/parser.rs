@@ -2168,10 +2168,15 @@ pub fn remove_conflicting_dep_feats(main_name: &str, name: &str, disable: &[Stri
 /// * `feats` - The list of features in main crate that enable the dependency
 /// * `to_drop` - The feature to drop from the main crate
 /// # Returns
-/// None
-pub fn remove_feats_enabling_dep(main_name: &str, feats: &[String], to_drop: &String) {
+/// The names of the features an entry was actually removed from. Empty means the
+/// manifest already had no link from `feats` to `to_drop` and was left untouched.
+pub fn remove_feats_enabling_dep(
+    main_name: &str,
+    feats: &[String],
+    to_drop: &String,
+) -> Vec<String> {
     if feats.is_empty() {
-        return;
+        return Vec::new();
     }
 
     let main_manifest = determine_manifest_file(main_name, None);
@@ -2184,27 +2189,38 @@ pub fn remove_feats_enabling_dep(main_name: &str, feats: &[String], to_drop: &St
         .expect("Failed to get features table from main Cargo.toml");
 
     let formatted = format!("dep:{}", to_drop);
-    let mut to_push = String::new();
+    let mut to_push: Vec<String> = Vec::new();
+    let mut severed: Vec<String> = Vec::new();
     for feat in feats {
         if let Some(arr) = features.get_mut(feat).and_then(|v| v.as_array_mut()) {
+            let before = arr.len();
             arr.retain(|f| {
                 if let toml::Value::String(s) = f
                     && (s == to_drop || *s == formatted)
                 {
-                    if s == &formatted {
-                        to_push = to_drop.clone();
-                    } else {
-                        to_push = formatted.clone();
-                    }
+                    // Record the entry exactly as it was written, so enabling the
+                    // custom feature restores the original behaviour.
+                    to_push.push(s.clone());
                     debug!("Removing feature {} from main crate", s);
                     return false;
                 }
                 true
             });
+            if arr.len() != before {
+                severed.push(feat.clone());
+            }
         }
     }
 
-    add_feats_to_custom_feature(&mut main_toml, consts::CUSTOM_FEATURES_DISABLED, &[to_push]);
+    if to_push.is_empty() {
+        debug!(
+            "No features enabling {} found in main crate, leaving manifest untouched",
+            to_drop
+        );
+        return severed;
+    }
+
+    add_feats_to_custom_feature(&mut main_toml, consts::CUSTOM_FEATURES_DISABLED, &to_push);
 
     fs::write(
         &main_manifest,
@@ -2213,6 +2229,7 @@ pub fn remove_feats_enabling_dep(main_name: &str, feats: &[String], to_drop: &St
             .unwrap(),
     )
     .unwrap();
+    severed
 }
 
 /// Get the actual directory of a crate given its name with version and the main crate name.
@@ -2287,6 +2304,54 @@ pub fn add_feats_to_custom_feature(
     }
 }
 
+/// Re-read the main crate's `[features]` table from its manifest into
+/// `exchange.crate_info.features`.
+///
+/// `crate_info.features` is populated once at download time, but the manifest is
+/// rewritten repeatedly while features are being solved. Any caller that mutates
+/// the manifest must call this afterwards, otherwise later passes make decisions
+/// against the crate as it was downloaded rather than as it now stands.
+///
+/// The synthetic features this tool adds are filtered out: they are build knobs
+/// for the generated manifest, not part of the crate's real feature graph, and
+/// letting them back in would re-link optional deps that were just severed.
+/// # Arguments
+/// * `exchange` - The `DataExchange` whose `crate_info` should be refreshed
+/// # Returns
+/// None
+pub fn refresh_crate_features(exchange: &mut DataExchange) {
+    let main_name = format!(
+        "{}:{}",
+        exchange.crate_info.name, exchange.crate_info.version
+    );
+    let main_manifest = determine_manifest_file(&main_name, None);
+    let main_toml: toml::Value = match fs::read_to_string(&main_manifest)
+        .ok()
+        .and_then(|s| toml::from_str(&s).ok())
+    {
+        Some(toml) => toml,
+        None => {
+            debug!(
+                "Could not re-read manifest {} to refresh features",
+                main_manifest
+            );
+            return;
+        }
+    };
+
+    exchange.crate_info.features = downloader::read_local_features(&main_toml)
+        .into_iter()
+        .filter(|(name, _)| {
+            !matches!(
+                name.as_str(),
+                consts::CUSTOM_FEATURES_DISABLED
+                    | consts::CUSTOM_FEATURES_ENABLED
+                    | consts::DEP_UNNECESSARY_FEATURES
+            )
+        })
+        .collect();
+}
+
 /// Given a `CrateInfo`, this function finds all optional dependencies
 /// and their features that are required to enable them.
 /// It returns a vector of tuples where each tuple contains the dependency name
@@ -2348,7 +2413,7 @@ pub fn features_for_optional_deps(crate_info: &CrateInfo) -> TupleVec {
 pub fn should_skip_dep(
     name: &str,
     exchange: &mut DataExchange,
-    deps_and_features: &[(String, String)],
+    deps_and_features: &mut TupleVec,
     enable_features: &[String],
     disable_default: bool,
     second_round: bool,
@@ -2426,8 +2491,16 @@ pub fn should_skip_dep(
                 "{}:{}",
                 exchange.crate_info.name, exchange.crate_info.version
             );
-            remove_feats_enabling_dep(main_name, &features_for_dependency, &dep_name);
-            if second_round {
+            let severed = remove_feats_enabling_dep(main_name, &features_for_dependency, &dep_name);
+            if !severed.is_empty() {
+                // The manifest no longer links these features to this dep. Re-read it
+                // and drop the matching pairs so a later round sees that, rather than
+                // trying to sever a link that is already gone. Features that still
+                // reach the dep stay in the list and remain re-checkable.
+                refresh_crate_features(exchange);
+                deps_and_features.retain(|(dep, feat)| dep != &dep_name || !severed.contains(feat));
+                // Recorded on whichever round actually severed the dep: with the state
+                // above kept in sync, only one round can reach this point per dep.
                 exchange
                     .telemetry
                     .optional_deps_disabled

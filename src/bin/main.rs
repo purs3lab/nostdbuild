@@ -424,7 +424,7 @@ fn main() -> anyhow::Result<()> {
         if parser::should_skip_dep(
             &dep.crate_name,
             &mut exchange,
-            &dep_and_feats,
+            &mut dep_and_feats,
             &main_features,
             disable_default,
             false,
@@ -462,7 +462,7 @@ fn main() -> anyhow::Result<()> {
         if !parser::should_skip_dep(
             &dep.crate_name,
             &mut exchange,
-            &dep_and_feats,
+            &mut dep_and_feats,
             &temp_combined,
             disable_default,
             true,
