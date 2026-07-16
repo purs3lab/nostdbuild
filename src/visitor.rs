@@ -1182,6 +1182,21 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
 // ModCollector — drives recursive file visiting
 // ---------------------------------------------------------------------------
 
+/// Combine the `#[cfg(...)]` gates found in a file's *inner* attributes
+/// (`#![cfg(...)]` at the top of the file). A module can be gated entirely by
+/// such an inner attribute rather than a `#[cfg]` on its `mod foo;`
+/// declaration (e.g. `set.rs` starting with `#![cfg(feature = "std")]` while
+/// `lib.rs` has a bare `mod set;`). Without folding this into the module's
+/// entry condition the file's std usage looks ungated and is misclassified as
+/// hard/unconditional std usage.
+fn file_inner_cfg_gate<'a>(ctx: &'a z3::Context, attrs: &[syn::Attribute]) -> Option<Bool<'a>> {
+    attrs
+        .iter()
+        .filter(|a| a.path().is_ident("cfg"))
+        .filter_map(|attr| parser::parse_main_attributes_direct(attr, ctx).0)
+        .reduce(|acc, b| Bool::and(ctx, &[&acc, &b]))
+}
+
 pub struct ModCollector<'a> {
     ctx: &'a z3::Context,
     pub hard_constraints: Vec<Bool<'a>>,
@@ -1213,12 +1228,16 @@ impl<'a> ModCollector<'a> {
             .unwrap_or_else(|e| panic!("Failed to parse {}: {}", path.display(), e));
 
         let source_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        // Fold any file-level inner `#![cfg(...)]` gate into the entry condition
+        // so items gated only by the inner attribute are seen as conditional.
+        let file_gate = file_inner_cfg_gate(self.ctx, &syntax.attrs);
+        let effective = FileVisitor::and_conditions(self.ctx, inherited, file_gate);
         let mut visitor = FileVisitor::new(
             self.ctx,
             path,
             source_dir.clone(),
             source_dir.clone(),
-            inherited.clone(),
+            effective.clone(),
             true, // entrypoint is always mod-rs style
         );
         visitor.visit_file(&syntax);
@@ -1236,7 +1255,7 @@ impl<'a> ModCollector<'a> {
             name: name.to_string(),
             source_file: path.to_path_buf(),
             source_dir,
-            entry_condition: inherited,
+            entry_condition: effective,
             local_items,
             children,
             is_inline: false,
@@ -1276,12 +1295,20 @@ impl<'a> ModCollector<'a> {
                 child.source_dir.join(&child.name)
             };
 
+            // Fold any file-level inner `#![cfg(...)]` gate into this child's
+            // entry condition. A `mod set;` with no gate whose file starts with
+            // `#![cfg(feature = "std")]` is gated entirely by the inner
+            // attribute; without this its std usage looks ungated.
+            let file_gate = file_inner_cfg_gate(ctx, &syntax.attrs);
+            let effective =
+                FileVisitor::and_conditions(ctx, child.entry_condition.clone(), file_gate);
+
             let mut fv = FileVisitor::new(
                 ctx,
                 path,
                 source_dir.clone(),
                 current_search_dir,
-                child.entry_condition.clone(),
+                effective.clone(),
                 is_mod_rs,
             );
             fv.visit_file(&syntax);
@@ -1295,6 +1322,7 @@ impl<'a> ModCollector<'a> {
             }
 
             child.source_dir = source_dir;
+            child.entry_condition = effective;
             child.local_items = local_items;
             child.children = grandchildren;
         }
