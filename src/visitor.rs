@@ -420,6 +420,19 @@ impl<'a> ModNode<'a> {
     }
 }
 
+/// An `include!(concat!(env!("OUT_DIR"), "<tail>"))` encountered during the syn
+/// pass. syn can't resolve `OUT_DIR`, so we defer it: the driver resolves the
+/// real path from a plugin run's `OUT_DIR`, parses the generated file, and
+/// attaches it to the tree gated by `condition` (the effective cfg at the
+/// include site).
+#[derive(Clone)]
+pub struct PendingInclude<'a> {
+    /// Literal suffix appended to `OUT_DIR`, e.g. `/protos/types.rs`.
+    pub tail: String,
+    /// Effective cfg condition at the include site (full ancestor chain).
+    pub condition: Option<Bool<'a>>,
+}
+
 // ---------------------------------------------------------------------------
 // Internal visitor — one instance per file
 // ---------------------------------------------------------------------------
@@ -438,6 +451,8 @@ struct FileVisitor<'a> {
     /// Items collected at each nesting level.
     items_stack: Vec<Vec<LocalItem<'a>>>,
     hard_constraints: Vec<Bool<'a>>,
+    /// Deferred `include!(concat!(env!("OUT_DIR"), …))` sites found in this file.
+    pending_includes: Vec<PendingInclude<'a>>,
     /// The condition under which this crate becomes no_std, extracted from
     /// `#![cfg_attr(<cond>, no_std)]`. Stored globally rather than as a
     /// regular covering item so the driver can run each covering set twice
@@ -472,6 +487,7 @@ impl<'a> FileVisitor<'a> {
             children_stack: vec![vec![]],
             items_stack: vec![vec![]],
             hard_constraints: vec![],
+            pending_includes: vec![],
             no_std_condition: None,
         }
     }
@@ -715,7 +731,19 @@ impl<'a> FileVisitor<'a> {
         let lit = match syn::parse2::<syn::LitStr>(tokens.clone()) {
             Ok(l) => l,
             Err(_) => {
-                debug!("include! with non-literal path, skipping");
+                // Not a string literal. Recognise the build-script codegen idiom
+                // `include!(concat!(env!("OUT_DIR"), "<tail>"))` and defer it: the
+                // driver resolves OUT_DIR and parses the generated file, gated by
+                // the effective condition here (e.g. a `#[cfg(...)]` mod above it).
+                if let Some(tail) = parse_out_dir_include(tokens) {
+                    debug!("Deferring OUT_DIR include! with tail {}", tail);
+                    self.pending_includes.push(PendingInclude {
+                        tail,
+                        condition: self.current_condition(),
+                    });
+                } else {
+                    debug!("include! with non-literal path, skipping");
+                }
                 return;
             }
         };
@@ -781,6 +809,7 @@ impl<'a> FileVisitor<'a> {
         Vec<ModNode<'a>>,
         Vec<Bool<'a>>,
         Option<Bool<'a>>,
+        Vec<PendingInclude<'a>>,
     ) {
         assert_eq!(self.condition_stack.len(), 1);
         (
@@ -788,8 +817,62 @@ impl<'a> FileVisitor<'a> {
             self.children_stack.pop().unwrap(),
             self.hard_constraints,
             self.no_std_condition,
+            self.pending_includes,
         )
     }
+}
+
+/// Recognise `concat!(env!("OUT_DIR"), "<lit>", …)` (the include! argument for
+/// build-script codegen) and return the concatenated literal tail, e.g.
+/// `/protos/types.rs`. Returns `None` for any other token shape.
+fn parse_out_dir_include(tokens: &TokenStream) -> Option<String> {
+    let trees: Vec<TokenTree> = tokens.clone().into_iter().collect();
+    let group = match trees.as_slice() {
+        [
+            TokenTree::Ident(id),
+            TokenTree::Punct(bang),
+            TokenTree::Group(g),
+        ] if id.to_string() == "concat"
+            && bang.as_char() == '!'
+            && g.delimiter() == Delimiter::Parenthesis =>
+        {
+            g
+        }
+        _ => return None,
+    };
+    let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+    // First argument must be `env!("OUT_DIR")`.
+    let env_ok = matches!(inner.first(), Some(TokenTree::Ident(id)) if id.to_string() == "env")
+        && matches!(inner.get(1), Some(TokenTree::Punct(p)) if p.as_char() == '!')
+        && matches!(inner.get(2), Some(TokenTree::Group(g)) if {
+            let e: Vec<TokenTree> = g.stream().into_iter().collect();
+            e.len() == 1 && matches!(&e[0], TokenTree::Literal(l) if litstr_value(l).as_deref() == Some("OUT_DIR"))
+        });
+    if !env_ok {
+        return None;
+    }
+    // Remaining args: `, "lit"` repeated — concatenate their values.
+    let mut tail = String::new();
+    let mut idx = 3;
+    while idx < inner.len() {
+        match &inner[idx] {
+            TokenTree::Punct(p) if p.as_char() == ',' => idx += 1,
+            TokenTree::Literal(l) => {
+                tail.push_str(&litstr_value(l)?);
+                idx += 1;
+            }
+            _ => return None,
+        }
+    }
+    Some(tail)
+}
+
+/// Parse a string-literal token to its unescaped value. Returns None if the
+/// token is not a string literal.
+fn litstr_value(lit: &proc_macro2::Literal) -> Option<String> {
+    syn::parse_str::<syn::LitStr>(&lit.to_string())
+        .ok()
+        .map(|l| l.value())
 }
 
 /// Walk a use tree and collect the leaf name(s) that are imported.
@@ -1306,6 +1389,9 @@ pub struct ModCollector<'a> {
     ctx: &'a z3::Context,
     pub hard_constraints: Vec<Bool<'a>>,
     pub no_std_condition: Option<Bool<'a>>,
+    /// Deferred `include!(concat!(env!("OUT_DIR"), …))` sites across all files,
+    /// for the driver to resolve once a plugin run reveals OUT_DIR.
+    pub pending_includes: Vec<PendingInclude<'a>>,
 }
 
 impl<'a> ModCollector<'a> {
@@ -1314,6 +1400,7 @@ impl<'a> ModCollector<'a> {
             ctx,
             hard_constraints: vec![],
             no_std_condition: None,
+            pending_includes: vec![],
         }
     }
 
@@ -1346,14 +1433,16 @@ impl<'a> ModCollector<'a> {
             true, // entrypoint is always mod-rs style
         );
         visitor.visit_file(&syntax);
-        let (local_items, mut children, hard_constraints, no_std_cond) = visitor.finish();
+        let (local_items, mut children, hard_constraints, no_std_cond, pending_includes) =
+            visitor.finish();
         self.hard_constraints.extend(hard_constraints);
+        self.pending_includes.extend(pending_includes);
         if no_std_cond.is_some() {
             self.no_std_condition = no_std_cond;
         }
 
         for child in &mut children {
-            Self::resolve_child(self.ctx, child, &mut self.hard_constraints);
+            Self::resolve_child(self.ctx, child, &mut self.hard_constraints, &mut self.pending_includes);
         }
 
         ModNode {
@@ -1371,10 +1460,11 @@ impl<'a> ModCollector<'a> {
         ctx: &'a z3::Context,
         child: &mut ModNode<'a>,
         hard_constraints: &mut Vec<Bool<'a>>,
+        pending_includes: &mut Vec<PendingInclude<'a>>,
     ) {
         if child.is_inline {
             for gc in &mut child.children {
-                Self::resolve_child(ctx, gc, hard_constraints);
+                Self::resolve_child(ctx, gc, hard_constraints, pending_includes);
             }
             return;
         }
@@ -1417,13 +1507,14 @@ impl<'a> ModCollector<'a> {
                 is_mod_rs,
             );
             fv.visit_file(&syntax);
-            let (local_items, mut grandchildren, hard_constraints_child, _no_std_cond) =
+            let (local_items, mut grandchildren, hard_constraints_child, _no_std_cond, pend) =
                 fv.finish();
             hard_constraints.extend(hard_constraints_child);
+            pending_includes.extend(pend);
 
             // Recurse into grandchildren
             for gc in &mut grandchildren {
-                Self::resolve_child(ctx, gc, hard_constraints);
+                Self::resolve_child(ctx, gc, hard_constraints, pending_includes);
             }
 
             child.source_dir = source_dir;
@@ -1431,6 +1522,69 @@ impl<'a> ModCollector<'a> {
             child.local_items = local_items;
             child.children = grandchildren;
         }
+    }
+}
+
+/// Resolve deferred `include!(concat!(env!("OUT_DIR"), …))` sites now that a
+/// plugin run has revealed the real `out_dir`. Each generated file is parsed
+/// and attached to `root` as a child gated by the include site's condition, so
+/// `ancestors_for_span` sees generated std usage as conditional (not hard std).
+/// The attached node's `source_file` is the normalized `$OUT_DIR/…` form so it
+/// matches the (equally normalized) HIR span paths. Nested OUT_DIR includes in
+/// the generated file are resolved transitively via a worklist.
+pub fn resolve_pending_includes<'a>(
+    ctx: &'a z3::Context,
+    root: &mut ModNode<'a>,
+    pending: &[PendingInclude<'a>],
+    out_dir: &str,
+) {
+    let out = Path::new(out_dir);
+    let mut worklist: Vec<PendingInclude<'a>> = pending.to_vec();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    while let Some(inc) = worklist.pop() {
+        let real_path = out.join(inc.tail.trim_start_matches('/'));
+        let canonical = driver::normalize_generated_path(&real_path.to_string_lossy());
+        if !seen.insert(canonical.clone()) {
+            continue;
+        }
+        if !real_path.exists() {
+            debug!(
+                "OUT_DIR include target not found on disk: {}",
+                real_path.display()
+            );
+            continue;
+        }
+
+        let name = real_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("generated")
+            .to_string();
+
+        // Parse the generated file with the include-site condition as its entry
+        // condition. A fresh collector gives us the node plus any nested
+        // OUT_DIR includes to enqueue.
+        let mut sub = ModCollector::new(ctx);
+        let mut node = sub.visit_file(&real_path, &name, inc.condition.clone());
+        // Normalize the whole parsed subtree, not just the top node: a generated
+        // `mod.rs` may declare `pub mod types;` (rust-protobuf does), which
+        // ModCollector resolves to a sibling generated file with a raw hash
+        // path. All of them must carry the normalized `$OUT_DIR/…` form so
+        // generated HIR spans (also normalized) match during ancestor lookup.
+        normalize_subtree_source_files(&mut node);
+        root.children.push(node);
+        worklist.extend(sub.pending_includes);
+    }
+}
+
+/// Recursively rewrite every `source_file` in a parsed generated subtree to its
+/// normalized `$OUT_DIR/…` form (a no-op for non-generated paths).
+fn normalize_subtree_source_files(node: &mut ModNode) {
+    node.source_file =
+        PathBuf::from(driver::normalize_generated_path(&node.source_file.to_string_lossy()));
+    for child in &mut node.children {
+        normalize_subtree_source_files(child);
     }
 }
 

@@ -372,6 +372,7 @@ impl rustc_driver::Callbacks for MyCompilerCalls {
         let output_data = FeatureRunOutput {
             records,
             macro_module_imports: macro_imports,
+            out_dir: env::var("OUT_DIR").ok(),
         };
 
         let filename = env::var(consts::PLUGIN_OUTPUT_ENV).unwrap_or_else(|_| {

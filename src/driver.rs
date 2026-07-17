@@ -28,7 +28,41 @@ fn unique_output_path(crate_name: &str) -> PathBuf {
 
 fn load_plugin_output(path: &Path) -> Result<FeatureRunOutput, String> {
     let data = fs::read_to_string(path).map_err(|e| format!("read {:?}: {}", path, e))?;
-    serde_json::from_str(&data).map_err(|e| format!("parse {:?}: {}", path, e))
+    let mut out: FeatureRunOutput =
+        serde_json::from_str(&data).map_err(|e| format!("parse {:?}: {}", path, e))?;
+    // Rewrite build-script-generated (`OUT_DIR`) paths to a stable, hash-free
+    // form so the same generated span aggregates across runs (the
+    // `build/<pkg>-<hash>/out` hash changes with the feature set) and so it can
+    // be matched against the `include!` site's condition in the module tree.
+    for rec in &mut out.records {
+        rec.span.file = normalize_generated_path(&rec.span.file);
+    }
+    Ok(out)
+}
+
+/// Canonicalise a cargo build-script output path
+/// (`…/build/<pkg>-<16hex>/out/<tail>`) to `$OUT_DIR/<pkg>/<tail>`. Any other
+/// path is returned unchanged. The per-feature-set hash in `<pkg>-<hash>` is
+/// dropped so a generated span has one stable identity across runs.
+pub fn normalize_generated_path(file: &str) -> String {
+    let Some(build_idx) = file.find("/build/") else {
+        return file.to_string();
+    };
+    let after = &file[build_idx + "/build/".len()..];
+    let Some(out_idx) = after.find("/out/") else {
+        return file.to_string();
+    };
+    let dir = &after[..out_idx]; // <pkg>-<hash>
+    let tail = &after[out_idx + "/out/".len()..];
+    let Some(dash) = dir.rfind('-') else {
+        return file.to_string();
+    };
+    let (pkg, hash) = (&dir[..dash], &dir[dash + 1..]);
+    if hash.len() == 16 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        format!("$OUT_DIR/{}/{}", pkg, tail)
+    } else {
+        file.to_string()
+    }
 }
 
 pub fn extract_hard_std_candidates(
@@ -909,6 +943,25 @@ pub fn find_feature_combs_for_all_code<'a>(
         if let Some(ref cond) = no_std_cond {
             all_hard.push(cond.clone());
         }
+
+        // Now that runs have revealed OUT_DIR, splice any build-script-generated
+        // (`include!(concat!(env!("OUT_DIR"), …))`) files into the tree, gated by
+        // their include-site condition. Without this their std usage — reported
+        // by the HIR pass at real OUT_DIR paths — looks ungated/hard std.
+        if !collector.pending_includes.is_empty()
+            && let Some(out_dir) = covering_runs
+                .iter()
+                .rev()
+                .find_map(|r| r.output.out_dir.clone())
+        {
+            visitor::resolve_pending_includes(
+                ctx,
+                &mut root,
+                &collector.pending_includes,
+                &out_dir,
+            );
+        }
+
         return (
             root,
             covering_runs,

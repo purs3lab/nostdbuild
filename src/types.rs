@@ -95,6 +95,11 @@ pub struct FeatureRunOutput {
     // active_feature: String,
     pub records: Vec<PathRecord>,
     pub macro_module_imports: Vec<(String, String)>, // filename, module name
+    /// The crate's `OUT_DIR` for this run, if any build script set one. Used to
+    /// resolve `include!(concat!(env!("OUT_DIR"), …))` generated files, whose
+    /// real path is unknowable to the syn pass.
+    #[serde(default)]
+    pub out_dir: Option<String>,
 }
 
 #[derive(Debug)]
