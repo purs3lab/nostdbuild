@@ -1,6 +1,6 @@
 use itertools::Itertools;
 use log::debug;
-use proc_macro2::Span;
+use proc_macro2::{Delimiter, Span, TokenStream, TokenTree};
 // use quote::ToTokens;
 use syn::{
     Attribute, ExprBlock, Item, ItemExternCrate, Meta, Stmt, spanned::Spanned, visit::Visit,
@@ -612,6 +612,103 @@ impl<'a> FileVisitor<'a> {
         true
     }
 
+    /// Parse a macro invocation's token stream for `#[cfg(...)]`-gated regions.
+    ///
+    /// syn cannot see inside a macro invocation, so a `#[cfg(feature = "std")]`
+    /// passed as a macro *argument* (e.g. valuable's `value!` / `collection!`
+    /// list entries, where the macro captures `$(#[$attrs:meta])*`) leaves the
+    /// std paths it gates looking unconditional — the whole invocation is
+    /// recorded as a single ungated item. We split the stream into top-level
+    /// comma-separated segments; any segment whose leading attributes include a
+    /// `cfg` gate is recorded as a `LocalItem` spanning that segment, so
+    /// `ancestors_for_span` recognises the gate by span containment. We recurse
+    /// into nested delimited groups so gates nested inside argument groups are
+    /// also captured.
+    fn record_macro_cfg_segments(&mut self, tokens: &TokenStream) {
+        let trees: Vec<TokenTree> = tokens.clone().into_iter().collect();
+        let mut seg_start = 0usize;
+        // Entries in list-style macros are comma-separated, but commas also
+        // appear inside generic argument lists (`HashSet<T, H>`). Angle brackets
+        // are bare `<`/`>` puncts (not token groups), so track their depth and
+        // only split on commas at depth 0. `>>` lexes as two joint `>` puncts,
+        // so decrementing per `>` keeps nested generics balanced.
+        let mut angle: i32 = 0;
+        for (i, tt) in trees.iter().enumerate() {
+            if let TokenTree::Punct(p) = tt {
+                match p.as_char() {
+                    '<' => angle += 1,
+                    '>' => angle = (angle - 1).max(0),
+                    ',' if angle == 0 => {
+                        self.process_macro_segment(&trees[seg_start..i]);
+                        seg_start = i + 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if seg_start < trees.len() {
+            self.process_macro_segment(&trees[seg_start..]);
+        }
+    }
+
+    fn process_macro_segment(&mut self, seg: &[TokenTree]) {
+        if seg.is_empty() {
+            return;
+        }
+        if let Some(cond) = self.leading_cfg_condition(seg) {
+            let span = self.token_slice_span(seg);
+            self.push_item(LocalItem {
+                own_condition: Some(cond),
+                span,
+                name: None,
+            });
+        }
+        for tt in seg {
+            if let TokenTree::Group(g) = tt {
+                self.record_macro_cfg_segments(&g.stream());
+            }
+        }
+    }
+
+    /// Collect the `cfg` gates from a segment's leading attributes (`#[...]`),
+    /// skipping non-cfg attributes like doc comments, and AND them together.
+    fn leading_cfg_condition(&self, seg: &[TokenTree]) -> Option<Bool<'a>> {
+        let mut result: Option<Bool<'a>> = None;
+        let mut idx = 0;
+        while let (Some(TokenTree::Punct(hash)), Some(TokenTree::Group(group))) =
+            (seg.get(idx), seg.get(idx + 1))
+        {
+            if hash.as_char() != '#' || group.delimiter() != Delimiter::Bracket {
+                break;
+            }
+            let mut ts = TokenStream::new();
+            ts.extend([
+                TokenTree::Punct(hash.clone()),
+                TokenTree::Group(group.clone()),
+            ]);
+            if let Some(cfg_bool) = parse_attr_stream_cfg(&ts, self.ctx) {
+                result = Self::and_conditions(self.ctx, result, Some(cfg_bool));
+            }
+            idx += 2;
+        }
+        result
+    }
+
+    /// Build a `ReadableSpan` covering a slice of tokens (first token start to
+    /// last token end).
+    fn token_slice_span(&self, seg: &[TokenTree]) -> ReadableSpan {
+        let start = seg.first().unwrap().span().start();
+        let end = seg.last().unwrap().span().end();
+        ReadableSpan {
+            file: self.current_file.display().to_string(),
+            start_line: start.line,
+            start_col: start.column,
+            end_line: end.line,
+            end_col: end.column,
+            usage_crate: None,
+        }
+    }
+
     /// Handle `include!("path")` by parsing the included file and visiting its
     /// contents inline (same condition/items/children stacks, no new ModNode).
     fn visit_include_macro(&mut self, tokens: &proc_macro2::TokenStream) {
@@ -1068,6 +1165,14 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         syn::visit::visit_item_extern_crate(self, i);
     }
 
+    fn visit_macro(&mut self, i: &'_ syn::Macro) {
+        // syn treats the macro argument tokens as opaque; extract any
+        // `#[cfg(...)]`-gated regions from them so gated std usage passed as a
+        // macro argument isn't misclassified as unconditional.
+        self.record_macro_cfg_segments(&i.tokens);
+        syn::visit::visit_macro(self, i);
+    }
+
     fn visit_item_macro(&mut self, i: &'_ syn::ItemMacro) {
         if self.should_skip(&i.attrs) {
             debug!("Skipping macro due to test attribute");
@@ -1327,6 +1432,19 @@ impl<'a> ModCollector<'a> {
             child.children = grandchildren;
         }
     }
+}
+
+/// Parse a single outer attribute from a `# [ ... ]` token stream and, if it is
+/// a `cfg(...)`, return its Z3 condition. Returns `None` for non-cfg attributes
+/// (e.g. doc comments) or on parse failure.
+fn parse_attr_stream_cfg<'a>(ts: &TokenStream, ctx: &'a z3::Context) -> Option<Bool<'a>> {
+    use syn::parse::Parser;
+    let attrs = syn::Attribute::parse_outer.parse2(ts.clone()).ok()?;
+    let attr = attrs.into_iter().next()?;
+    if !attr.path().is_ident("cfg") {
+        return None;
+    }
+    parser::parse_main_attributes_direct(&attr, ctx).0
 }
 
 fn should_skip(attrs: &[syn::Attribute]) -> bool {

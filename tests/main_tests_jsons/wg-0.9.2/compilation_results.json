@@ -14,7 +14,7 @@
       "--lib",
       "--no-default-features",
       "--features",
-      "alloc"
+      "alloc,parking_lot,triomphe"
     ],
     "status": "Success",
     "error": null
