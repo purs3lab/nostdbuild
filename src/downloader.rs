@@ -606,37 +606,59 @@ pub fn resolve_version(
     version: &Option<&String>,
     entries: &[serde_json::Value],
 ) -> Result<String, anyhow::Error> {
-    let available: Vec<(&str, semver::Version)> = entries
-        .iter()
-        .filter(|e| !e.get("yanked").and_then(|v| v.as_bool()).unwrap_or(false))
-        .filter_map(|e| {
-            let vers = e.get("vers")?.as_str()?;
-            let sv = semver::Version::parse(vers).ok()?;
-            Some((vers, sv))
-        })
-        .collect();
-
-    let latest = || {
-        available
+    // Build the candidate set, optionally including yanked releases. Non-yanked is
+    // always preferred, but yanked versions are kept as a fallback so an exact/lock
+    // pin to a since-yanked release still resolves (cargo permits yanked versions
+    // that are explicitly pinned or already locked). Filtering them out
+    // unconditionally turned such pins into a fatal "No matching version found".
+    let candidates = |include_yanked: bool| -> Vec<(&str, semver::Version)> {
+        entries
             .iter()
-            .max_by(|(_, a), (_, b)| a.cmp(b))
-            .map(|(s, _)| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("No versions available"))
+            .filter(|e| {
+                include_yanked || !e.get("yanked").and_then(|v| v.as_bool()).unwrap_or(false)
+            })
+            .filter_map(|e| {
+                let vers = e.get("vers")?.as_str()?;
+                let sv = semver::Version::parse(vers).ok()?;
+                Some((vers, sv))
+            })
+            .collect()
     };
 
-    match version {
-        None => latest(),
-        Some(v) if v.as_str() == "latest" => latest(),
-        Some(req_str) => {
-            let req = VersionReq::parse(req_str).context("Known: Failed to parse version")?;
-            available
+    let pick = |available: &[(&str, semver::Version)]| -> Option<String> {
+        match version {
+            None => available
                 .iter()
-                .filter(|(_, sv)| req.matches(sv))
                 .max_by(|(_, a), (_, b)| a.cmp(b))
-                .map(|(s, _)| s.to_string())
-                .ok_or_else(|| anyhow::anyhow!("Known: No matching version found"))
+                .map(|(s, _)| s.to_string()),
+            Some(v) if v.as_str() == "latest" => available
+                .iter()
+                .max_by(|(_, a), (_, b)| a.cmp(b))
+                .map(|(s, _)| s.to_string()),
+            Some(req_str) => {
+                let req = VersionReq::parse(req_str).ok()?;
+                available
+                    .iter()
+                    .filter(|(_, sv)| req.matches(sv))
+                    .max_by(|(_, a), (_, b)| a.cmp(b))
+                    .map(|(s, _)| s.to_string())
+            }
         }
+    };
+
+    // Validate the requirement up front so a genuinely malformed req still errors.
+    if let Some(req_str) = version
+        && req_str.as_str() != "latest"
+    {
+        VersionReq::parse(req_str).context("Known: Failed to parse version")?;
     }
+
+    // Prefer non-yanked; fall back to including yanked so exact/lock pins resolve.
+    if let Some(v) = pick(&candidates(false)) {
+        return Ok(v);
+    }
+    pick(&candidates(true))
+        .ok_or_else(|| anyhow::anyhow!("Known: No matching version found"))
 }
 
 /// Resolve a dependency's concrete version from the main crate's Cargo.lock.
