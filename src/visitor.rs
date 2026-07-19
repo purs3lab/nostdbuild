@@ -1,6 +1,6 @@
 use itertools::Itertools;
 use log::debug;
-use proc_macro2::{Delimiter, Span, TokenStream, TokenTree};
+use proc_macro2::{Delimiter, Group, Punct, Spacing, Span, TokenStream, TokenTree};
 // use quote::ToTokens;
 use syn::{
     Attribute, ExprBlock, Item, ItemExternCrate, Meta, Stmt, spanned::Spanned, visit::Visit,
@@ -642,12 +642,13 @@ impl<'a> FileVisitor<'a> {
     /// also captured.
     fn record_macro_cfg_segments(&mut self, tokens: &TokenStream) {
         let trees: Vec<TokenTree> = tokens.clone().into_iter().collect();
-        let mut seg_start = 0usize;
         // Entries in list-style macros are comma-separated, but commas also
         // appear inside generic argument lists (`HashSet<T, H>`). Angle brackets
         // are bare `<`/`>` puncts (not token groups), so track their depth and
         // only split on commas at depth 0. `>>` lexes as two joint `>` puncts,
         // so decrementing per `>` keeps nested generics balanced.
+        let mut segments: Vec<&[TokenTree]> = Vec::new();
+        let mut seg_start = 0usize;
         let mut angle: i32 = 0;
         for (i, tt) in trees.iter().enumerate() {
             if let TokenTree::Punct(p) = tt {
@@ -655,7 +656,7 @@ impl<'a> FileVisitor<'a> {
                     '<' => angle += 1,
                     '>' => angle = (angle - 1).max(0),
                     ',' if angle == 0 => {
-                        self.process_macro_segment(&trees[seg_start..i]);
+                        segments.push(&trees[seg_start..i]);
                         seg_start = i + 1;
                     }
                     _ => {}
@@ -663,7 +664,65 @@ impl<'a> FileVisitor<'a> {
             }
         }
         if seg_start < trees.len() {
-            self.process_macro_segment(&trees[seg_start..]);
+            segments.push(&trees[seg_start..]);
+        }
+
+        // A bare positional `cfg(...)` sibling arg (not the `#[cfg(...)]` attr
+        // form) gates the invocation's generated output — e.g. among crate's
+        // `impl_specific_ref_and_mut!(::std::path::Path, cfg(feature="std"), ..)`,
+        // where the macro re-emits it as `#[$attr]` on the impls that use the type
+        // arg. We can't tell from the callsite *which* generated span it gates
+        // (that lives in the macro definition), so we PROPOSE it as a candidate
+        // over the whole invocation span; the probe validates by negating it and
+        // checking the std usage actually vanishes (a wrong guess just stays
+        // StillStd — never a false clear). Multiple positional cfgs are ANDed.
+        let mut positional: Option<Bool<'a>> = None;
+        for seg in &segments {
+            if let Some(c) = self.positional_cfg_condition(seg) {
+                positional = Self::and_conditions(self.ctx, positional, Some(c));
+            }
+        }
+        if let Some(cond) = positional {
+            if !trees.is_empty() {
+                let span = self.token_slice_span(&trees);
+                self.push_item(LocalItem {
+                    own_condition: Some(cond),
+                    span,
+                    name: None,
+                });
+            }
+        }
+
+        for seg in &segments {
+            self.process_macro_segment(seg);
+        }
+    }
+
+    /// Recognise a bare positional `cfg(...)` macro argument (as opposed to the
+    /// `#[cfg(...)]` attribute form handled by `leading_cfg_condition`) and return
+    /// its Z3 condition. See `record_macro_cfg_segments` for how it is used: this
+    /// is a probe-validated *candidate* gate, not a precise determination.
+    fn positional_cfg_condition(&self, seg: &[TokenTree]) -> Option<Bool<'a>> {
+        match seg {
+            [TokenTree::Ident(id), TokenTree::Group(g)]
+                if id == "cfg" && g.delimiter() == Delimiter::Parenthesis =>
+            {
+                // Synthesise `#[cfg(...)]` from the bare `cfg(...)` tokens and
+                // reuse the attribute cfg parser.
+                let mut bracket_inner = TokenStream::new();
+                bracket_inner.extend([
+                    TokenTree::Ident(id.clone()),
+                    TokenTree::Group(g.clone()),
+                ]);
+                let bracket = Group::new(Delimiter::Bracket, bracket_inner);
+                let mut ts = TokenStream::new();
+                ts.extend([
+                    TokenTree::Punct(Punct::new('#', Spacing::Alone)),
+                    TokenTree::Group(bracket),
+                ]);
+                parse_attr_stream_cfg(&ts, self.ctx)
+            }
+            _ => None,
         }
     }
 
