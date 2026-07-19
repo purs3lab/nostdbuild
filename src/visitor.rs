@@ -1263,10 +1263,26 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
             && !self.does_cfg_attr_override_path(std::slice::from_ref(i))
         {
             let (own, parsed) = parser::parse_main_attributes_direct(i, self.ctx);
-            if let Some(own) = own
-                && parser::is_no_std(&parsed, true)
-            {
-                self.no_std_condition = Some(own);
+            if let Some(own) = own {
+                if parser::is_no_std(&parsed, true) {
+                    self.no_std_condition = Some(own.clone());
+                }
+                // A `#[cfg_attr(pred, some_attr(..))]` conditionally applies an
+                // *attribute*; it does not gate the item itself, so `parse_cfg_gate`
+                // correctly reports the item as unconditional. But when the applied
+                // attribute is a proc-macro (a derive or attribute macro), the code
+                // it generates has no source location of its own and rustc maps it
+                // back to a span INSIDE these tokens — e.g. thiserror's generated
+                // `impl std::error::Error` lands on the `Error` token of
+                // `derive(Error)`. That generated code only exists when `pred`
+                // holds, so gate the attribute's own token range by `pred`; without
+                // it the std usage there looks unguarded.
+                // See base58_monero (derive) and accesskit (pyo3 `pyclass` attr).
+                self.push_item(LocalItem {
+                    own_condition: Some(own),
+                    span: self.get_span(&i.span()),
+                    name: None,
+                });
             }
         }
 
