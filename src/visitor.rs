@@ -982,7 +982,12 @@ impl<'a> FileVisitor<'a> {
 
     /// Handle `include!("path")` by parsing the included file and visiting its
     /// contents inline (same condition/items/children stacks, no new ModNode).
-    fn visit_include_macro(&mut self, tokens: &proc_macro2::TokenStream) {
+    fn visit_include_macro(&mut self, tokens: &proc_macro2::TokenStream, own: Option<Bool<'a>>) {
+        // Gate for everything the include contributes: the condition in effect at
+        // the include site, ANDed with any `#[cfg(...)]` on the `include!` item
+        // itself (e.g. bigdecimal's `#[cfg(feature = "std")] include!("./with_std.rs");`).
+        let effective = Self::and_conditions(self.ctx, self.current_condition(), own);
+
         let lit = match syn::parse2::<syn::LitStr>(tokens.clone()) {
             Ok(l) => l,
             Err(_) => {
@@ -994,7 +999,7 @@ impl<'a> FileVisitor<'a> {
                     debug!("Deferring OUT_DIR include! with tail {}", tail);
                     self.pending_includes.push(PendingInclude {
                         tail,
-                        condition: self.current_condition(),
+                        condition: effective,
                     });
                 } else {
                     debug!("include! with non-literal path, skipping");
@@ -1014,46 +1019,49 @@ impl<'a> FileVisitor<'a> {
             );
             return;
         }
-        let content = match std::fs::read_to_string(&included_path) {
-            Ok(c) => c,
-            Err(e) => {
-                debug!(
-                    "Failed to read include! file {}: {}",
-                    included_path.display(),
-                    e
-                );
-                return;
-            }
-        };
-        let syntax = match syn::parse_file(&content) {
-            Ok(s) => s,
-            Err(e) => {
-                debug!(
-                    "Failed to parse include! file {}: {}",
-                    included_path.display(),
-                    e
-                );
-                return;
-            }
-        };
 
-        let included_dir = included_path
+        // Register the included file as a gated child node instead of visiting it
+        // inline into the current node. Visiting inline left its items reachable
+        // only in theory: `find_ancestors_for_span` scans a node's `local_items`
+        // only when that node's `source_file` matches the target span's file, so
+        // items pulled in from another file could never be found — gated or not.
+        // As a child node the file is matched directly and `effective` (including
+        // a `#[cfg]` on the include! itself) applies to everything in it.
+        // `resolve_child` walks it and folds in any file-inner `#![cfg(...)]`.
+        // This mirrors how OUT_DIR includes are already attached as gated nodes.
+        //
+        // NOTE: `include!` is textual, so the items really belong to the including
+        // module; modelling it as a child is an approximation already shared with
+        // the OUT_DIR path. One consequence: a `mod foo;` inside an included file
+        // resolves relative to the included file here, whereas rustc resolves it
+        // relative to the includer.
+        //
+        // `included_path` is kept exactly as built (e.g. `src/./with_std.rs`) —
+        // rustc reports the span file with the same `./`, and the ancestor lookup
+        // is a suffix match on the node's source_file.
+        let name = included_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("included")
+            .to_string();
+        let source_dir = included_path
             .parent()
             .unwrap_or(Path::new("."))
             .to_path_buf();
-
-        let old_file = std::mem::replace(&mut self.current_file, included_path);
-        let old_source_dir = std::mem::replace(&mut self.source_dir, included_dir.clone());
-        let old_search_dir = std::mem::replace(&mut self.current_search_dir, included_dir);
-        let old_is_mod_rs = self.is_mod_rs;
-        self.is_mod_rs = true;
-
-        syn::visit::visit_file(self, &syntax);
-
-        self.current_file = old_file;
-        self.source_dir = old_source_dir;
-        self.current_search_dir = old_search_dir;
-        self.is_mod_rs = old_is_mod_rs;
+        debug!(
+            "include! {} registered as gated child node (gated={})",
+            included_path.display(),
+            effective.is_some()
+        );
+        self.push_child(ModNode {
+            name,
+            source_file: included_path,
+            source_dir,
+            entry_condition: effective,
+            local_items: vec![],
+            children: vec![],
+            is_inline: false,
+        });
     }
 
     /// Consume the visitor and return the top-level (items, children).
@@ -1563,7 +1571,10 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         }
 
         if i.mac.path.is_ident("include") {
-            self.visit_include_macro(&i.mac.tokens);
+            // Capture any `#[cfg(...)]` on the include! item — previously the early
+            // return discarded it, so the included file's std usage looked ungated.
+            let own = self.parse_cfg_gate(&i.attrs);
+            self.visit_include_macro(&i.mac.tokens, own);
             return;
         } else if i.mac.path.is_ident("compile_error") {
             let attrs = i.attrs.iter().filter(|a| a.path().is_ident("cfg"));
