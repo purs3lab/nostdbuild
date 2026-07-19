@@ -839,6 +839,73 @@ impl<'a> FileVisitor<'a> {
         }
     }
 
+    /// Register `mod X;` declarations emitted from inside a macro invocation.
+    ///
+    /// A `macro_rules!` like agnostic_lite's `cfg_time! { mod after; ... }`
+    /// takes the `mod after;` as a passthrough `$item` argument and re-emits it
+    /// wrapped in `#[cfg(..)]`. syn hands us the invocation tokens opaquely, so
+    /// those modules are never registered and their files never walked — leaving
+    /// every std usage inside them ungated. We scan the tokens for the file-based
+    /// `mod IDENT ;` shape and push a placeholder child `ModNode` exactly like the
+    /// file-based arm of `visit_item_mod`; `resolve_child` then walks the file and
+    /// folds in any inner `#![cfg]`.
+    ///
+    /// This is the SYN counterpart to the plugin's `macro_module_imports`: the
+    /// plugin catches modules *generated* inside a macro body (their spans are
+    /// `from_expansion()`), but a passthrough `$item` mod is user-written, so its
+    /// span is NOT `from_expansion()` and the plugin skips it — only the literal
+    /// tokens seen here can catch that shape.
+    ///
+    /// The module is gated by the current inherited condition only — we do not
+    /// try to recover the `#[cfg]` the macro's *definition* wraps items in. That
+    /// is sound for a std *detector* (inherit-only can only under-gate, never
+    /// wrongly clear a real usage) and sufficient in practice: the std usage is
+    /// gated either by the parent `mod`'s feature (submodules) or by inner
+    /// `#[cfg]`s once the file is walked. Inline `mod X { .. }` is intentionally
+    /// not matched (`;` only) so a brace body never trips the scan.
+    /// NOTE: The above ignored case should be looked into if we find a crate that
+    /// actually exercises it.
+    fn scan_macro_mod_decls(&mut self, tokens: &TokenStream) {
+        let trees: Vec<TokenTree> = tokens.clone().into_iter().collect();
+        let mut i = 0usize;
+        while i < trees.len() {
+            if let TokenTree::Ident(kw) = &trees[i] {
+                if kw == "mod" {
+                    if let (Some(TokenTree::Ident(name)), Some(TokenTree::Punct(semi))) =
+                        (trees.get(i + 1), trees.get(i + 2))
+                    {
+                        if semi.as_char() == ';' {
+                            let name = name.to_string();
+                            let src =
+                                Self::default_mod_source(&self.current_search_dir, &name);
+                            self.push_child(ModNode {
+                                name,
+                                source_file: src.path.clone(),
+                                source_dir: src
+                                    .path
+                                    .parent()
+                                    .unwrap_or(Path::new("."))
+                                    .to_path_buf(),
+                                entry_condition: self.current_condition(),
+                                local_items: vec![],
+                                children: vec![],
+                                is_inline: false,
+                            });
+                            i += 3;
+                            continue;
+                        }
+                    }
+                }
+            }
+            // Recurse into nested delimited groups so `mod`s wrapped in inner
+            // groups are still found.
+            if let TokenTree::Group(g) = &trees[i] {
+                self.scan_macro_mod_decls(&g.stream());
+            }
+            i += 1;
+        }
+    }
+
     /// Build a `ReadableSpan` covering a slice of tokens (first token start to
     /// last token end).
     fn token_slice_span(&self, seg: &[TokenTree]) -> ReadableSpan {
@@ -1439,6 +1506,11 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 name: None,
             });
         }
+        // A custom macro (e.g. cfg_if-style `cfg_time!`) may take `mod X;` as a
+        // passthrough `$item` arg that syn can't see as a module; register any it
+        // declares so their files are walked. Complements the plugin's
+        // `macro_module_imports`, which only catches macro-*generated* mods.
+        self.scan_macro_mod_decls(&i.mac.tokens);
         syn::visit::visit_item_macro(self, i);
     }
 

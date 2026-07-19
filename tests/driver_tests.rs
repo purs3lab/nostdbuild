@@ -193,3 +193,60 @@ fn is_local_reexport_falls_back_to_syntactic_check_on_none() {
     let r = usage_record("crate::foo::Bar", "some_crate", None, Some("crate::foo"));
     assert!(is_local_reexport(&r));
 }
+
+// ---------------------------------------------------------------------------
+// resolve_macro_module_file / is_mod_rs_style
+//
+// A macro that declares `mod X;` (e.g. agnostic_lite's `cfg_time!`) reports its
+// callsite file to the plugin; the driver must resolve X's source file honouring
+// rustc's mod-rs rules. The bug fixed here: children of a non-mod-rs file
+// `src/wasm.rs` live in `src/wasm/`, not the callsite's own directory `src/`.
+// ---------------------------------------------------------------------------
+
+use nostd::driver::{is_mod_rs_style, resolve_macro_module_file};
+use std::path::{Path, PathBuf};
+
+fn fixture(rel: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/macro_mod_resolve")
+        .join(rel)
+}
+
+#[test]
+fn resolves_child_of_non_mod_rs_file_into_its_subdir() {
+    // THE BUG: `mod after;` declared in non-mod-rs `src/wasm.rs` must resolve to
+    // `src/wasm/after.rs` — the old code looked in `src/after.rs` and gave up.
+    let callsite = fixture("src/wasm.rs");
+    let got = resolve_macro_module_file(&callsite, false, "after");
+    assert_eq!(got, Some(fixture("src/wasm/after.rs")));
+}
+
+#[test]
+fn resolves_child_of_entrypoint_in_same_dir() {
+    // `mod wasm;` declared in the crate root resolves beside it: `src/wasm.rs`.
+    let callsite = fixture("src/lib.rs");
+    let got = resolve_macro_module_file(&callsite, true, "wasm");
+    assert_eq!(got, Some(fixture("src/wasm.rs")));
+}
+
+#[test]
+fn resolves_child_of_mod_rs_in_same_dir() {
+    // `mod timeout;` declared in `src/time/mod.rs` resolves to `src/time/timeout.rs`.
+    let callsite = fixture("src/time/mod.rs");
+    let got = resolve_macro_module_file(&callsite, true, "timeout");
+    assert_eq!(got, Some(fixture("src/time/timeout.rs")));
+}
+
+#[test]
+fn returns_none_when_no_source_file_exists() {
+    let callsite = fixture("src/wasm.rs");
+    assert_eq!(resolve_macro_module_file(&callsite, false, "does_not_exist"), None);
+}
+
+#[test]
+fn is_mod_rs_style_classifies_entrypoint_modrs_and_plain_files() {
+    let entry = fixture("src/lib.rs");
+    assert!(is_mod_rs_style(&fixture("src/lib.rs"), &entry), "entrypoint is mod-rs style");
+    assert!(is_mod_rs_style(&fixture("src/time/mod.rs"), &entry), "mod.rs is mod-rs style");
+    assert!(!is_mod_rs_style(&fixture("src/wasm.rs"), &entry), "plain foo.rs is NOT mod-rs style");
+}
