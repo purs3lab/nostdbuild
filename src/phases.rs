@@ -41,17 +41,33 @@ pub fn solve_with_negation<'a>(
 pub fn classify_spans(runs: &[CoveringRun]) -> Vec<SpanAnalysis> {
     let mut index: std::collections::HashMap<
         ReadableSpan,
-        (PathRecord, Vec<Vec<String>>, Vec<Vec<String>>),
+        (
+            PathRecord,
+            Vec<Vec<String>>,
+            Vec<Vec<String>>,
+            std::collections::HashSet<usize>,
+        ),
     > = std::collections::HashMap::new();
 
-    for run in runs {
+    for (run_idx, run) in runs.iter().enumerate() {
         for rec in &run.output.records {
-            let entry = index
-                .entry(rec.span.clone())
-                .or_insert_with(|| (rec.clone(), Vec::new(), Vec::new()));
+            let entry = index.entry(rec.span.clone()).or_insert_with(|| {
+                (
+                    rec.clone(),
+                    Vec::new(),
+                    Vec::new(),
+                    std::collections::HashSet::new(),
+                )
+            });
 
             match rec.span.usage_crate.as_deref() {
-                Some("std") => entry.1.push(run.features.clone()),
+                Some("std") => {
+                    entry.1.push(run.features.clone());
+                    // Track *which* runs saw std here. `std_cfgs` pushes once per
+                    // record, so a run with several std records at one span would
+                    // be counted multiple times — the set keeps run identity.
+                    entry.3.insert(run_idx);
+                }
                 Some(_) => entry.2.push(run.features.clone()),
                 None => {} // unresolved; ignore for classification
             }
@@ -60,10 +76,32 @@ pub fn classify_spans(runs: &[CoveringRun]) -> Vec<SpanAnalysis> {
 
     index
         .into_iter()
-        .map(|(span, (exemplar, std_cfgs, non_std_cfgs))| {
+        .map(|(span, (exemplar, std_cfgs, non_std_cfgs, std_run_idxs))| {
             let verdict = match (std_cfgs.is_empty(), non_std_cfgs.is_empty()) {
                 (true, _) => SpanVerdict::NeverStd,
-                (false, true) => SpanVerdict::AlwaysStd,
+                (false, true) => {
+                    // Seen as std, never as another crate. That alone does NOT make
+                    // it unconditionally std: the span may simply be ABSENT from
+                    // some runs (the code wasn't compiled, or a macro expanded to
+                    // something else). Every CoveringRun is a successful compile,
+                    // so if any run has no std record here, there exists a working
+                    // configuration in which this span is not std usage — i.e. the
+                    // std-ness is avoidable. Only call it AlwaysStd when *every*
+                    // run recorded std at this span.
+                    //
+                    // Marking the rest Conditional both keeps them out of
+                    // `all_hard` and lets them feed `final_condition` through the
+                    // normal conditional-probe path. `alternate_crates` is empty
+                    // here because nothing else resolved at this span — it was
+                    // absent, not resolved elsewhere.
+                    if std_run_idxs.len() == runs.len() {
+                        SpanVerdict::AlwaysStd
+                    } else {
+                        SpanVerdict::Conditional {
+                            alternate_crates: Vec::new(),
+                        }
+                    }
+                }
                 (false, false) => {
                     // Collect the distinct alternate crates seen
                     let mut alts: Vec<String> = runs
