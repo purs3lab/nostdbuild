@@ -1149,8 +1149,6 @@ fn macro_body_cfgs_to_ancestors<'a>(ctx: &'a Context, cfgs: &[String]) -> Option
         return None;
     }
 
-
-
     let bools: Vec<Bool<'a>> = cfgs
         .iter()
         .filter_map(|s| {

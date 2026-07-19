@@ -19,7 +19,7 @@ use walkdir::WalkDir;
 use crate::types::*;
 use crate::{
     CrateInfo, DEPENDENCIES, Dependency, Telemetry,
-    consts::{INDEX_CRATES_IO, STATIC_CRATES_IO, DOWNLOAD_PATH},
+    consts::{DOWNLOAD_PATH, INDEX_CRATES_IO, STATIC_CRATES_IO},
     parser,
 };
 
@@ -464,7 +464,10 @@ pub fn fetch_index(name: &str) -> Result<Vec<serde_json::Value>, anyhow::Error> 
     let url = format!("{}/{}", INDEX_CRATES_IO, index_path(name));
     debug!("Fetching index from {}", url);
     with_retries(MAX_RETRIES, || {
-        let response = HTTP_CLIENT.get(&url).send().context("Failed to fetch index")?;
+        let response = HTTP_CLIENT
+            .get(&url)
+            .send()
+            .context("Failed to fetch index")?;
         if !response.status().is_success() {
             return Err(anyhow::anyhow!("{} could not be found", name));
         }
@@ -657,8 +660,7 @@ pub fn resolve_version(
     if let Some(v) = pick(&candidates(false)) {
         return Ok(v);
     }
-    pick(&candidates(true))
-        .ok_or_else(|| anyhow::anyhow!("Known: No matching version found"))
+    pick(&candidates(true)).ok_or_else(|| anyhow::anyhow!("Known: No matching version found"))
 }
 
 /// Resolve a dependency's concrete version from the main crate's Cargo.lock.
@@ -721,12 +723,18 @@ pub fn resolve_dep_version(
 
 fn download_crate(url: &str, filename: &str) -> Result<(), anyhow::Error> {
     debug!("Downloading crate from {}", url);
-    let response = HTTP_CLIENT.get(url).send().context("Failed to fetch crate")?;
+    let response = HTTP_CLIENT
+        .get(url)
+        .send()
+        .context("Failed to fetch crate")?;
     if response.status().as_u16() == 404 {
         return Err(anyhow::anyhow!("404: crate not found at {}", url));
     }
     if !response.status().is_success() {
-        return Err(anyhow::anyhow!("Download failed: HTTP {}", response.status()));
+        return Err(anyhow::anyhow!(
+            "Download failed: HTTP {}",
+            response.status()
+        ));
     }
     let bytes = response.bytes().context("Failed to read response")?;
     fs::write(filename, bytes).context("Failed to write crate file")

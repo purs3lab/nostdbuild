@@ -1,6 +1,6 @@
 #![feature(rustc_private)]
 
-use std::{collections::HashSet};
+use std::collections::HashSet;
 
 use anyhow::Ok;
 use clap::Parser;

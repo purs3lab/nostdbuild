@@ -81,10 +81,9 @@ fn generated_include_is_gated_by_cfg() {
     println!("ancestors: {:?}", anc);
 
     // cleanup
-    let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!(
-        "nostd_out_dir_test_{}",
-        std::process::id()
-    )));
+    let _ = std::fs::remove_dir_all(
+        std::env::temp_dir().join(format!("nostd_out_dir_test_{}", std::process::id())),
+    );
 
     assert!(
         anc.is_some(),

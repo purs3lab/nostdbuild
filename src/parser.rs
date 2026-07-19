@@ -2702,7 +2702,10 @@ pub fn recursive_dep_requirement_check(
             ) {
                 Ok(v) => v,
                 Err(e) => {
-                    debug!("Skipping dep {}: failed to resolve version: {}", dep.name, e);
+                    debug!(
+                        "Skipping dep {}: failed to resolve version: {}",
+                        dep.name, e
+                    );
                     continue;
                 }
             };
@@ -2746,83 +2749,90 @@ pub fn recursive_dep_requirement_check(
             let mut optional_dep_feats = features_for_optional_deps(&dep_crate_info);
 
             let cached = dep_contexts.get(&dep_name_with_version).map(|c| {
-                (c.enable.clone(), c.disable.clone(), c.feature_to_items.clone())
+                (
+                    c.enable.clone(),
+                    c.disable.clone(),
+                    c.feature_to_items.clone(),
+                )
             });
 
-            let (enable, disable, feature_to_items): (Vec<String>, Vec<String>, HashMap<String, HashSet<String>>) =
-                if let Some((enable, disable, feature_to_items)) = cached {
-                    debug!(
-                        "Already visited dependency requirements for crate: {}",
-                        dep_name_with_version
-                    );
-                    (enable, disable, feature_to_items)
-                } else {
-                    let ctx = z3::Context::new(&z3::Config::new());
-                    let (all_hard, hard_constraints, _, _, dep_root, dep_records) =
-                        driver::analyze_crate_wrapper(
-                            &ctx,
-                            &dep_name_with_version,
-                            Some(&exchange.name_with_version),
-                            &mut telemetry,
-                        );
-                    let mut crate_attrs = parse_crate(
+            let (enable, disable, feature_to_items): (
+                Vec<String>,
+                Vec<String>,
+                HashMap<String, HashSet<String>>,
+            ) = if let Some((enable, disable, feature_to_items)) = cached {
+                debug!(
+                    "Already visited dependency requirements for crate: {}",
+                    dep_name_with_version
+                );
+                (enable, disable, feature_to_items)
+            } else {
+                let ctx = z3::Context::new(&z3::Config::new());
+                let (all_hard, hard_constraints, _, _, dep_root, dep_records) =
+                    driver::analyze_crate_wrapper(
+                        &ctx,
                         &dep_name_with_version,
-                        false,
                         Some(&exchange.name_with_version),
-                        &all_hard,
+                        &mut telemetry,
                     );
-                    let (enable, disable) = process_crate(
-                        exchange,
-                        &ctx,
-                        &mut crate_attrs,
-                        Some(&dep_name_with_version),
-                        Some(&dep_crate_info),
-                        false,
-                        &mut optional_dep_feats,
-                        hard_constraints.clone(),
-                    )
-                    .unwrap();
+                let mut crate_attrs = parse_crate(
+                    &dep_name_with_version,
+                    false,
+                    Some(&exchange.name_with_version),
+                    &all_hard,
+                );
+                let (enable, disable) = process_crate(
+                    exchange,
+                    &ctx,
+                    &mut crate_attrs,
+                    Some(&dep_name_with_version),
+                    Some(&dep_crate_info),
+                    false,
+                    &mut optional_dep_feats,
+                    hard_constraints.clone(),
+                )
+                .unwrap();
 
-                    // While `ctx` (and the Z3 Bools tied to it) is still alive, compute and
-                    // cache this dependency's own usage context, so it's available later if
-                    // it's revisited as the *parent* of its own dependencies.
-                    let named = crate::visitor::collect_named_items_with_conditions(&dep_root, &ctx);
-                    let dep_valid_cross_crate_items = driver::compute_valid_cross_crate_items(
-                        &dep_root,
-                        &dep_records,
-                        hard_constraints.as_ref(),
-                        &ctx,
-                    );
-                    let feature_to_items: HashMap<String, HashSet<String>> = disable
-                        .iter()
-                        .map(|feat| {
-                            let f_var = z3::ast::Bool::new_const(&ctx, feat.as_str());
-                            let gated: HashSet<String> = named
-                                .iter()
-                                .filter(|(_, cond)| {
-                                    let s = z3::Solver::new(&ctx);
-                                    s.assert(cond);
-                                    s.assert(&f_var.not());
-                                    s.check() == z3::SatResult::Unsat
-                                })
-                                .map(|(name, _)| name.clone())
-                                .collect();
-                            (feat.clone(), gated)
-                        })
-                        .collect();
+                // While `ctx` (and the Z3 Bools tied to it) is still alive, compute and
+                // cache this dependency's own usage context, so it's available later if
+                // it's revisited as the *parent* of its own dependencies.
+                let named = crate::visitor::collect_named_items_with_conditions(&dep_root, &ctx);
+                let dep_valid_cross_crate_items = driver::compute_valid_cross_crate_items(
+                    &dep_root,
+                    &dep_records,
+                    hard_constraints.as_ref(),
+                    &ctx,
+                );
+                let feature_to_items: HashMap<String, HashSet<String>> = disable
+                    .iter()
+                    .map(|feat| {
+                        let f_var = z3::ast::Bool::new_const(&ctx, feat.as_str());
+                        let gated: HashSet<String> = named
+                            .iter()
+                            .filter(|(_, cond)| {
+                                let s = z3::Solver::new(&ctx);
+                                s.assert(cond);
+                                s.assert(&f_var.not());
+                                s.check() == z3::SatResult::Unsat
+                            })
+                            .map(|(name, _)| name.clone())
+                            .collect();
+                        (feat.clone(), gated)
+                    })
+                    .collect();
 
-                    dep_contexts.insert(
-                        dep_name_with_version.clone(),
-                        DepUsageContext {
-                            enable: enable.clone(),
-                            disable: disable.clone(),
-                            valid_cross_crate_items: dep_valid_cross_crate_items,
-                            feature_to_items: feature_to_items.clone(),
-                        },
-                    );
+                dep_contexts.insert(
+                    dep_name_with_version.clone(),
+                    DepUsageContext {
+                        enable: enable.clone(),
+                        disable: disable.clone(),
+                        valid_cross_crate_items: dep_valid_cross_crate_items,
+                        feature_to_items: feature_to_items.clone(),
+                    },
+                );
 
-                    (enable, disable, feature_to_items)
-                };
+                (enable, disable, feature_to_items)
+            };
 
             debug!(
                 "Dependency: {} requires features: {:?} to be enabled and features: {:?} to be disabled to support no_std",
@@ -2838,8 +2848,7 @@ pub fn recursive_dep_requirement_check(
             // `item_depth < depth` makes the deepest *checked* dep sit at `depth + 1` —
             // exactly the depth the download phase fetches to. `<=` would check one level
             // deeper than anything was downloaded and panic on the missing directory.
-            if item_depth < depth && seen.insert((dep.name.clone(), dep_resolved_version.clone()))
-            {
+            if item_depth < depth && seen.insert((dep.name.clone(), dep_resolved_version.clone())) {
                 debug!(
                     "Adding dependency: {} to worklist for requirement check with version: {} at depth {}",
                     dep.name,
@@ -2910,9 +2919,8 @@ fn audit_dependency_requirement(
         .deps_and_features
         .iter()
         .find(|(dep, _)| dep.name == dep_name);
-    let dep_default_feats: Vec<String> = dep_edge
-        .map(|(_, feats)| feats.clone())
-        .unwrap_or_default();
+    let dep_default_feats: Vec<String> =
+        dep_edge.map(|(_, feats)| feats.clone()).unwrap_or_default();
 
     // Features reachable from the parent's actual active feature set, walked
     // transitively through the parent's own [features] table.
@@ -2948,9 +2956,9 @@ fn audit_dependency_requirement(
     for feat in disable {
         let protected = feature_to_items.get(feat).is_some_and(|items| {
             items.contains("*")
-                || items
-                    .iter()
-                    .any(|item| parent_valid_cross_crate_items.contains(&(dep_norm.clone(), item.clone())))
+                || items.iter().any(|item| {
+                    parent_valid_cross_crate_items.contains(&(dep_norm.clone(), item.clone()))
+                })
         });
         if protected {
             continue;

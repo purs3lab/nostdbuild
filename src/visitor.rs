@@ -710,6 +710,135 @@ impl<'a> FileVisitor<'a> {
         result
     }
 
+    /// Parse a `cfg_if::cfg_if! { if #[cfg(P1)] {..} else if #[cfg(P2)] {..} else {..} }`
+    /// invocation and gate each arm body.
+    ///
+    /// `record_macro_cfg_segments` only recognises a `cfg` as a *leading*
+    /// attribute on a comma-separated segment; in `cfg_if!` the `#[cfg(..)]` sits
+    /// after `if` and gates a following brace group, so no segment gets a gate and
+    /// the whole body looks unconditional. Here we walk the arm grammar and push a
+    /// `LocalItem` spanning each arm's `{ .. }` block. `cfg_if` is first-match-wins,
+    /// so arm *i* is gated by `Pi ∧ ¬P1 ∧ … ∧ ¬P(i-1)` and the trailing `else` by
+    /// the conjunction of all negated predicates. Nested `cfg_if!` inside an arm is
+    /// handled by recursing into each block.
+    fn record_cfg_if(&mut self, tokens: &TokenStream) {
+        let trees: Vec<TokenTree> = tokens.clone().into_iter().collect();
+        let mut idx = 0usize;
+        // AND of the negations of all predicates seen so far (drives later arms
+        // and the final `else`).
+        let mut prior_negations: Option<Bool<'a>> = None;
+        while idx < trees.len() {
+            match &trees[idx] {
+                // `if` / `else if` <#[cfg(P)]> { block }
+                TokenTree::Ident(kw) if kw == "if" => {
+                    // Expect `#` `[ .. ]` forming the cfg attribute, then a brace group.
+                    let pred = match (trees.get(idx + 1), trees.get(idx + 2)) {
+                        (Some(TokenTree::Punct(hash)), Some(TokenTree::Group(attr)))
+                            if hash.as_char() == '#'
+                                && attr.delimiter() == Delimiter::Bracket =>
+                        {
+                            let mut ts = TokenStream::new();
+                            ts.extend([
+                                TokenTree::Punct(hash.clone()),
+                                TokenTree::Group(attr.clone()),
+                            ]);
+                            parse_attr_stream_cfg(&ts, self.ctx)
+                        }
+                        _ => None,
+                    };
+                    // The arm body is the next brace group after the attribute.
+                    let body_pos = idx + 3;
+                    if let Some(TokenTree::Group(body)) = trees.get(body_pos) {
+                        if body.delimiter() == Delimiter::Brace {
+                            // Gate the arm by its OWN predicate only. The arm is a subset of `pred`
+                            // (active ⇒ pred), so `pred` is the tightest gate the probe can negate to
+                            // remove it. Do NOT fold in the accumulated `¬earlier-arm` negations: an
+                            // earlier arm like `all(target_arch="wasm32", feature="web")` parses to just
+                            // `web` (target predicates are dropped, features only), so `¬earlier` becomes
+                            // the lossy `¬web` instead of the true `¬(wasm32 ∧ web)`. Folding that in makes
+                            // the gate `std ∧ ¬web`, whose negation `¬std ∨ web` lets the probe satisfy the
+                            // clear by toggling `web` while leaving std ON — which doesn't deactivate this
+                            // arm on the host, so the std usage never vanishes on rebuild.
+                            self.record_cfg_if_arm(body, pred.clone());
+                            // Accumulate ¬P for subsequent arms / else.
+                            if let Some(p) = pred {
+                                let neg = p.not();
+                                prior_negations = Self::and_conditions(
+                                    self.ctx,
+                                    prior_negations,
+                                    Some(neg),
+                                );
+                            }
+                            idx = body_pos + 1;
+                            continue;
+                        }
+                    }
+                    idx += 1;
+                }
+                // trailing `else { block }`
+                TokenTree::Ident(kw) if kw == "else" => {
+                    if let Some(TokenTree::Group(body)) = trees.get(idx + 1) {
+                        if body.delimiter() == Delimiter::Brace {
+                            let arm_cond = prior_negations.clone();
+                            self.record_cfg_if_arm(body, arm_cond);
+                            idx += 2;
+                            continue;
+                        }
+                    }
+                    idx += 1;
+                }
+                _ => idx += 1,
+            }
+        }
+    }
+
+    /// Record one `cfg_if!` arm: push a `LocalItem` spanning its `{ .. }` body with
+    /// the arm's effective condition, then recurse for nested cfg-macros inside.
+    fn record_cfg_if_arm(&mut self, body: &proc_macro2::Group, cond: Option<Bool<'a>>) {
+        let start = body.span_open().start();
+        let end = body.span_close().end();
+        let span = ReadableSpan {
+            file: self.current_file.display().to_string(),
+            start_line: start.line,
+            start_col: start.column,
+            end_line: end.line,
+            end_col: end.column,
+            usage_crate: None,
+        };
+        self.push_item(LocalItem {
+            own_condition: cond,
+            span,
+            name: None,
+        });
+        // Nested `cfg_if!` inside this arm, plus any macro-argument cfg segments.
+        self.scan_nested_cfg_if(&body.stream());
+    }
+
+    /// Walk a token stream looking for nested `cfg_if! { .. }` invocations and
+    /// gate their arms too. Also falls back to `record_macro_cfg_segments` so
+    /// macro-argument `#[cfg]`s inside an arm are still captured.
+    fn scan_nested_cfg_if(&mut self, tokens: &TokenStream) {
+        let trees: Vec<TokenTree> = tokens.clone().into_iter().collect();
+        let mut i = 0usize;
+        while i < trees.len() {
+            // `cfg_if` `!` `{ .. }`  — the last path segment before `!` is enough.
+            if let TokenTree::Ident(id) = &trees[i] {
+                if id == "cfg_if" {
+                    if let (Some(TokenTree::Punct(bang)), Some(TokenTree::Group(g))) =
+                        (trees.get(i + 1), trees.get(i + 2))
+                    {
+                        if bang.as_char() == '!' {
+                            self.record_cfg_if(&g.stream());
+                            i += 3;
+                            continue;
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+
     /// Build a `ReadableSpan` covering a slice of tokens (first token start to
     /// last token end).
     fn token_slice_span(&self, seg: &[TokenTree]) -> ReadableSpan {
@@ -1249,6 +1378,13 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
     }
 
     fn visit_macro(&mut self, i: &'_ syn::Macro) {
+        // `cfg_if! { if #[cfg(..)] {..} else {..} }` gates each arm body; handle it
+        // specially since its `#[cfg]` isn't a leading segment attribute.
+        if is_cfg_if_path(&i.path) {
+            self.record_cfg_if(&i.tokens);
+            syn::visit::visit_macro(self, i);
+            return;
+        }
         // syn treats the macro argument tokens as opaque; extract any
         // `#[cfg(...)]`-gated regions from them so gated std usage passed as a
         // macro argument isn't misclassified as unconditional.
@@ -1259,6 +1395,12 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
     fn visit_item_macro(&mut self, i: &'_ syn::ItemMacro) {
         if self.should_skip(&i.attrs) {
             debug!("Skipping macro due to test attribute");
+            return;
+        }
+
+        if is_cfg_if_path(&i.mac.path) {
+            self.record_cfg_if(&i.mac.tokens);
+            syn::visit::visit_item_macro(self, i);
             return;
         }
 
@@ -1586,6 +1728,14 @@ fn normalize_subtree_source_files(node: &mut ModNode) {
     for child in &mut node.children {
         normalize_subtree_source_files(child);
     }
+}
+
+/// Whether a macro path refers to `cfg_if` — matches both the bare `cfg_if!` and
+/// the qualified `cfg_if::cfg_if!` forms by checking the final path segment.
+fn is_cfg_if_path(path: &syn::Path) -> bool {
+    path.segments
+        .last()
+        .map_or(false, |s| s.ident == "cfg_if")
 }
 
 /// Parse a single outer attribute from a `# [ ... ]` token stream and, if it is

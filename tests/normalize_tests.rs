@@ -11,7 +11,10 @@ fn rewrites_out_dir_paths_and_drops_hash() {
     let a = "/x/target/plugin-nightly/debug/build/akd_core-3f7210c5d5766928/out/protos/types.rs";
     let b = "/x/target/plugin-nightly/debug/build/akd_core-6bfed3d45043f090/out/protos/types.rs";
     // Different per-feature-set hashes must normalise to the same identity.
-    assert_eq!(normalize_generated_path(a), "$OUT_DIR/akd_core/protos/types.rs");
+    assert_eq!(
+        normalize_generated_path(a),
+        "$OUT_DIR/akd_core/protos/types.rs"
+    );
     assert_eq!(normalize_generated_path(a), normalize_generated_path(b));
 }
 
@@ -19,7 +22,10 @@ fn rewrites_out_dir_paths_and_drops_hash() {
 fn keeps_pkg_so_deps_do_not_collide() {
     let main = "/x/build/akd_core-3f7210c5d5766928/out/protos/types.rs";
     let dep = "/x/build/other_dep-3f7210c5d5766928/out/protos/types.rs";
-    assert_ne!(normalize_generated_path(main), normalize_generated_path(dep));
+    assert_ne!(
+        normalize_generated_path(main),
+        normalize_generated_path(dep)
+    );
 }
 
 #[test]
