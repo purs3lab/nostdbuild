@@ -1285,6 +1285,22 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         }
     }
 
+    // A `#[cfg(...)]`-gated field in a struct *literal*, e.g.
+    // `Self { section, #[cfg(feature = "std")] backtrace: Backtrace::capture() }`.
+    // `visit_field` above only covers struct *definition* fields (`syn::Field`);
+    // the expression-position field is a `syn::FieldValue` with its own attrs, so
+    // without this the gate is never recorded and the std expression in its value
+    // looks unconditional. See array_section, bevy_ecs.
+    fn visit_field_value(&mut self, i: &'_ syn::FieldValue) {
+        let name = match &i.member {
+            syn::Member::Named(id) => Some(id.to_string()),
+            syn::Member::Unnamed(_) => None,
+        };
+        if self.record_item("field value", name, &i.attrs, i.span()) {
+            syn::visit::visit_field_value(self, i);
+        }
+    }
+
     // Items inside an `impl` block. A `#[cfg(feature = "std")]` gate on e.g.
     // `type Error = std::io::Error;` must be recorded, or the std path in its
     // value/type looks ungated. `record_item` is shared with all other positions.
