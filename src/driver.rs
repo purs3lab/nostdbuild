@@ -65,6 +65,53 @@ pub fn normalize_generated_path(file: &str) -> String {
     }
 }
 
+/// Whether `callsite` follows mod-rs conventions for locating its child modules:
+/// either it is a `mod.rs`, or it is the crate entrypoint (`lib.rs`/`main.rs` or
+/// a custom `[lib] path`). Such files' children live in the *same* directory;
+/// every other file `foo.rs` keeps its children in a sibling directory `foo/`.
+pub fn is_mod_rs_style(callsite: &Path, entry_path: &Path) -> bool {
+    if callsite.file_name().is_some_and(|n| n == "mod.rs") {
+        return true;
+    }
+    // The crate entrypoint is mod-rs style regardless of its file name.
+    match (callsite.canonicalize(), entry_path.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => callsite == entry_path,
+    }
+}
+
+/// Resolve the source file of a module `modname` that a macro declared inside
+/// `callsite` (the source file where the macro was invoked).
+///
+/// Mirrors rustc's module-file rules — the piece the previous inline resolution
+/// got wrong: a macro like `cfg_time! { mod after; }` invoked in the non-mod-rs
+/// file `src/wasm.rs` declares a module whose file is `src/wasm/after.rs`, *not*
+/// `src/after.rs`. Children of a `mod.rs`/entrypoint live beside it; children of
+/// a plain `foo.rs` live in the sibling `foo/` directory. Returns the existing
+/// `<dir>/<modname>.rs` or `<dir>/<modname>/mod.rs`, or `None` if neither exists.
+pub fn resolve_macro_module_file(
+    callsite: &Path,
+    is_mod_rs_style: bool,
+    modname: &str,
+) -> Option<PathBuf> {
+    let parent = callsite.parent().unwrap_or(Path::new("."));
+    let search_dir = if is_mod_rs_style {
+        parent.to_path_buf()
+    } else {
+        let stem = callsite.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        parent.join(stem)
+    };
+    let rs = search_dir.join(format!("{modname}.rs"));
+    if rs.exists() {
+        return Some(rs);
+    }
+    let mod_rs = search_dir.join(modname).join("mod.rs");
+    if mod_rs.exists() {
+        return Some(mod_rs);
+    }
+    None
+}
+
 pub fn extract_hard_std_candidates(
     out: &FeatureRunOutput,
     context_filter: Option<PathContext>,
@@ -777,15 +824,25 @@ pub fn find_feature_combs_for_all_code<'a>(
             let mut next_pending: Vec<(Option<Bool>, String, String)> = vec![];
 
             for (eq, modname, filename) in &pending_modules {
-                let full_path = crate_root.join(filename);
-                let file_dir = full_path.parent().unwrap_or(Path::new("."));
-                let rs = file_dir.join(format!("{}.rs", modname));
-                let mod_rs = file_dir.join(modname).join("mod.rs");
-                let mod_path = if rs.exists() { rs } else { mod_rs };
-                if !mod_path.exists() {
-                    debug!("No source file for module {}", modname);
-                    continue;
-                }
+                let callsite = crate_root.join(filename);
+                // Resolve the module's file honouring rustc's mod-rs vs non-mod-rs
+                // rules: a macro-declared `mod after;` in the non-mod-rs file
+                // `src/wasm.rs` lives at `src/wasm/after.rs`, not `src/after.rs`.
+                let mod_path = match resolve_macro_module_file(
+                    &callsite,
+                    is_mod_rs_style(&callsite, entry_path),
+                    modname,
+                ) {
+                    Some(p) => p,
+                    None => {
+                        debug!(
+                            "No source file for module {} (callsite {})",
+                            modname,
+                            callsite.display()
+                        );
+                        continue;
+                    }
+                };
 
                 let canonical = mod_path.canonicalize().unwrap();
                 let new_node = collector.visit_file(&mod_path, modname, eq.clone());
