@@ -394,7 +394,15 @@ pub fn run_rustc_plugin_pass(
     // TODO: Update to use main_name when running with dependencies.
     let feats = enable.join(",");
 
-    let args = [
+    // Restrict the pass to the library target when one exists. `find_entrypoints`
+    // analyses the lib and ignores bins (`is_lib || (is_bin && !has_lib)`), so
+    // without `--lib` cargo also builds the bin targets and the plugin emits HIR
+    // records for files the ModNode tree does not cover. Gates only exist inside
+    // that tree, so such a span finds no ancestor, is classified AlwaysStd, and is
+    // reported as unguarded std usage — e.g. the `println!` in a stock
+    // `fn main() { println!("Hello, world!"); }` sinks an otherwise no_std crate.
+    // Bin-only crates keep building their bin, matching the entrypoint rule.
+    let mut args = vec![
         "hir",
         "--",
         "--manifest-path",
@@ -403,6 +411,9 @@ pub fn run_rustc_plugin_pass(
         "--features",
         &feats,
     ];
+    if visitor::package_has_lib(manifest) {
+        args.push("--lib");
+    }
 
     debug!(
         "Running rustc plugin pass for {} with features [{}], output -> {:?}",

@@ -42,7 +42,7 @@ pub fn parse_item_extern_crates(crate_name: &str, main_name: Option<&str>) -> It
         itemexterncrates: Vec::new(),
     };
 
-    if let Err(err) = visit(&mut itemexterncrates, crate_name, true, false, main_name) {
+    if let Err(err) = visit(&mut itemexterncrates, crate_name, true, false, main_name, None) {
         debug!(
             "Failed to parse crate {} with error:{}. Will continue...",
             crate_name, err
@@ -79,6 +79,7 @@ pub fn parse_item_extern_crates_for_files(
             true,
             true,
             main_name,
+            None,
         ) {
             debug!(
                 "Failed to parse file {:?} with error:{}. Will continue...",
@@ -127,18 +128,24 @@ pub fn get_item_extern_std(itemexterncrates: &ItemExternCrates) -> Vec<Attribute
 /// # Returns
 /// The attributes of the main crate
 /// TODO: This should not need to take hir_spans anymore
+///
+/// `files`, when supplied, restricts parsing to that exact list — callers with a
+/// resolved `ModNode` tree should pass `visitor::collect_source_files(&root)` so
+/// only entrypoint-reachable files are parsed. `None` falls back to the naive
+/// directory sweep in `get_all_rs_files`.
 pub fn parse_crate(
     crate_name: &str,
     recurse: bool,
     main_name: Option<&str>,
     hir_spans: &[ReadableSpan],
+    files: Option<&[PathBuf]>,
 ) -> Attributes {
     let mut attributes = Attributes {
         hir_spans: hir_spans.to_vec(),
         ..Default::default()
     };
 
-    if let Err(err) = visit(&mut attributes, crate_name, recurse, false, main_name) {
+    if let Err(err) = visit(&mut attributes, crate_name, recurse, false, main_name, files) {
         debug!(
             "Failed to parse crate {} with error:{}. Will continue...",
             crate_name, err
@@ -169,8 +176,20 @@ pub fn check_for_no_std(
     // We need to re-parse this instead of using already existing attributes
     // since files in non root directory might have `no_std` attribute
     // and we don't want to include those.
-    // TODO: Remove the file parser here to use the files returned by analyze_crate
-    let base_attrs = parse_crate(name, false, main_name, &[]);
+    //
+    // This runs before any analysis, so there is no ModNode tree to derive files
+    // from. `#![no_std]` / `#![cfg_attr(…, no_std)]` are crate-root inner
+    // attributes though, so the entrypoints are the only files that matter — and
+    // asking cargo for them also applies the `is_lib || (is_bin && !has_lib)`
+    // rule, keeping a bin target's missing `#![no_std]` from being read as the
+    // library's.
+    let manifest = determine_manifest_file(name, main_name);
+    let mut entrypoints: Vec<PathBuf> = Vec::new();
+    crate::visitor::find_entrypoints(&manifest, &mut entrypoints);
+    entrypoints.retain(|p| p.exists());
+    let entry_files = (!entrypoints.is_empty()).then_some(entrypoints.as_slice());
+
+    let base_attrs = parse_crate(name, false, main_name, &[], entry_files);
 
     if let Some(telemetry) = telemetry {
         telemetry.wrong_unconditional_setup = base_attrs.wrong_unconditional_setup;
@@ -214,7 +233,7 @@ pub fn parse_deps_crate(
         let ctx = z3::Context::new(&z3::Config::new());
         let (all_hard, _, _, _, _, _) =
             driver::analyze_crate_wrapper(&ctx, &dep.clone(), Some(main_name), telemetry);
-        attributes.push(parse_crate(&dep.clone(), true, Some(main_name), &all_hard));
+        attributes.push(parse_crate(&dep.clone(), true, Some(main_name), &all_hard, None));
     }
     drop(deps_lock);
     attributes
@@ -2780,6 +2799,7 @@ pub fn recursive_dep_requirement_check(
                     false,
                     Some(&exchange.name_with_version),
                     &all_hard,
+                    None,
                 );
                 let (enable, disable) = process_crate(
                     exchange,
@@ -3110,6 +3130,11 @@ fn parse_n_level_externs_entry<'a>(
     }
 }
 
+/// TODO: this and `parse_top_level_externs` still reach `get_all_rs_files`
+/// through `parse_item_extern_crates`, so they parse bin sources, `examples/`,
+/// `benches/` and unreachable files. They walk deps by name with no `ModNode` in
+/// scope, which is why they were left on the old sweep — see the comment on
+/// `get_all_rs_files` for what converting them would take.
 fn parse_n_level_externs(
     worklist: &mut Vec<String>,
     telemetry: &mut Telemetry,
@@ -3211,12 +3236,21 @@ fn get_files_in_attributes<'a>(
     files_and_equations
 }
 
+/// Drive `visiter_type` over a crate's source files.
+///
+/// When `files` is `Some`, that list is used verbatim — this is the preferred
+/// path, since callers derive it from the resolved `ModNode` tree (see
+/// [`visitor::collect_source_files`]) and so only touch files actually
+/// reachable from the crate's entrypoint. When it is `None` the list falls back
+/// to `get_all_rs_files`, whose directory sweep is naive; see that function's
+/// comment for what it gets wrong.
 fn visit<T>(
     visiter_type: &mut T,
     crate_name: &str,
     recurse: bool,
     direct_file: bool,
     main_name: Option<&str>,
+    files: Option<&[PathBuf]>,
 ) -> anyhow::Result<()>
 where
     T: for<'a> Visit<'a> + GetItemExternCrate,
@@ -3227,7 +3261,10 @@ where
         PathBuf::from(crate_name)
     };
 
-    let files = get_all_rs_files(&dir, recurse, main_name);
+    let files = match files {
+        Some(f) => f.to_vec(),
+        None => get_all_rs_files(&dir, recurse, main_name),
+    };
 
     for filename in files {
         debug!("Parsing file: {:?}", filename);
@@ -3246,7 +3283,10 @@ where
             }
         };
         let span_file_path = if !direct_file {
-            let span_file_path = filename.strip_prefix(&dir).unwrap();
+            // Tree-derived file lists can include paths outside the crate
+            // directory — `include!(concat!(env!("OUT_DIR"), …))` files live in
+            // the build directory. Keep those absolute rather than panicking.
+            let span_file_path = filename.strip_prefix(&dir).unwrap_or(&filename);
             visiter_type.set_current_file(span_file_path.display().to_string());
             span_file_path.to_path_buf()
         } else {
@@ -3407,6 +3447,27 @@ fn parse_meta_for_cfg_attr<'a>(
     }
 }
 
+/// Sweep a crate directory for `.rs` files.
+///
+/// TODO: retire this in favour of `visitor::collect_source_files` on a resolved
+/// `ModNode` tree. This sweep is naive and wrong in ways the tree is not:
+///
+///   * it re-derives targets by hand instead of asking cargo, so it picks up
+///     bin sources (explicit `[[bin]]` paths, `src/bin/`, and any `src/main.rs`
+///     caught by the bare `read_dir` below) even when the crate has a lib —
+///     `find_entrypoints` analyses only the lib in that case;
+///   * `recurse: true` ignores the manifest entirely and `WalkDir`s everything,
+///     picking up `examples/`, `benches/`, `build.rs` and any test directory not
+///     literally under `/tests/`;
+///   * it has no notion of reachability, so dead files that no `mod`
+///     declaration references are parsed anyway.
+///
+/// The blocker for the remaining callers (`parse_top_level_externs` /
+/// `parse_n_level_externs`) is that they have no `ModNode` in scope, and the
+/// tree is only complete after a covering run — macro-expansion-generated
+/// modules arrive via the plugin's `macro_modules` and OUT_DIR `include!` files
+/// via `resolve_pending_includes`. Converting them means either threading a root
+/// through or accepting the syn-reachable subset.
 fn get_all_rs_files(path: &Path, recurse: bool, main_name: Option<&str>) -> Vec<PathBuf> {
     if path.is_file() && path.extension().unwrap_or_default() == "rs" {
         return vec![path.to_path_buf()];

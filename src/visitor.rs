@@ -2003,23 +2003,66 @@ fn strip_workspace_members(manifest: &str) -> Option<String> {
     stripped.then(|| toml::to_string(&doc).ok()).flatten()
 }
 
+/// A `[lib]` target can be reported under any of the library-like kinds
+/// depending on the crate's declared `crate-type` (e.g. `rlib`, `cdylib`,
+/// `proc-macro`). Match all of them, not just the plain `lib` kind.
+fn is_lib_kind(k: &TargetKind) -> bool {
+    matches!(
+        k,
+        TargetKind::Lib
+            | TargetKind::RLib
+            | TargetKind::DyLib
+            | TargetKind::CDyLib
+            | TargetKind::StaticLib
+            | TargetKind::ProcMacro
+    )
+}
+
+/// Does this package have a library target?
+///
+/// Mirrors the `is_lib || (is_bin && !has_lib)` entrypoint rule in
+/// [`find_entrypoints`]: when a lib exists it is the only target we analyse, so
+/// the HIR pass must be restricted to it too.
+pub fn package_has_lib(manifest: &str) -> bool {
+    run_cargo_metadata(manifest)
+        .workspace_packages()
+        .iter()
+        .any(|p| p.targets.iter().any(|t| t.kind.iter().any(is_lib_kind)))
+}
+
+/// Collect every source file covered by a resolved module tree.
+///
+/// This is the reachability-driven answer to "which files belong to this
+/// crate", as opposed to sweeping the source directory. Inline modules share
+/// their parent's file, so they contribute nothing new.
+///
+/// NOTE: the tree is only complete *after* a covering run. Modules generated
+/// inside macro expansions arrive via the plugin's `macro_modules`, and
+/// `include!(concat!(env!("OUT_DIR"), …))` files are spliced in by
+/// `resolve_pending_includes` once a run reveals OUT_DIR. Calling this before
+/// analysis yields only the syn-reachable subset.
+pub fn collect_source_files(root: &ModNode<'_>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    collect_source_files_recursive(root, &mut out, &mut seen);
+    out
+}
+
+fn collect_source_files_recursive(
+    node: &ModNode<'_>,
+    out: &mut Vec<PathBuf>,
+    seen: &mut HashSet<PathBuf>,
+) {
+    if !node.is_inline && seen.insert(node.source_file.clone()) {
+        out.push(node.source_file.clone());
+    }
+    for child in &node.children {
+        collect_source_files_recursive(child, out, seen);
+    }
+}
+
 pub fn find_entrypoints(manifest: &str, known_modules: &mut Vec<PathBuf>) -> PathBuf {
     let metadata = run_cargo_metadata(manifest);
-
-    // A `[lib]` target can be reported under any of the library-like kinds
-    // depending on the crate's declared `crate-type` (e.g. `rlib`, `cdylib`,
-    // `proc-macro`). Match all of them, not just the plain `lib` kind.
-    let is_lib_kind = |k: &TargetKind| {
-        matches!(
-            k,
-            TargetKind::Lib
-                | TargetKind::RLib
-                | TargetKind::DyLib
-                | TargetKind::CDyLib
-                | TargetKind::StaticLib
-                | TargetKind::ProcMacro
-        )
-    };
 
     for package in metadata.workspace_packages() {
         let targets = &package.targets;

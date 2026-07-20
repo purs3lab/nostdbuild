@@ -169,3 +169,17 @@ fn test_uom() {
 fn test_watchface() {
     run_main_test("watchface", "0.4.0", "x86_64-unknown-none");
 }
+
+/// Regression: a crate whose only std usage lives in an auto-discovered bin
+/// target. `chainable-if` is a no_std-clean library shipping the stock
+/// `fn main() { println!("Hello, world!"); }` alongside it.
+///
+/// The HIR pass used to build the package's default targets, so the plugin
+/// emitted records for `src/main.rs` — a file `find_entrypoints` deliberately
+/// excludes (`is_lib || (is_bin && !has_lib)`). With no ModNode covering it,
+/// the `println!` span found no gate, classified as AlwaysStd, and sank the
+/// crate. Passing `--lib` keeps the two halves in agreement.
+#[cargo_test]
+fn test_chainable_if() {
+    run_main_test("chainable-if", "0.1.1", "x86_64-unknown-none");
+}

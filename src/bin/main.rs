@@ -285,8 +285,18 @@ fn main() -> anyhow::Result<()> {
         return Err(anyhow::anyhow!(reason));
     }
 
-    let mut main_attributes =
-        parser::parse_crate(&exchange.name_with_version, true, None, &all_hard);
+    // Derive the file list from the resolved module tree rather than sweeping the
+    // source directory: analysis has already run, so the tree is complete
+    // (macro-generated modules and OUT_DIR includes are spliced in), and it holds
+    // only files reachable from the entrypoint.
+    let main_files = nostd::visitor::collect_source_files(&main_root);
+    let mut main_attributes = parser::parse_crate(
+        &exchange.name_with_version,
+        true,
+        None,
+        &all_hard,
+        Some(&main_files),
+    );
 
     let mut dep_and_feats = parser::features_for_optional_deps(&exchange.crate_info);
 
