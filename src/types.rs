@@ -61,6 +61,23 @@ pub struct CoveringRun {
     pub output: FeatureRunOutput,
 }
 
+/// The only part of a `PathRecord` that cross-crate item analysis needs: which
+/// dep an item comes from, its bare name, and where it was referenced.
+///
+/// Covering runs produce one `PathRecord` per *reference*, which for generated
+/// crates means hundreds of thousands of records carrying fields nobody reads
+/// downstream (web-sys yields ~865k). Projecting to this at the point the runs
+/// are consumed lets the fat records be dropped instead of copied, and lets the
+/// set dedup — the same item referenced from many modules collapses to one entry.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CrossCrateRef {
+    /// `definition_crate`, already normalized (`-` → `_`).
+    pub dep: String,
+    /// Last `::` segment of `path_text`.
+    pub item: String,
+    pub span: ReadableSpan,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum PathContext {
     ImportDeclaration, // This path is part of a `use` statement (The Facade Map)

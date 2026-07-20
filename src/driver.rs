@@ -1040,7 +1040,7 @@ pub fn analyze_crate_wrapper<'a>(
     Option<CoverageComparison>,
     Vec<Bool<'a>>,
     visitor::ModNode<'a>,
-    Vec<PathRecord>,
+    HashSet<CrossCrateRef>,
 ) {
     let manifest = parser::determine_manifest_file(crate_name, main_name);
     analyze_crate(ctx, &manifest, crate_name, telemetry)
@@ -1092,11 +1092,13 @@ fn find_condition_for_span<'a>(
     None
 }
 
-/// For every covering-run PathRecord that references an external crate,
-/// find the full condition (root→leaf) for the containing item in the
-/// given crate's tree. If that condition is compatible with no_std
-/// (condition AND NOT(hard) is SAT, or there are no hard constraints),
-/// include the item in the result set.
+/// For every covering-run reference to an external crate, find the full
+/// condition (root→leaf) for the containing item in the given crate's tree.
+/// If that condition is compatible with no_std (condition AND NOT(hard) is
+/// SAT, or there are no hard constraints), include the item in the result set.
+///
+/// `records` arrives already filtered (no `LOCAL`, no `extern crate`) and
+/// deduplicated — see `CrossCrateRef` and the projection in `analyze_crate`.
 ///
 /// Generic over which crate's source is being analyzed — `root` and
 /// `records` come from that crate's own `analyze_crate_wrapper` call, so
@@ -1104,55 +1106,37 @@ fn find_condition_for_span<'a>(
 /// acting as a "parent" in the recursive requirement check.
 pub fn compute_valid_cross_crate_items<'a>(
     root: &ModNode<'a>,
-    records: &[PathRecord],
+    records: &HashSet<CrossCrateRef>,
     hard: Option<&Bool<'a>>,
     ctx: &'a Context,
 ) -> HashSet<(String, String)> {
-    let mut result = HashSet::new();
+    // Keyed by borrows into `records` so the hot loop's membership probe below
+    // costs no allocation; materialized into owned pairs on the way out.
+    let mut accepted: HashSet<(&str, &str)> = HashSet::new();
 
-    // Collect all external records grouped by dep for the initial summary print.
-    let mut all_by_dep: std::collections::BTreeMap<String, Vec<String>> =
+    // Collect all external items grouped by dep for the initial summary print.
+    // A set, not a Vec: the same item is referenced from many spans, and
+    // accumulating one entry per reference is pure waste for a sorted print.
+    let mut all_by_dep: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> =
         std::collections::BTreeMap::new();
     for record in records {
-        if record.definition_crate == "LOCAL" || record.is_extern_crate {
-            continue;
-        }
-        let item_name = record
-            .path_text
-            .split("::")
-            .last()
-            .unwrap_or(&record.path_text)
-            .to_string();
-        if !item_name.is_empty() {
-            all_by_dep
-                .entry(record.definition_crate.replace('-', "_"))
-                .or_default()
-                .push(item_name);
-        }
+        all_by_dep
+            .entry(&record.dep)
+            .or_default()
+            .insert(&record.item);
     }
     println!("[cross_crate] All external items referenced by crate in covering runs:");
     for (dep, items) in &all_by_dep {
-        let mut sorted = items.clone();
-        sorted.sort();
-        sorted.dedup();
-        println!("  dep={}: {:?}", dep, sorted);
+        println!("  dep={}: {:?}", dep, items);
     }
 
     for record in records {
-        if record.definition_crate == "LOCAL" || record.is_extern_crate {
+        // An item qualifies as soon as one of its references is accessible, so
+        // once accepted the remaining spans cannot change the answer. Skipping
+        // them avoids a Z3 solver per reference rather than per item.
+        if accepted.contains(&(record.dep.as_str(), record.item.as_str())) {
             continue;
         }
-        let item_name = record
-            .path_text
-            .split("::")
-            .last()
-            .unwrap_or(&record.path_text)
-            .to_string();
-        if item_name.is_empty() {
-            continue;
-        }
-
-        let dep_norm = record.definition_crate.replace('-', "_");
 
         let is_accessible = match hard {
             None => true,
@@ -1168,8 +1152,8 @@ pub fn compute_valid_cross_crate_items<'a>(
                         };
                         println!(
                             "[cross_crate] dep={} item={} condition_AND_NOT_hard={}",
-                            dep_norm,
-                            item_name,
+                            record.dep,
+                            record.item,
                             if sat {
                                 "SAT (accessible)"
                             } else {
@@ -1183,9 +1167,14 @@ pub fn compute_valid_cross_crate_items<'a>(
         };
 
         if is_accessible {
-            result.insert((dep_norm, item_name));
+            accepted.insert((&record.dep, &record.item));
         }
     }
+
+    let result: HashSet<(String, String)> = accepted
+        .into_iter()
+        .map(|(dep, item)| (dep.to_string(), item.to_string()))
+        .collect();
 
     println!("[cross_crate] Final valid cross-crate items (no_std-accessible):");
     let mut final_sorted: Vec<_> = result.iter().collect();
@@ -1230,7 +1219,7 @@ pub fn analyze_crate<'a>(
     Option<CoverageComparison>,
     Vec<Bool<'a>>,
     visitor::ModNode<'a>,
-    Vec<PathRecord>,
+    HashSet<CrossCrateRef>,
 ) {
     let (root, covering_runs, hard_constraints, compile_error_constraints) =
         find_feature_combs_for_all_code(ctx, manifest, crate_name, telemetry);
@@ -1340,9 +1329,24 @@ pub fn analyze_crate<'a>(
         .map(|f| f.target.analysis.span)
         .collect();
 
-    let covering_records: Vec<PathRecord> = covering_runs
-        .iter()
-        .flat_map(|run| run.output.records.iter().cloned())
+    // Consume the runs rather than cloning out of them: the records are only
+    // needed as `CrossCrateRef`, and holding the originals plus a full copy is
+    // what made feature-heavy crates (web-sys) exhaust memory here.
+    let covering_records: HashSet<CrossCrateRef> = covering_runs
+        .into_iter()
+        .flat_map(|run| run.output.records)
+        .filter(|r| r.definition_crate != "LOCAL" && !r.is_extern_crate)
+        .filter_map(|r| {
+            let item = r.path_text.rsplit("::").next().unwrap_or(&r.path_text);
+            if item.is_empty() {
+                return None;
+            }
+            Some(CrossCrateRef {
+                dep: r.definition_crate.replace('-', "_"),
+                item: item.to_string(),
+                span: r.span,
+            })
+        })
         .collect();
 
     (
