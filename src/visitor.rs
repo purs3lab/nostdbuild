@@ -1961,12 +1961,50 @@ fn should_skip(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
+/// Run `cargo metadata` for `manifest`, working around published tarballs whose
+/// `[workspace]` section lists members that crates.io stripped out (e.g. old
+/// `libc` referencing `libc-test/`). Such a manifest makes cargo fail outright,
+/// so on error we retry once with the member lists emptied. The `[workspace]`
+/// table itself is kept — dropping it entirely would let cargo walk upwards and
+/// attach the crate to an unrelated parent workspace. The original file is
+/// always restored before returning.
+fn run_cargo_metadata(manifest: &str) -> cargo_metadata::Metadata {
+    let run = || MetadataCommand::new().manifest_path(manifest).no_deps().exec();
+
+    let first_err = match run() {
+        Ok(metadata) => return metadata,
+        Err(e) => e,
+    };
+
+    let Some(patched) = strip_workspace_members(manifest) else {
+        panic!("Failed to execute cargo metadata: {first_err:?}");
+    };
+
+    debug!("cargo metadata failed for {manifest}, retrying without workspace members");
+    let original = std::fs::read_to_string(manifest).expect("Failed to read manifest");
+    std::fs::write(manifest, &patched).expect("Failed to write patched manifest");
+    let result = run();
+    std::fs::write(manifest, &original).expect("Failed to restore manifest");
+
+    result.unwrap_or_else(|e| panic!("Failed to execute cargo metadata: {e:?}"))
+}
+
+/// Return `manifest`'s contents with `members`/`default-members`/`exclude`
+/// removed from its `[workspace]` table, or `None` if there is nothing to strip.
+/// Formatting is not preserved — the caller restores the original file.
+fn strip_workspace_members(manifest: &str) -> Option<String> {
+    let mut doc: toml::Table = std::fs::read_to_string(manifest).ok()?.parse().ok()?;
+    let workspace = doc.get_mut("workspace")?.as_table_mut()?;
+
+    let stripped = ["members", "default-members", "exclude"]
+        .iter()
+        .any(|k| workspace.remove(*k).is_some());
+
+    stripped.then(|| toml::to_string(&doc).ok()).flatten()
+}
+
 pub fn find_entrypoints(manifest: &str, known_modules: &mut Vec<PathBuf>) -> PathBuf {
-    let metadata = MetadataCommand::new()
-        .manifest_path(manifest)
-        .no_deps()
-        .exec()
-        .expect("Failed to execute cargo metadata");
+    let metadata = run_cargo_metadata(manifest);
 
     // A `[lib]` target can be reported under any of the library-like kinds
     // depending on the crate's declared `crate-type` (e.g. `rlib`, `cdylib`,
