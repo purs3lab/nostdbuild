@@ -57,6 +57,30 @@ fn cfg_attr_applied_attribute_region_is_gated() {
     );
 }
 
+/// An inner `#![cfg_attr(..)]` is crate-level config (e.g. `no_std`), not a
+/// proc-macro — it generates no code, so it must not record a gate. Recording one
+/// adds a bogus item to the covering-set pool / `all_constraints` and perturbs the
+/// solver; that regressed tarfs-0.2.7, where the lost `not(builtin_devices)`
+/// constraint let a std-using module be enabled in a no_std build.
+#[test]
+fn inner_cfg_attr_does_not_record_a_gate() {
+    let root = fixture();
+    let content = std::fs::read_to_string(&root).unwrap();
+
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut collector = ModCollector::new(&ctx);
+    let node = collector.collect(&root, "cfg_attr_applied");
+
+    // A span sitting inside the inner `#![cfg_attr(not(feature = "std"), no_std)]`
+    // must not resolve to a gate.
+    let target = span_of(&content, "not(feature = \"std\"), no_std");
+    let anc = ancestors_for_span(&node, &target);
+    assert!(
+        anc.is_none(),
+        "inner #![cfg_attr(..)] must not record a gate item, got {anc:?}"
+    );
+}
+
 #[test]
 fn plain_derive_without_cfg_attr_stays_ungated() {
     let root = fixture();

@@ -1275,6 +1275,21 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 if parser::is_no_std(&parsed, true) {
                     self.no_std_condition = Some(own.clone());
                 }
+                // Only *outer* cfg_attrs (`#[cfg_attr(..)]` on an item) can carry a
+                // proc-macro whose generated code lands inside these tokens. Inner
+                // ones (`#![cfg_attr(..)]`) are crate/module-level configuration —
+                // e.g. `#![cfg_attr(not(feature = "std"), no_std)]` — which generate
+                // no code at all, so there is nothing to gate. Recording a gate for
+                // them is not merely useless: the item is picked up by
+                // `collect_all_items` and pollutes both the covering-set pool and
+                // `all_constraints` with a stray `not(std)`, which perturbs the
+                // solver. That regressed tarfs, where the lost constraint let
+                // `builtin_devices` (whose module uses std unconditionally) be
+                // enabled in a no_std build.
+                if !matches!(i.style, syn::AttrStyle::Outer) {
+                    syn::visit::visit_attribute(self, i);
+                    return;
+                }
                 // A `#[cfg_attr(pred, some_attr(..))]` conditionally applies an
                 // *attribute*; it does not gate the item itself, so `parse_cfg_gate`
                 // correctly reports the item as unconditional. But when the applied
