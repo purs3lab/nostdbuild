@@ -934,11 +934,17 @@ impl<'a> FileVisitor<'a> {
             usage_crate: None,
         };
         self.push_item(LocalItem {
-            own_condition: cond,
+            own_condition: cond.clone(),
             span,
             name: None,
             externally_gated,
         });
+        // Register `mod X;` declared inside this arm, gated by the arm. syn hands
+        // us the cfg_if tokens opaquely, so without this the module is never
+        // registered at all and its file is never walked — every std usage inside
+        // it then has no covering node, hence no gate, hence hard std.
+        // (backtrace's `src/symbolize/gimli/*`, hpm_rt's `src/host/*`.)
+        self.scan_macro_mod_decls_with(&body.stream(), cond, externally_gated);
         // Nested `cfg_if!` inside this arm, plus any macro-argument cfg segments.
         self.scan_nested_cfg_if(&body.stream());
     }
@@ -995,9 +1001,38 @@ impl<'a> FileVisitor<'a> {
     /// NOTE: The above ignored case should be looked into if we find a crate that
     /// actually exercises it.
     fn scan_macro_mod_decls(&mut self, tokens: &TokenStream) {
+        let (cond, ext) = (self.current_condition(), self.current_externally_gated());
+        self.scan_macro_mod_decls_with(tokens, cond, ext);
+    }
+
+    /// As `scan_macro_mod_decls`, but with the gate supplied explicitly rather
+    /// than read off the condition stack.
+    ///
+    /// `cfg_if!` arms need this: the arm's gate lives in `record_cfg_if`, not on
+    /// the stack, and pushing a level just to scan the body would leak that
+    /// state into sibling arms. Each arm calls this with its own condition and
+    /// external-gatedness, so several arms declaring the same module name each
+    /// get their own child node — the shape `visit_item_mod`'s file-based branch
+    /// already produces for multi-path `cfg_attr`.
+    fn scan_macro_mod_decls_with(
+        &mut self,
+        tokens: &TokenStream,
+        condition: Option<Bool<'a>>,
+        externally_gated: bool,
+    ) {
         let trees: Vec<TokenTree> = tokens.clone().into_iter().collect();
         let mut i = 0usize;
+        // Most recent `#[path = "..."]` seen at this level; consumed by the next
+        // `mod NAME ;`. Without it, backtrace's four arms — each `#[path =
+        // "gimli/mmap_*.rs"] mod mmap;` — would all collapse onto a nonexistent
+        // `mmap.rs` and none of their files would be walked.
+        let mut pending_path: Option<String> = None;
         while i < trees.len() {
+            if let Some(path) = Self::token_path_attr(&trees, i) {
+                pending_path = Some(path);
+                i += 2; // `#` and the bracket group
+                continue;
+            }
             if let TokenTree::Ident(kw) = &trees[i] {
                 if kw == "mod" {
                     if let (Some(TokenTree::Ident(name)), Some(TokenTree::Punct(semi))) =
@@ -1005,18 +1040,20 @@ impl<'a> FileVisitor<'a> {
                     {
                         if semi.as_char() == ';' {
                             let name = name.to_string();
-                            let src =
-                                Self::default_mod_source(&self.current_search_dir, &name);
-                            let externally_gated = self.current_externally_gated();
+                            let source_file = match pending_path.take() {
+                                Some(p) => self.current_search_dir.join(p),
+                                None => {
+                                    Self::default_mod_source(&self.current_search_dir, &name).path
+                                }
+                            };
                             self.push_child(ModNode {
                                 name,
-                                source_file: src.path.clone(),
-                                source_dir: src
-                                    .path
+                                source_dir: source_file
                                     .parent()
                                     .unwrap_or(Path::new("."))
                                     .to_path_buf(),
-                                entry_condition: self.current_condition(),
+                                source_file,
+                                entry_condition: condition.clone(),
                                 local_items: vec![],
                                 children: vec![],
                                 is_inline: false,
@@ -1029,11 +1066,40 @@ impl<'a> FileVisitor<'a> {
                 }
             }
             // Recurse into nested delimited groups so `mod`s wrapped in inner
-            // groups are still found.
+            // groups are still found. A pending `#[path]` does not cross into a
+            // group — it applies to the next `mod` at this level.
             if let TokenTree::Group(g) = &trees[i] {
-                self.scan_macro_mod_decls(&g.stream());
+                self.scan_macro_mod_decls_with(&g.stream(), condition.clone(), externally_gated);
             }
             i += 1;
+        }
+    }
+
+    /// Match `#` `[ path = "..." ]` at `idx`, returning the path literal.
+    fn token_path_attr(trees: &[TokenTree], idx: usize) -> Option<String> {
+        let TokenTree::Punct(hash) = trees.get(idx)? else {
+            return None;
+        };
+        if hash.as_char() != '#' {
+            return None;
+        }
+        let TokenTree::Group(g) = trees.get(idx + 1)? else {
+            return None;
+        };
+        if g.delimiter() != Delimiter::Bracket {
+            return None;
+        }
+        let inner: Vec<TokenTree> = g.stream().into_iter().collect();
+        match (inner.first(), inner.get(1), inner.get(2)) {
+            (
+                Some(TokenTree::Ident(k)),
+                Some(TokenTree::Punct(eq)),
+                Some(TokenTree::Literal(lit)),
+            ) if k == "path" && eq.as_char() == '=' => {
+                let s = lit.to_string();
+                Some(s.trim_matches('"').to_string())
+            }
+            _ => None,
         }
     }
 
@@ -1666,8 +1732,11 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         }
 
         if is_cfg_if_path(&i.mac.path) {
+            // Do NOT descend: `syn::visit::visit_item_macro` reaches the inner
+            // `syn::Macro` and `visit_macro` would call `record_cfg_if` a second
+            // time, duplicating every arm's LocalItem. The tokens are opaque to
+            // syn anyway, so the descent yields nothing else.
             self.record_cfg_if(&i.mac.tokens);
-            syn::visit::visit_item_macro(self, i);
             return;
         }
 
