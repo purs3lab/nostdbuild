@@ -164,19 +164,38 @@ fn test_local_facade_deep_nesting_is_not_hard() {
 }
 
 // ---------------------------------------------------------------------------
-// cfg(target_os) — non-feature cfg gates do not make std avoidable via features
+// cfg(target_os) — non-feature cfg gates are accepted as guards, not reported
 // ---------------------------------------------------------------------------
 
-/// `use std::fs` behind `#[cfg(target_os = "linux")]` is a non-feature cfg.
-/// The tool only controls feature flags, not target_os — so this std usage
-/// cannot be avoided by any feature combination and must appear in hard_spans.
+/// `use std::fs` behind `#[cfg(target_os = "linux")]`.
+///
+/// This test previously asserted the opposite — that such a span is hard std,
+/// on the reasoning that the tool controls features but not the target, so no
+/// feature combination can remove it. The policy was deliberately reversed:
+/// features are the axis *this tool* controls, but the target is the
+/// consumer's choice, and `#[cfg(target_os = "linux")]` is the author
+/// declaring that this code does not exist on a bare-metal target. A no_std
+/// consumer is by definition not on linux, so the gate is accepted as a guard
+/// without being proved.
+///
+/// The probe cannot settle it either way: it compiles for the host, so the
+/// target-gated arm is present in every covering run and would classify
+/// AlwaysStd unanimously. Compiling for a bare-metal target instead is no help
+/// — every std usage becomes a hard error, so nothing is observable.
+///
+/// Such spans get `ProbeDecision::ExternallyGated`: excluded from `all_hard`
+/// (not reported) *and* from `final_condition` (contributing no feature
+/// requirement). `Telemetry::externally_gated_spans` counts them so a crate
+/// that clears only this way stays separable in the eval from one that clears
+/// on a real feature condition.
 #[cargo_test]
-fn test_cfg_target_os_gates_std_is_hard() {
+fn test_cfg_target_os_gates_std_is_excused() {
     let (_p, manifest) = load_fixture("test_cfg_target_os_std");
     let hard_spans = run_analyze(&manifest, "test_cfg_target_os_std");
     assert!(
-        !hard_spans.is_empty(),
-        "Expected hard std spans — target_os cfg is not feature-controllable"
+        hard_spans.is_empty(),
+        "Expected no hard std spans — target_os is not the feature axis, so the \
+         gate is accepted as a guard, but got: {hard_spans:?}"
     );
 }
 

@@ -1264,6 +1264,7 @@ pub fn analyze_crate<'a>(
             analysis: a.clone(),
             ancestors: visitor::ancestors_for_span(&root, &a.exemplar.span)
                 .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs)),
+            externally_gated: visitor::externally_gated_for_span(&root, &a.exemplar.span),
         })
         .collect::<Vec<_>>();
 
@@ -1283,6 +1284,7 @@ pub fn analyze_crate<'a>(
             analysis: a.clone(),
             ancestors: visitor::ancestors_for_span(&root, &a.exemplar.span)
                 .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs)),
+            externally_gated: visitor::externally_gated_for_span(&root, &a.exemplar.span),
         })
         .collect::<Vec<_>>();
 
@@ -1307,6 +1309,7 @@ pub fn analyze_crate<'a>(
             analysis: a.clone(),
             ancestors: visitor::ancestors_for_span(&root, &a.exemplar.span)
                 .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs)),
+            externally_gated: visitor::externally_gated_for_span(&root, &a.exemplar.span),
         })
         .collect::<Vec<_>>();
 
@@ -1332,6 +1335,20 @@ pub fn analyze_crate<'a>(
             })
         })
         .map(|c| c.simplify());
+
+    let externally_gated_spans = hard_imports
+        .iter()
+        .chain(hard_usages.iter())
+        .chain(conditional_results.iter())
+        .filter(|a| matches!(a.decision, ProbeDecision::ExternallyGated { .. }))
+        .count();
+    if externally_gated_spans > 0 {
+        debug!(
+            "{} std span(s) excused as externally gated (cfg naming no feature)",
+            externally_gated_spans
+        );
+    }
+    telemetry.externally_gated_spans = externally_gated_spans;
 
     let all_hard: Vec<ReadableSpan> = hard_imports
         .into_iter()

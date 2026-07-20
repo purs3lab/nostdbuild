@@ -373,6 +373,11 @@ pub struct LocalItem<'a> {
     /// Identifier name of the item, if applicable. Used by
     /// `collect_named_items_with_conditions` to build feature→items maps.
     pub name: Option<String>,
+    /// Gated by a `#[cfg(...)]` naming no feature (see
+    /// `FileVisitor::is_externally_gated`). Kept separate from `own_condition`
+    /// so it can never reach the solver — there is no feature variable to
+    /// constrain, only the knowledge that a guard exists.
+    pub externally_gated: bool,
 }
 
 impl LocalItem<'_> {
@@ -404,6 +409,11 @@ pub struct ModNode<'a> {
     pub children: Vec<ModNode<'a>>,
     /// Am I an inline mod?
     pub is_inline: bool,
+    /// This module (or an ancestor) is gated by a `#[cfg(...)]` naming no
+    /// feature — `#[cfg(all(target_arch = "x86_64", target_os = "linux"))] mod
+    /// std_items` and the like. Inherited down the subtree: everything under an
+    /// externally gated module is itself externally gated.
+    pub externally_gated: bool,
 }
 
 impl<'a> ModNode<'a> {
@@ -445,6 +455,10 @@ struct FileVisitor<'a> {
     /// Bottom of stack = inherited condition from parent file.
     /// Top of stack = condition at current nesting level.
     condition_stack: Vec<Option<Bool<'a>>>,
+    /// Mirrors condition_stack: whether the enclosing module at each level is
+    /// gated by a cfg naming no feature. Kept as a separate stack rather than
+    /// folded into condition_stack because it must never become a Z3 term.
+    externally_gated_stack: Vec<bool>,
     /// Mirrors condition_stack — each frame collects the ModNodes for
     /// children at that nesting level.
     children_stack: Vec<Vec<ModNode<'a>>>,
@@ -476,6 +490,7 @@ impl<'a> FileVisitor<'a> {
         current_search_dir: PathBuf,
         inherited: Option<Bool<'a>>,
         is_mod_rs: bool,
+        inherited_externally_gated: bool,
     ) -> Self {
         Self {
             ctx,
@@ -484,6 +499,7 @@ impl<'a> FileVisitor<'a> {
             current_search_dir,
             is_mod_rs,
             condition_stack: vec![inherited],
+            externally_gated_stack: vec![inherited_externally_gated],
             children_stack: vec![vec![]],
             items_stack: vec![vec![]],
             hard_constraints: vec![],
@@ -502,6 +518,10 @@ impl<'a> FileVisitor<'a> {
 
     fn current_condition(&self) -> Option<Bool<'a>> {
         self.condition_stack.last().cloned().flatten()
+    }
+
+    fn current_externally_gated(&self) -> bool {
+        self.externally_gated_stack.last().copied().unwrap_or(false)
     }
 
     fn and_conditions(
@@ -526,6 +546,38 @@ impl<'a> FileVisitor<'a> {
             .and_then(|attr| {
                 let (b, _) = parser::parse_main_attributes_direct(attr, self.ctx);
                 b
+            })
+    }
+
+    /// Is this item gated by a `#[cfg(...)]` that names no feature?
+    ///
+    /// `parse_token_stream` only turns `feature = "..."` into a Z3 Bool; every
+    /// other predicate atom (`target_arch`, `target_os`, `test`, a build-script
+    /// `--cfg` like `has_std`) is recorded as a bare string in
+    /// `ParsedAttr::constants` and its literal value dropped. So such a cfg
+    /// yields `None` — indistinguishable from no `#[cfg]` at all, which is how
+    /// target-gated std usage came to look unguarded.
+    ///
+    /// A `None` equation together with a non-empty `constants` is exactly that
+    /// case: a real predicate was present and produced no feature. Logic
+    /// keywords (`all`/`any`/`not`) go to `ParsedAttr::logic`, never to
+    /// `constants`, so a non-empty `constants` always means a genuine atom.
+    ///
+    /// Mixed predicates need no handling here: `all(target_os = "linux",
+    /// feature = "std")` already parses to just `std`, which is the correct
+    /// existential projection — the non-feature atom is free, and disabling the
+    /// feature guards the item on every target.
+    ///
+    /// Polarity does not matter either. `not(all(target_arch = ..., target_os =
+    /// ...))` erases exactly like its positive form, so an item in a `cfg_if`
+    /// else-arm is caught the same way as one in the if-arm.
+    fn is_externally_gated(&self, attrs: &[syn::Attribute]) -> bool {
+        attrs
+            .iter()
+            .filter(|a| a.path().is_ident("cfg"))
+            .any(|attr| {
+                let (equation, parsed) = parser::parse_main_attributes_direct(attr, self.ctx);
+                equation.is_none() && !parsed.constants.is_empty()
             })
     }
 
@@ -570,8 +622,9 @@ impl<'a> FileVisitor<'a> {
     }
 
     /// Push a new nesting level (entering an inline mod).
-    fn push_level(&mut self, condition: Option<Bool<'a>>) {
+    fn push_level(&mut self, condition: Option<Bool<'a>>, externally_gated: bool) {
         self.condition_stack.push(condition);
+        self.externally_gated_stack.push(externally_gated);
         self.children_stack.push(vec![]);
         self.items_stack.push(vec![]);
     }
@@ -579,6 +632,7 @@ impl<'a> FileVisitor<'a> {
     /// Pop the current nesting level and return (items, children).
     fn pop_level(&mut self) -> (Vec<LocalItem<'a>>, Vec<ModNode<'a>>) {
         self.condition_stack.pop();
+        self.externally_gated_stack.pop();
         let children = self.children_stack.pop().unwrap();
         let items = self.items_stack.pop().unwrap();
         (items, children)
@@ -619,11 +673,13 @@ impl<'a> FileVisitor<'a> {
             return false;
         }
         let own_condition = self.parse_cfg_gate(attrs);
+        let externally_gated = self.is_externally_gated(attrs);
         let span = self.get_span(&span);
         self.push_item(LocalItem {
             own_condition,
             span,
             name,
+            externally_gated,
         });
         true
     }
@@ -689,6 +745,7 @@ impl<'a> FileVisitor<'a> {
                     own_condition: Some(cond),
                     span,
                     name: None,
+                    externally_gated: false,
                 });
             }
         }
@@ -736,6 +793,7 @@ impl<'a> FileVisitor<'a> {
                 own_condition: Some(cond),
                 span,
                 name: None,
+                externally_gated: false,
             });
         }
         for tt in seg {
@@ -786,6 +844,10 @@ impl<'a> FileVisitor<'a> {
         // AND of the negations of all predicates seen so far (drives later arms
         // and the final `else`).
         let mut prior_negations: Option<Bool<'a>> = None;
+        // Once any earlier arm's predicate names no feature, the `else` arm's
+        // condition is that predicate's negation — equally off the feature axis.
+        // This is what makes the rule polarity-agnostic for cfg_if.
+        let mut prior_externally_gated = false;
         while idx < trees.len() {
             match &trees[idx] {
                 // `if` / `else if` <#[cfg(P)]> { block }
@@ -801,10 +863,11 @@ impl<'a> FileVisitor<'a> {
                                 TokenTree::Punct(hash.clone()),
                                 TokenTree::Group(attr.clone()),
                             ]);
-                            parse_attr_stream_cfg(&ts, self.ctx)
+                            parse_attr_stream_cfg_ext(&ts, self.ctx)
                         }
-                        _ => None,
+                        _ => (None, false),
                     };
+                    let (pred, pred_externally_gated) = pred;
                     // The arm body is the next brace group after the attribute.
                     let body_pos = idx + 3;
                     if let Some(TokenTree::Group(body)) = trees.get(body_pos) {
@@ -818,8 +881,9 @@ impl<'a> FileVisitor<'a> {
                             // the gate `std ∧ ¬web`, whose negation `¬std ∨ web` lets the probe satisfy the
                             // clear by toggling `web` while leaving std ON — which doesn't deactivate this
                             // arm on the host, so the std usage never vanishes on rebuild.
-                            self.record_cfg_if_arm(body, pred.clone());
+                            self.record_cfg_if_arm(body, pred.clone(), pred_externally_gated);
                             // Accumulate ¬P for subsequent arms / else.
+                            prior_externally_gated |= pred_externally_gated;
                             if let Some(p) = pred {
                                 let neg = p.not();
                                 prior_negations = Self::and_conditions(
@@ -839,7 +903,7 @@ impl<'a> FileVisitor<'a> {
                     if let Some(TokenTree::Group(body)) = trees.get(idx + 1) {
                         if body.delimiter() == Delimiter::Brace {
                             let arm_cond = prior_negations.clone();
-                            self.record_cfg_if_arm(body, arm_cond);
+                            self.record_cfg_if_arm(body, arm_cond, prior_externally_gated);
                             idx += 2;
                             continue;
                         }
@@ -853,7 +917,12 @@ impl<'a> FileVisitor<'a> {
 
     /// Record one `cfg_if!` arm: push a `LocalItem` spanning its `{ .. }` body with
     /// the arm's effective condition, then recurse for nested cfg-macros inside.
-    fn record_cfg_if_arm(&mut self, body: &proc_macro2::Group, cond: Option<Bool<'a>>) {
+    fn record_cfg_if_arm(
+        &mut self,
+        body: &proc_macro2::Group,
+        cond: Option<Bool<'a>>,
+        externally_gated: bool,
+    ) {
         let start = body.span_open().start();
         let end = body.span_close().end();
         let span = ReadableSpan {
@@ -868,6 +937,7 @@ impl<'a> FileVisitor<'a> {
             own_condition: cond,
             span,
             name: None,
+            externally_gated,
         });
         // Nested `cfg_if!` inside this arm, plus any macro-argument cfg segments.
         self.scan_nested_cfg_if(&body.stream());
@@ -937,6 +1007,7 @@ impl<'a> FileVisitor<'a> {
                             let name = name.to_string();
                             let src =
                                 Self::default_mod_source(&self.current_search_dir, &name);
+                            let externally_gated = self.current_externally_gated();
                             self.push_child(ModNode {
                                 name,
                                 source_file: src.path.clone(),
@@ -949,6 +1020,7 @@ impl<'a> FileVisitor<'a> {
                                 local_items: vec![],
                                 children: vec![],
                                 is_inline: false,
+                                externally_gated,
                             });
                             i += 3;
                             continue;
@@ -1053,6 +1125,7 @@ impl<'a> FileVisitor<'a> {
             included_path.display(),
             effective.is_some()
         );
+        let externally_gated = self.current_externally_gated();
         self.push_child(ModNode {
             name,
             source_file: included_path,
@@ -1061,6 +1134,7 @@ impl<'a> FileVisitor<'a> {
             local_items: vec![],
             children: vec![],
             is_inline: false,
+            externally_gated,
         });
     }
 
@@ -1185,6 +1259,10 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
 
         let name = i.ident.to_string();
         let own_gate = self.parse_cfg_gate(&i.attrs);
+        // Inherit: a module inside an externally gated one is externally gated
+        // too, however its own `#[cfg]` reads.
+        let externally_gated =
+            self.is_externally_gated(&i.attrs) || self.current_externally_gated();
 
         // Effective entry condition = inherited (from stack) AND own gate
         let effective = Self::and_conditions(self.ctx, self.current_condition(), own_gate);
@@ -1192,7 +1270,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         match &i.content {
             Some(_) => {
                 // Inline mod — push a level, recurse, pop and assemble
-                self.push_level(effective.clone());
+                self.push_level(effective.clone(), externally_gated);
 
                 let old_search_dir = self.current_search_dir.clone();
                 if let Some(path) = path {
@@ -1225,6 +1303,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                     local_items: items,
                     children,
                     is_inline: true,
+                    externally_gated,
                 };
                 self.push_child(node);
             }
@@ -1260,6 +1339,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                         local_items: vec![],
                         children: vec![],
                         is_inline: false,
+                        externally_gated,
                     });
                 }
             }
@@ -1305,6 +1385,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                     own_condition: Some(own),
                     span: self.get_span(&i.span()),
                     name: None,
+                    externally_gated: false,
                 });
             }
         }
@@ -1522,6 +1603,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         }
 
         let own = self.parse_cfg_gate(&i.attrs);
+        let externally_gated = self.is_externally_gated(&i.attrs);
         let span = self.get_span(&i.span());
         // Emit one LocalItem per leaf name so collect_named_items_with_conditions
         // can determine which items a feature gates via re-exports.
@@ -1531,6 +1613,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 own_condition: own.clone(),
                 span: span.clone(),
                 name: Some(name),
+                externally_gated,
             });
         }
         syn::visit::visit_item_use(self, i);
@@ -1542,17 +1625,20 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
             return;
         }
 
+        let externally_gated = self.is_externally_gated(&i.attrs);
         if let Some(own) = self.parse_cfg_gate(&i.attrs) {
             self.push_item(LocalItem {
                 own_condition: Some(own),
                 span: self.get_span(&i.span()),
                 name: None,
+                externally_gated,
             });
         } else {
             self.push_item(LocalItem {
                 own_condition: None,
                 span: self.get_span(&i.span()),
                 name: None,
+                externally_gated,
             });
         }
         syn::visit::visit_item_extern_crate(self, i);
@@ -1611,16 +1697,20 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 }
             }
         } else if let Some(own) = self.parse_cfg_gate(&i.attrs) {
+            let externally_gated = self.is_externally_gated(&i.attrs);
             self.push_item(LocalItem {
                 own_condition: Some(own),
                 span: self.get_span(&i.span()),
                 name: None,
+                externally_gated,
             });
         } else {
+            let externally_gated = self.is_externally_gated(&i.attrs);
             self.push_item(LocalItem {
                 own_condition: None,
                 span: self.get_span(&i.span()),
                 name: None,
+                externally_gated,
             });
         }
         // A custom macro (e.g. cfg_if-style `cfg_time!`) may take `mod X;` as a
@@ -1679,7 +1769,14 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
             },
         };
 
-        if let Some(own) = self.parse_cfg_gate(attrs) {
+        // Push when the statement carries *either* a feature gate or a
+        // non-feature one. Keying only off `parse_cfg_gate` would drop
+        // `#[cfg(target_os = "linux")] let f = std::fs::File::open(..);`
+        // entirely — no LocalItem, so `ancestors_for_span` sees nothing and the
+        // usage reads as unguarded.
+        let own = self.parse_cfg_gate(attrs);
+        let externally_gated = self.is_externally_gated(attrs);
+        if own.is_some() || externally_gated {
             let span = match i {
                 syn::Stmt::Local(l) => self.get_span(&l.span()),
                 syn::Stmt::Macro(m) => self.get_span(&m.span()),
@@ -1687,9 +1784,10 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 syn::Stmt::Item(item) => self.get_span(&item.span()),
             };
             self.push_item(LocalItem {
-                own_condition: Some(own),
+                own_condition: own,
                 span,
                 name: None,
+                externally_gated,
             });
         }
 
@@ -1762,6 +1860,7 @@ impl<'a> ModCollector<'a> {
             source_dir.clone(),
             effective.clone(),
             true, // entrypoint is always mod-rs style
+            false,
         );
         visitor.visit_file(&syntax);
         let (local_items, mut children, hard_constraints, no_std_cond, pending_includes) =
@@ -1784,6 +1883,7 @@ impl<'a> ModCollector<'a> {
             local_items,
             children,
             is_inline: false,
+            externally_gated: false,
         }
     }
 
@@ -1836,6 +1936,7 @@ impl<'a> ModCollector<'a> {
                 current_search_dir,
                 effective.clone(),
                 is_mod_rs,
+                child.externally_gated,
             );
             fv.visit_file(&syntax);
             let (local_items, mut grandchildren, hard_constraints_child, _no_std_cond, pend) =
@@ -1931,13 +2032,31 @@ fn is_cfg_if_path(path: &syn::Path) -> bool {
 /// a `cfg(...)`, return its Z3 condition. Returns `None` for non-cfg attributes
 /// (e.g. doc comments) or on parse failure.
 fn parse_attr_stream_cfg<'a>(ts: &TokenStream, ctx: &'a z3::Context) -> Option<Bool<'a>> {
+    parse_attr_stream_cfg_ext(ts, ctx).0
+}
+
+/// As `parse_attr_stream_cfg`, but also reports whether the predicate is gated
+/// by cfgs naming no feature (see `FileVisitor::is_externally_gated`). A
+/// `cfg_if!` arm like `if #[cfg(all(target_arch = "riscv32", target_os =
+/// "none"))]` yields `None` for the Bool, which alone is indistinguishable from
+/// an unconditional arm.
+fn parse_attr_stream_cfg_ext<'a>(
+    ts: &TokenStream,
+    ctx: &'a z3::Context,
+) -> (Option<Bool<'a>>, bool) {
     use syn::parse::Parser;
-    let attrs = syn::Attribute::parse_outer.parse2(ts.clone()).ok()?;
-    let attr = attrs.into_iter().next()?;
+    let Ok(attrs) = syn::Attribute::parse_outer.parse2(ts.clone()) else {
+        return (None, false);
+    };
+    let Some(attr) = attrs.into_iter().next() else {
+        return (None, false);
+    };
     if !attr.path().is_ident("cfg") {
-        return None;
+        return (None, false);
     }
-    parser::parse_main_attributes_direct(&attr, ctx).0
+    let (equation, parsed) = parser::parse_main_attributes_direct(&attr, ctx);
+    let externally_gated = equation.is_none() && !parsed.constants.is_empty();
+    (equation, externally_gated)
 }
 
 fn should_skip(attrs: &[syn::Attribute]) -> bool {
@@ -2324,4 +2443,48 @@ pub fn find_ancestors_for_span<'a>(
 
 pub fn ancestors_for_span<'a>(node: &ModNode<'a>, target: &ReadableSpan) -> Option<Vec<Bool<'a>>> {
     find_ancestors_for_span(node, target, &mut vec![])
+}
+
+/// Is `target` under a `#[cfg(...)]` that names no feature?
+///
+/// Mirrors `find_ancestors_for_span`'s traversal — same file matching, same
+/// span containment — but answers a question the `Option<Vec<Bool>>` return
+/// cannot express. Such a gate produces no Z3 term at all (see
+/// `FileVisitor::is_externally_gated`), so to `ancestors_for_span` the span is
+/// indistinguishable from an ungated one.
+///
+/// Module-level and item-level gating are ORed: a `LocalItem` records only its
+/// own attributes, while a `ModNode` carries the flag inherited from its
+/// declaration, so `#[cfg(target_os = "linux")] mod m { use std::fs::File; }` is
+/// caught by the node even though the `use` itself is unannotated.
+pub fn externally_gated_for_span(node: &ModNode<'_>, target: &ReadableSpan) -> bool {
+    fn walk(node: &ModNode<'_>, target: &ReadableSpan, gated_so_far: bool) -> Option<bool> {
+        let gated = gated_so_far || node.externally_gated;
+
+        if node.source_file.to_string_lossy().ends_with(&target.file) {
+            // OR across *every* containing item, unlike `find_ancestors_for_span`
+            // which picks a single best one. Items nest — a `#[cfg(target_os)]`
+            // statement sits inside its enclosing `fn`, and the fn is recorded
+            // first — so taking the first match would read the fn's `false` and
+            // miss the statement's gate entirely.
+            let mut matched = false;
+            let mut item_gated = false;
+            for item in node.local_items.iter().filter(|i| i.span_matches(target)) {
+                matched = true;
+                item_gated |= item.externally_gated;
+            }
+            if matched {
+                return Some(gated || item_gated);
+            }
+        }
+
+        for child in &node.children {
+            if let Some(found) = walk(child, target, gated) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    walk(node, target, false).unwrap_or(false)
 }

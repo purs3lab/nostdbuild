@@ -158,6 +158,11 @@ pub struct ProbeTarget<'a> {
     /// Ancestors of the span's gate, deepest-first.
     /// Produced by `find_ancestors_for_span`.
     pub ancestors: Option<Vec<Bool<'a>>>,
+    /// The span sits under a `#[cfg(...)]` whose predicate names no feature —
+    /// `target_arch`, `target_os`, `test`, a build-script `--cfg`, etc. Such a
+    /// gate is real but not on an axis we control, so the span is neither
+    /// reported nor probed. See `ProbeDecision::ExternallyGated`.
+    pub externally_gated: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +208,23 @@ pub enum ProbeDecision {
         alternate_crate: String,
     },
     CompileFailed,
+    /// The span is guarded, but by a cfg predicate naming no feature — e.g.
+    /// `#[cfg(all(target_arch = "x86_64", target_os = "linux"))]`. Features are
+    /// the axis this tool controls; the target is the consumer's choice, so such
+    /// a gate is accepted as a guard without being proved.
+    ///
+    /// This decision is deliberately neither `StillStd` nor `NonStd`, which is
+    /// what gives it the semantics we want: `all_hard` collects `StillStd` so
+    /// the span is not reported, and `final_condition` collects `NonStd` so it
+    /// contributes nothing to the feature condition the crate must satisfy.
+    ///
+    /// It cannot be probed: the probe compiles for the host, so a target-gated
+    /// arm is present in every covering run and would classify AlwaysStd
+    /// unanimously. Compiling for a bare-metal target instead is no help —
+    /// every std usage becomes a hard error, so nothing is observable.
+    ExternallyGated {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone)]

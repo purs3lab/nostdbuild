@@ -175,16 +175,27 @@ pub fn probe_conditional_spans<'a>(
     )
 }
 
-/// Builds the initial result set for probe targets that have no ancestor gates —
-/// these are unconditionally hard std without any way to disable them.
+/// Seed results for targets that will not be probed.
+///
+/// Externally gated targets are taken first and regardless of `ancestors`: a
+/// non-feature cfg anywhere above the span means the whole region is off the
+/// axis we control, so even a nested `#[cfg(feature = "std")]` inside it is
+/// moot. Everything else with no gate at all stays `StillStd` as before.
 fn initial_ungated_results<'a>(probe_targets: &[ProbeTarget<'a>]) -> Vec<ProbeResult<'a>> {
     probe_targets
         .iter()
-        .filter(|t| t.ancestors.is_none())
+        .filter(|t| t.externally_gated || t.ancestors.is_none())
         .map(|t| ProbeResult {
             target: t.clone(),
-            decision: ProbeDecision::StillStd {
-                reason: "No gate ancestors; Cannot disable".to_string(),
+            decision: if t.externally_gated {
+                ProbeDecision::ExternallyGated {
+                    reason: "Guarded by a cfg naming no feature; not on the feature axis"
+                        .to_string(),
+                }
+            } else {
+                ProbeDecision::StillStd {
+                    reason: "No gate ancestors; Cannot disable".to_string(),
+                }
             },
             condition: None,
             history: Vec::new(),
@@ -347,7 +358,10 @@ pub fn probe_usages<'a>(
     // probed only once. All targets in a group share the same gate, so they
     // compile/fail together; the representative's verdict is correct for all.
     let mut groups: Vec<(Vec<String>, Vec<ProbeTarget<'a>>)> = Vec::new();
-    for target in probe_targets.into_iter().filter(|t| t.ancestors.is_some()) {
+    for target in probe_targets
+        .into_iter()
+        .filter(|t| !t.externally_gated && t.ancestors.is_some())
+    {
         let fp = gate_fingerprint(target.ancestors.as_ref().unwrap());
         match groups.iter_mut().find(|(k, _)| *k == fp) {
             Some(g) => g.1.push(target),
@@ -413,7 +427,10 @@ pub fn probe_candidates<'a>(
 
     // Group gated targets by gate fingerprint — one compile per unique gate sequence.
     let mut groups: Vec<(Vec<String>, Vec<ProbeTarget<'a>>)> = Vec::new();
-    for target in probe_targets.into_iter().filter(|t| t.ancestors.is_some()) {
+    for target in probe_targets
+        .into_iter()
+        .filter(|t| !t.externally_gated && t.ancestors.is_some())
+    {
         let fp = gate_fingerprint(target.ancestors.as_ref().unwrap());
         match groups.iter_mut().find(|(k, _)| *k == fp) {
             Some(g) => g.1.push(target),

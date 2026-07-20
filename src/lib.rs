@@ -317,6 +317,15 @@ pub struct Telemetry {
     pub hir_analysis_done: bool,
     /// Did we find any unguarded std usages
     pub unguarded_std_usages: bool,
+    /// How many std spans were excused because they sit under a cfg naming no
+    /// feature (`target_arch`, `target_os`, `test`, build-script `--cfg`, …).
+    ///
+    /// These are accepted as guarded without being probed — the target is the
+    /// consumer's choice, not an axis this tool controls. A crate that clears
+    /// only because of these, with an empty final condition, is a materially
+    /// weaker result than one that clears on a real feature condition, so the
+    /// count is recorded to keep the two separable in the eval.
+    pub externally_gated_spans: usize,
     /// Maximum length of constraint string while solving features
     pub max_contraint_length: Vec<(String, usize)>,
     /// Maximum depth of constraint string while solving features

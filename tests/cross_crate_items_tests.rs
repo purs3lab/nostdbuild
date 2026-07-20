@@ -49,15 +49,18 @@ fn gated_and_ungated_root<'a>(ctx: &'a z3::Context) -> ModNode<'a> {
                 own_condition: Some(Bool::new_const(ctx, "feature_x")),
                 span: span(10),
                 name: Some("gated".to_string()),
+                externally_gated: false,
             },
             LocalItem {
                 own_condition: None,
                 span: span(20),
                 name: Some("ungated".to_string()),
+                externally_gated: false,
             },
         ],
         children: Vec::new(),
         is_inline: false,
+        externally_gated: false,
     }
 }
 
