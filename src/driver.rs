@@ -26,7 +26,7 @@ fn unique_output_path(crate_name: &str) -> PathBuf {
     Path::new(consts::RESULTS_PATH).join(format!("{}__{}.json", sanitized, id))
 }
 
-fn load_plugin_output(path: &Path) -> Result<FeatureRunOutput, String> {
+pub fn load_plugin_output(path: &Path) -> Result<FeatureRunOutput, String> {
     let data = fs::read_to_string(path).map_err(|e| format!("read {:?}: {}", path, e))?;
     let mut out: FeatureRunOutput =
         serde_json::from_str(&data).map_err(|e| format!("parse {:?}: {}", path, e))?;
@@ -37,6 +37,7 @@ fn load_plugin_output(path: &Path) -> Result<FeatureRunOutput, String> {
     for rec in &mut out.records {
         rec.span.file = normalize_generated_path(&rec.span.file);
     }
+    neutralize_panic_expansions(&mut out);
     Ok(out)
 }
 
@@ -124,6 +125,69 @@ pub fn extract_hard_std_candidates(
         // .filter(|r| !r.span.is_dummy())
         .map(|r| r.span.clone())
         .collect()
+}
+
+/// Paths that `std`'s `panic!` expands to. `core` has a `panic!` of its own with
+/// the same syntax, so a call site that lands on one of these never *requires*
+/// std — it resolves here only because std happened to win the macro namespace.
+///
+/// **These two paths are lossy: three source forms collapse onto them, and only
+/// the first is safe to excuse.** Verified against the plugin (edition 2018,
+/// `#[macro_use] extern crate std;`) — all three emit `$crate::rt::begin_panic`
+/// with `definition_crate: "std"`, byte-identical records:
+///
+/// ```ignore
+/// panic!("lit")                         // core-compatible — the case we mean to excuse
+/// std::panic!("explicit")               // std-only: `std::` does not resolve under no_std
+/// panic!(some_value)                    // std-only: core's panic! takes no arbitrary payload
+/// ```
+///
+/// The latter two are genuine std dependencies that this filter wrongly excuses,
+/// i.e. false *negatives*. Neither occurs in the current false-positive set
+/// (checked across all six affected crates), and the payload form is a hard
+/// error from edition 2021 on, but both are reachable in principle.
+///
+/// Closing the gap means inverting this into a whitelist: have the syn visitor
+/// collect the spans of `panic!` invocations it can prove core-compatible (macro
+/// path is a bare `panic`, first argument is a string literal) and excuse only
+/// records whose span matches one. syn tokenizes properly, so multi-line and
+/// `concat!` arguments come for free. That follows the same rule as
+/// `macro_rules_uniform_cfg`: yield nothing rather than guess, because a
+/// spurious gate excuses real std.
+const STD_PANIC_EXPANSIONS: [&str; 2] = ["$crate::rt::begin_panic", "$crate::rt::panic_fmt"];
+
+/// Re-attribute `panic!` expansions from `std` to `core`.
+///
+/// A crate that writes `#[macro_use] extern crate std;` — or that is only
+/// `no_std` in some configurations, via `#![cfg_attr(not(feature = "std"), no_std)]`
+/// — pulls std's `panic!` into the macro namespace, shadowing core's. Every
+/// `panic!` in the crate then expands to `$crate::rt::begin_panic` (string
+/// literal) or `$crate::rt::panic_fmt` (format args) with `$crate` = std, and
+/// each call site is reported as std usage. Drop the `extern crate std` and the
+/// identical source resolves to `core::panicking::*` and compiles unchanged, so
+/// `core` is the honest attribution.
+///
+/// Runs in `load_plugin_output`, the single point where plugin JSON enters the
+/// system, because the consumers disagree about where they read records from:
+/// `classify_spans` — which produces the verdict that fails a crate — walks
+/// `run.output.records` directly and never sees `extract_hard_std_candidates`.
+/// Filtering in one consumer leaves the other reporting the span.
+///
+/// Matching on `path_text` is deliberate: `panic_fmt` records carry
+/// `definition_crate: "core"` while `begin_panic` carries `"std"`, so the
+/// definition crate does not separate them. The literal `$crate` token cannot
+/// appear in hand-written source, so this only ever matches macro output.
+///
+/// See `STD_PANIC_EXPANSIONS` for the two source forms this wrongly excuses and
+/// what closing that gap would take.
+pub fn neutralize_panic_expansions(out: &mut FeatureRunOutput) {
+    for rec in &mut out.records {
+        if STD_PANIC_EXPANSIONS.contains(&rec.path_text.as_str())
+            && rec.span.usage_crate.as_deref() == Some("std")
+        {
+            rec.span.usage_crate = Some("core".to_string());
+        }
+    }
 }
 
 /// A record represents a local re-export if its syntactic path begins with

@@ -1,7 +1,13 @@
 #![feature(rustc_private)]
 
-use nostd::driver::{is_local_reexport, resolve_local_facade_gateways};
-use nostd::types::{FeatureRunOutput, PathContext, PathRecord, ReadableSpan};
+use nostd::driver::{
+    extract_hard_std_candidates, is_local_reexport, load_plugin_output, neutralize_panic_expansions,
+    resolve_local_facade_gateways,
+};
+use nostd::phases::classify_spans;
+use nostd::types::{
+    CoveringRun, FeatureRunOutput, PathContext, PathRecord, ReadableSpan, SpanVerdict,
+};
 
 fn span(usage_crate: Option<&str>) -> ReadableSpan {
     ReadableSpan {
@@ -337,4 +343,126 @@ fn is_mod_rs_style_classifies_entrypoint_modrs_and_plain_files() {
     assert!(is_mod_rs_style(&fixture("src/lib.rs"), &entry), "entrypoint is mod-rs style");
     assert!(is_mod_rs_style(&fixture("src/time/mod.rs"), &entry), "mod.rs is mod-rs style");
     assert!(!is_mod_rs_style(&fixture("src/wasm.rs"), &entry), "plain foo.rs is NOT mod-rs style");
+}
+
+// ---------------------------------------------------------------------------
+// panic! expansions attributed to std
+// ---------------------------------------------------------------------------
+
+/// A record at one of std's `panic!` expansion paths is re-attributed to core:
+/// the same source resolves to `core::panicking::*` once `extern crate std` is gone.
+#[test]
+fn std_panic_expansion_is_reattributed_to_core() {
+    // `panic!("lit")` under `#[macro_use] extern crate std;`.
+    let begin = usage_record("$crate::rt::begin_panic", "std", Some("std"), None);
+    // `panic!("{}", x)` — note the definition crate is `core`, not `std`.
+    let fmt = usage_record("$crate::rt::panic_fmt", "core", Some("std"), None);
+
+    let mut out = output(vec![begin, fmt]);
+    neutralize_panic_expansions(&mut out);
+
+    for rec in &out.records {
+        assert_eq!(
+            rec.span.usage_crate.as_deref(),
+            Some("core"),
+            "{} should be attributed to core",
+            rec.path_text
+        );
+    }
+    assert!(extract_hard_std_candidates(&out, None).is_empty());
+}
+
+/// The regression this fix originally missed: `classify_spans` reads
+/// `run.output.records` directly rather than going through
+/// `extract_hard_std_candidates`, so filtering only the latter left the panic
+/// span still failing the crate. Neutralising at load time must reach it.
+#[test]
+fn classify_spans_does_not_see_panic_expansion_as_std() {
+    let mut out = output(vec![usage_record(
+        "$crate::rt::begin_panic",
+        "std",
+        Some("std"),
+        None,
+    )]);
+    neutralize_panic_expansions(&mut out);
+
+    let runs = vec![CoveringRun {
+        features: vec!["std".to_string()],
+        output: out,
+    }];
+    let analyses = classify_spans(&runs);
+
+    assert_eq!(analyses.len(), 1);
+    assert!(
+        matches!(analyses[0].verdict, SpanVerdict::NeverStd),
+        "panic expansion should classify as NeverStd, got {:?}",
+        analyses[0].verdict
+    );
+}
+
+/// Control: the rewrite keys on the expansion path, not on "something to do with
+/// panicking". A real `use std::panic::catch_unwind` is std-only and must survive.
+#[test]
+fn genuine_std_panic_api_is_still_a_hard_candidate() {
+    let mut out = output(vec![
+        usage_record("std::panic::catch_unwind", "std", Some("std"), None),
+        usage_record("std::panic::panic_any", "std", Some("std"), None),
+    ]);
+    neutralize_panic_expansions(&mut out);
+
+    assert_eq!(
+        extract_hard_std_candidates(&out, None).len(),
+        2,
+        "std::panic::* APIs must not be excused"
+    );
+}
+
+/// Control: ordinary std usage in the same output is untouched, so the rewrite
+/// cannot be passing by simply blanking every record.
+#[test]
+fn panic_rewrite_leaves_other_std_usage_alone() {
+    let mut out = output(vec![
+        usage_record("$crate::rt::begin_panic", "std", Some("std"), None),
+        usage_record("std::fs::File", "std", Some("std"), None),
+    ]);
+    neutralize_panic_expansions(&mut out);
+
+    let got = extract_hard_std_candidates(&out, None);
+    assert_eq!(got.len(), 1, "only the panic record should be dropped");
+}
+
+/// Wiring guard. The unit tests above call `neutralize_panic_expansions`
+/// directly, so they stay green even if nothing ever invokes it — which is the
+/// bug that shipped the first time: the rewrite lived in
+/// `extract_hard_std_candidates`, a function the failing code path never calls.
+/// This drives the real entry point, so removing the call from
+/// `load_plugin_output` turns it red.
+#[test]
+fn load_plugin_output_neutralizes_panic_expansions() {
+    let dir = std::env::temp_dir().join(format!("nostd_panic_wiring_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("plugin.json");
+
+    let out = output(vec![
+        usage_record("$crate::rt::begin_panic", "std", Some("std"), None),
+        usage_record("std::fs::File", "std", Some("std"), None),
+    ]);
+    std::fs::write(&path, serde_json::to_string(&out).unwrap()).unwrap();
+
+    let loaded = load_plugin_output(&path).expect("load");
+    let by_path = |p: &str| {
+        loaded
+            .records
+            .iter()
+            .find(|r| r.path_text == p)
+            .unwrap()
+            .span
+            .usage_crate
+            .clone()
+    };
+
+    assert_eq!(by_path("$crate::rt::begin_panic").as_deref(), Some("core"));
+    assert_eq!(by_path("std::fs::File").as_deref(), Some("std"));
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
