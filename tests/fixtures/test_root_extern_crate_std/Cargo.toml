@@ -1,0 +1,14 @@
+[package]
+name = "test_root_extern_crate_std"
+description = "Root-level `extern crate std` must not stamp crate-internal paths as std"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+std = []
+
+[[bin]]
+path = "main.rs"
+name = "test_root_extern_crate_std"
+
+[workspace]

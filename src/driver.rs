@@ -237,6 +237,12 @@ fn span_externally_gated(root: &ModNode<'_>, exemplar: &PathRecord) -> bool {
             .is_some_and(|anchor| visitor::externally_gated_for_span(root, anchor))
 }
 
+/// How the crate root's module path is spelled in `PathRecord::defining_module`
+/// and `local_route`. The plugin seeds `current_module_path` with this, so the
+/// root is exactly `crate` — never the empty string, and never rustc's internal
+/// `{{root}}` (which shows up as a `path_text` segment but never as a module).
+pub const CRATE_ROOT_MODULE: &str = "crate";
+
 /// For crates that wrap an external crate behind a local module facade (e.g.
 /// `mod std { extern crate std; pub use std::*; mod error { extern crate std;
 /// pub use std::error::Error; } }`), the HIR resolver sees the inner segments
@@ -253,6 +259,18 @@ fn span_externally_gated(root: &ModNode<'_>, exemplar: &PathRecord) -> bool {
 /// Only `extern crate` declarations (not glob `use` imports) are used as
 /// anchors to avoid false positives from unconditional `use std::SomeType`
 /// imports that happen to live in a module that also handles non-std paths.
+///
+/// A declaration at the **crate root** is never an anchor. The prefix walk below
+/// descends to the bare `crate` prefix, which every crate-internal route shares,
+/// so a root-level `#[cfg(feature = "std")] extern crate std;` — the ordinary way
+/// to name std in a `#![no_std]` crate — would stamp `usage_crate = "std"` onto
+/// every `use crate::…` in the crate. The root prefix carries no information: a
+/// match is evidence of passing through a facade only when the prefix is a proper
+/// submodule. Nothing real is lost, because this pass only ever fires on records
+/// the resolver classified as non-std, and both root-level shapes are already
+/// resolved correctly without it — a genuine `use std::X` and an aliased
+/// `extern crate std as alloc` both arrive with `usage_crate == "std"` and are
+/// skipped by the early-continue below.
 pub fn resolve_local_facade_gateways(out: &mut FeatureRunOutput) {
     // Build: module_path → gateway crate names, from extern crate declarations.
     // A module may declare multiple extern crates; collect all so any prefix
@@ -263,6 +281,10 @@ pub fn resolve_local_facade_gateways(out: &mut FeatureRunOutput) {
     for r in &out.records {
         if r.is_extern_crate
             && let Some(dm) = r.defining_module.as_deref()
+            // The crate root is not a facade module — see the doc comment.
+            // `current_module_path` is seeded with `["crate"]`, so the root
+            // module path is spelled exactly `crate`.
+            && dm != CRATE_ROOT_MODULE
         {
             module_extern_crates
                 .entry(dm.to_string())

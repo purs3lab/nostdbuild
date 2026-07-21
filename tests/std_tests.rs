@@ -164,6 +164,30 @@ fn test_local_facade_deep_nesting_is_not_hard() {
 }
 
 // ---------------------------------------------------------------------------
+// Root-level `extern crate std` is not a facade gateway
+// ---------------------------------------------------------------------------
+
+/// `#[cfg(feature = "std")] extern crate std;` at the crate root, plus a
+/// crate-internal `use crate::alloc::vec::Vec` in a submodule.
+///
+/// The bare `crate` prefix is shared by every crate-internal route, so treating
+/// a root declaration as a facade anchor stamped `usage_crate = "std"` onto
+/// every `use crate::…` in the crate. Those imports carry no `#[cfg]`, so
+/// `initial_ungated_results` short-circuits them to StillStd without compiling
+/// — an unconditional false positive. This is the regalloc2 shape; the same
+/// mechanism accounted for ~90 spans across 11 crates.
+#[cargo_test]
+fn test_root_extern_crate_std_does_not_make_crate_paths_hard() {
+    let (_p, manifest) = load_fixture("test_root_extern_crate_std");
+    let hard_spans = run_analyze(&manifest, "test_root_extern_crate_std");
+    assert!(
+        hard_spans.is_empty(),
+        "Expected no hard std spans — `use crate::alloc::vec::Vec` is an alloc \
+         path and the root `extern crate std` is not a facade, but got: {hard_spans:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // cfg(target_os) — non-feature cfg gates are accepted as guards, not reported
 // ---------------------------------------------------------------------------
 

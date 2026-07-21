@@ -253,6 +253,133 @@ fn already_std_record_gets_no_anchor() {
 }
 
 // ---------------------------------------------------------------------------
+// The crate root is not a facade module
+//
+// The prefix walk descends to the bare `crate` prefix, which every
+// crate-internal route shares. A root-level `#[cfg(feature = "std")]
+// extern crate std;` — the ordinary way to name std in a `#![no_std]` crate —
+// would therefore stamp `usage_crate = "std"` onto every `use crate::…` in the
+// crate, and those spans carry no `#[cfg]`, so the probe short-circuits them to
+// StillStd without compiling. Guaranteed false positive.
+// ---------------------------------------------------------------------------
+
+/// regalloc2 shape: `#[cfg(feature = "std")] extern crate std;` at the crate
+/// root, and `use crate::alloc::vec::Vec` in a submodule, which the resolver
+/// correctly reports as `alloc` with a bare `crate` route.
+#[test]
+fn root_extern_crate_does_not_upgrade_bare_crate_route() {
+    let mut out = output(vec![
+        extern_crate_record("std", "std", "crate"),
+        usage_record(
+            "crate::alloc::vec::Vec",
+            "alloc",
+            Some("alloc"),
+            Some("crate"),
+        ),
+    ]);
+
+    resolve_local_facade_gateways(&mut out);
+
+    assert_eq!(
+        out.records[1].span.usage_crate.as_deref(),
+        Some("alloc"),
+        "a crate-internal path must not become std just because the crate root \
+         declares `extern crate std`"
+    );
+    assert!(
+        out.records[1].gateway_anchor.is_none(),
+        "no upgrade means no anchor to be excused by"
+    );
+}
+
+/// celestia-tendermint shape: the route is a proper submodule, but the prefix
+/// walk still descends past it to the bare `crate` prefix. Guards the descent
+/// specifically — a fix that only skipped routes *equal* to `crate` would leave
+/// this one stamped.
+#[test]
+fn root_extern_crate_does_not_upgrade_deeper_route() {
+    let mut out = output(vec![
+        extern_crate_record("std", "std", "crate"),
+        usage_record(
+            "crate::serializers::cow_str::CowStr",
+            "tendermint_proto",
+            Some("tendermint_proto"),
+            Some("crate::serializers"),
+        ),
+    ]);
+
+    resolve_local_facade_gateways(&mut out);
+
+    assert_eq!(
+        out.records[1].span.usage_crate.as_deref(),
+        Some("tendermint_proto"),
+        "the prefix walk must not fall back to the crate root"
+    );
+}
+
+/// CONTROL: a genuine `use std::X` in a crate whose root declares
+/// `extern crate std` must still be std. It arrives already at `usage_crate ==
+/// "std"` from the resolver, so it never depended on the root anchor — this
+/// asserts the fix did not cost us the detection.
+#[test]
+fn genuine_std_use_survives_alongside_root_extern_crate() {
+    let mut out = output(vec![
+        extern_crate_record("std", "std", "crate"),
+        usage_record("std::fs::File", "std", Some("std"), None),
+    ]);
+
+    resolve_local_facade_gateways(&mut out);
+
+    assert_eq!(out.records[1].span.usage_crate.as_deref(), Some("std"));
+}
+
+/// CONTROL: a submodule facade still upgrades even when the crate root *also*
+/// declares `extern crate std`. Dropping root anchors must not drop the
+/// submodule anchor that shares the record's route (backtrace: a root
+/// `extern crate std` at lib.rs plus `extern crate std as mystd` in
+/// symbolize/gimli.rs — only the latter is load-bearing).
+#[test]
+fn submodule_facade_still_upgrades_when_root_also_declares_extern_crate() {
+    let mut out = output(vec![
+        extern_crate_record("std", "std", "crate"),
+        anchor_at(27, "crate::symbolize::gimli"),
+        usage_record(
+            "crate::symbolize::gimli::mystd::fs::File",
+            "core",
+            Some("core"),
+            Some("crate::symbolize::gimli"),
+        ),
+    ]);
+
+    resolve_local_facade_gateways(&mut out);
+
+    assert_eq!(out.records[2].span.usage_crate.as_deref(), Some("std"));
+    assert_eq!(
+        out.records[2]
+            .gateway_anchor
+            .as_ref()
+            .expect("submodule anchor must still be recorded")
+            .start_line,
+        27,
+    );
+}
+
+/// A root-level `extern crate` for a non-std crate is dropped as an anchor too —
+/// the rule is about the root carrying no information, not about std specifically.
+#[test]
+fn root_anchor_is_dropped_regardless_of_target_crate() {
+    let mut out = output(vec![
+        extern_crate_record("alloc", "alloc", "crate"),
+        extern_crate_record("std", "std", "crate"),
+        usage_record("crate::local::Ty", "my_crate", Some("core"), Some("crate")),
+    ]);
+
+    resolve_local_facade_gateways(&mut out);
+
+    assert_eq!(out.records[2].span.usage_crate.as_deref(), Some("core"));
+}
+
+// ---------------------------------------------------------------------------
 // is_local_reexport
 // ---------------------------------------------------------------------------
 
