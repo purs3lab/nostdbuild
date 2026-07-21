@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use z3::ast::Bool;
 
@@ -485,6 +485,12 @@ struct FileVisitor<'a> {
     /// naming an X outside this set is erased rather than solved over — see
     /// [`parser::parse_main_attributes_direct_with`]. `None` disables the check.
     known_features: Option<Rc<HashSet<String>>>,
+    /// `macro_rules!` definitions seen in this file that apply one uniform
+    /// `#[cfg(...)]` to everything they expand (futures' `if_std!`), keyed by
+    /// macro name. Populated as the definition is visited, consumed at each
+    /// invocation below it — which is the order rustc requires anyway, since a
+    /// `macro_rules!` is only in scope after its definition.
+    macro_cfg_gates: HashMap<String, TokenStream>,
 }
 
 impl<'a> FileVisitor<'a> {
@@ -512,6 +518,7 @@ impl<'a> FileVisitor<'a> {
             hard_constraints: vec![],
             pending_includes: vec![],
             no_std_condition: None,
+            macro_cfg_gates: HashMap::new(),
         }
     }
 
@@ -998,22 +1005,26 @@ impl<'a> FileVisitor<'a> {
     /// span is NOT `from_expansion()` and the plugin skips it — only the literal
     /// tokens seen here can catch that shape.
     ///
-    /// The module is gated by the current inherited condition only — we do not
-    /// try to recover the `#[cfg]` the macro's *definition* wraps items in. That
-    /// is sound for a std *detector* (inherit-only can only under-gate, never
-    /// wrongly clear a real usage) and sufficient in practice: the std usage is
-    /// gated either by the parent `mod`'s feature (submodules) or by inner
-    /// `#[cfg]`s once the file is walked. Inline `mod X { .. }` is intentionally
-    /// not matched (`;` only) so a brace body never trips the scan.
-    /// NOTE: The above ignored case should be looked into if we find a crate that
-    /// actually exercises it.
-    fn scan_macro_mod_decls(&mut self, tokens: &TokenStream) {
-        let (cond, ext) = (self.current_condition(), self.current_externally_gated());
-        self.scan_macro_mod_decls_with(tokens, cond, ext);
-    }
-
-    /// As `scan_macro_mod_decls`, but with the gate supplied explicitly rather
-    /// than read off the condition stack.
+    /// Callers pass the gate explicitly rather than have it read off the
+    /// condition stack, because the two shapes that need this both hold their
+    /// gate somewhere the stack cannot see.
+    ///
+    /// `cfg_if!` arms: the arm's gate lives in `record_cfg_if`, and pushing a
+    /// stack level just to scan the body would leak that state into sibling
+    /// arms. Each arm passes its own condition, so several arms declaring the
+    /// same module name each get their own child node — the shape
+    /// `visit_item_mod`'s file-based branch already produces for multi-path
+    /// `cfg_attr`.
+    ///
+    /// `if_std!`-style macros: the gate is in the macro *definition*
+    /// (`macro_rules_uniform_cfg`), so the caller ANDs it into the inherited
+    /// condition before scanning. Without that, bucket H makes `if_std! { mod
+    /// mpsc; }`'s file visible only for every span in it to read as unguarded
+    /// std — 26 such spans in futures-channel-preview.
+    ///
+    /// Inline `mod X { .. }` is intentionally not matched (`;` only) so a brace
+    /// body never trips the scan. NOTE: that ignored case should be looked into
+    /// if we find a crate that actually exercises it.
     ///
     /// `cfg_if!` arms need this: the arm's gate lives in `record_cfg_if`, not on
     /// the stack, and pushing a level just to scan the body would leak that
@@ -1756,6 +1767,31 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
             return;
         }
 
+        // `macro_rules! if_std { … #[cfg(feature = "std")] $i … }` applies its
+        // gate at expansion time, so invocations below carry no attribute. Record
+        // it now; the invocation arm applies it to the item and to any `mod X;`
+        // the body declares.
+        if let Some(name) = &i.ident
+            && let Some(attr_ts) = macro_rules_uniform_cfg(&i.mac.tokens)
+        {
+            debug!(
+                "macro_rules! {} applies a uniform gate {} to everything it expands",
+                name, attr_ts
+            );
+            self.macro_cfg_gates.insert(name.to_string(), attr_ts);
+        }
+
+        // A gate contributed by the invoked macro's definition, if any.
+        let macro_attr = i
+            .mac
+            .path
+            .get_ident()
+            .and_then(|id| self.macro_cfg_gates.get(&id.to_string()).cloned());
+        let (macro_cond, macro_externally_gated) = match macro_attr {
+            Some(ts) => parse_attr_stream_cfg_ext(&ts, self.ctx, self.known_features.as_deref()),
+            None => (None, false),
+        };
+
         if i.mac.path.is_ident("include") {
             // Capture any `#[cfg(...)]` on the include! item — previously the early
             // return discarded it, so the included file's std usage looked ungated.
@@ -1782,18 +1818,14 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                     }
                 }
             }
-        } else if let Some(own) = self.parse_cfg_gate(&i.attrs) {
-            let externally_gated = self.is_externally_gated(&i.attrs);
-            self.push_item(LocalItem {
-                own_condition: Some(own),
-                span: self.get_span(&i.span()),
-                name: None,
-                externally_gated,
-            });
         } else {
-            let externally_gated = self.is_externally_gated(&i.attrs);
+            // The item's own `#[cfg]` (if any) ANDed with the gate its macro's
+            // definition applies. Either may be absent; both absent reproduces
+            // the previous unconditional LocalItem.
+            let own = self.parse_cfg_gate(&i.attrs);
+            let externally_gated = self.is_externally_gated(&i.attrs) || macro_externally_gated;
             self.push_item(LocalItem {
-                own_condition: None,
+                own_condition: Self::and_conditions(self.ctx, own, macro_cond.clone()),
                 span: self.get_span(&i.span()),
                 name: None,
                 externally_gated,
@@ -1803,7 +1835,13 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         // passthrough `$item` arg that syn can't see as a module; register any it
         // declares so their files are walked. Complements the plugin's
         // `macro_module_imports`, which only catches macro-*generated* mods.
-        self.scan_macro_mod_decls(&i.mac.tokens);
+        //
+        // The declared modules inherit the macro's gate too: `if_std! { mod mpsc; }`
+        // must give `mpsc.rs` the `feature = "std"` condition, or bucket H makes
+        // the file visible only for every span in it to read as unguarded std.
+        let child_cond = Self::and_conditions(self.ctx, self.current_condition(), macro_cond);
+        let child_externally_gated = self.current_externally_gated() || macro_externally_gated;
+        self.scan_macro_mod_decls_with(&i.mac.tokens, child_cond, child_externally_gated);
         syn::visit::visit_item_macro(self, i);
     }
 
@@ -2128,6 +2166,113 @@ fn normalize_subtree_source_files(node: &mut ModNode) {
 
 /// Whether a macro path refers to `cfg_if` — matches both the bare `cfg_if!` and
 /// the qualified `cfg_if::cfg_if!` forms by checking the final path segment.
+/// The `#[cfg(...)]` a `macro_rules!` applies to *every* item it expands, as in
+/// futures-preview's `if_std!`:
+///
+/// ```ignore
+/// macro_rules! if_std {
+///     ($($i:item)*) => ($( #[cfg(feature = "std")] $i )*)
+/// }
+///
+/// if_std! {            // <- no attribute here …
+///     mod lock;        // … so `mod lock` and everything below looked ungated
+///     pub mod mpsc;
+/// }
+/// ```
+///
+/// The gate lives in the *definition*; the invocation carries no attribute of
+/// its own. The plugin's `macro_body_cfgs` map cannot supply it: that attaches a
+/// definition's cfgs only to paths whose spans satisfy `from_expansion()`, and
+/// tokens passed through an `$i:item` matcher keep their original call-site
+/// spans. It handles the mirror-image shape, where the std path is written
+/// inside the definition too.
+///
+/// Returns the reconstructed attribute token stream, or `None` unless *every*
+/// rule leads with the *same* cfg. A spurious gate would excuse real std usage,
+/// so the match is deliberately strict rather than best-effort.
+fn macro_rules_uniform_cfg(tokens: &TokenStream) -> Option<TokenStream> {
+    let trees: Vec<TokenTree> = tokens.clone().into_iter().collect();
+    let mut idx = 0usize;
+    let mut agreed: Option<(String, TokenStream)> = None;
+    let mut rules = 0usize;
+
+    // Each rule is `<matcher> => <transcriber>` with an optional trailing `;`.
+    while idx < trees.len() {
+        if !matches!(trees.get(idx), Some(TokenTree::Group(_))) {
+            return None;
+        }
+        idx += 1;
+
+        match (trees.get(idx), trees.get(idx + 1)) {
+            (Some(TokenTree::Punct(a)), Some(TokenTree::Punct(b)))
+                if a.as_char() == '=' && b.as_char() == '>' => {}
+            _ => return None,
+        }
+        idx += 2;
+
+        let Some(TokenTree::Group(transcriber)) = trees.get(idx) else {
+            return None;
+        };
+        idx += 1;
+
+        if let Some(TokenTree::Punct(p)) = trees.get(idx)
+            && p.as_char() == ';'
+        {
+            idx += 1;
+        }
+
+        let attr = leading_cfg_attr(&transcriber.stream())?;
+        let key = attr.to_string();
+        match &agreed {
+            None => agreed = Some((key, attr)),
+            Some((prev, _)) if *prev == key => {}
+            // Rules disagree — we cannot name one gate for the invocation.
+            Some(_) => return None,
+        }
+        rules += 1;
+    }
+
+    (rules > 0).then_some(())?;
+    agreed.map(|(_, ts)| ts)
+}
+
+/// The `#[cfg(...)]` a transcriber applies to everything it emits. The body is
+/// usually wrapped in a `$( … )*` repetition (one expansion per captured item);
+/// after unwrapping that, the cfg must be the very first thing, so that it
+/// applies to each expanded item rather than to one arbitrary member of a list.
+fn leading_cfg_attr(stream: &TokenStream) -> Option<TokenStream> {
+    let outer: Vec<TokenTree> = stream.clone().into_iter().collect();
+
+    let trees: Vec<TokenTree> = match (outer.first(), outer.get(1)) {
+        (Some(TokenTree::Punct(p)), Some(TokenTree::Group(g)))
+            if p.as_char() == '$' && g.delimiter() == Delimiter::Parenthesis =>
+        {
+            g.stream().into_iter().collect()
+        }
+        _ => outer,
+    };
+
+    let (Some(TokenTree::Punct(hash)), Some(TokenTree::Group(bracket))) =
+        (trees.first(), trees.get(1))
+    else {
+        return None;
+    };
+    if hash.as_char() != '#' || bracket.delimiter() != Delimiter::Bracket {
+        return None;
+    }
+    let inner: Vec<TokenTree> = bracket.stream().into_iter().collect();
+    if !matches!(inner.first(), Some(TokenTree::Ident(id)) if *id == "cfg") {
+        return None;
+    }
+
+    let mut ts = TokenStream::new();
+    ts.extend([
+        TokenTree::Punct(hash.clone()),
+        TokenTree::Group(bracket.clone()),
+    ]);
+    Some(ts)
+}
+
 fn is_cfg_if_path(path: &syn::Path) -> bool {
     path.segments
         .last()
