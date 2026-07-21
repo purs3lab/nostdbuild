@@ -24,6 +24,7 @@ fn extern_crate_record(alias: &str, target: &str, defining_module: &str) -> Path
         defining_module: Some(defining_module.to_string()),
         macro_body_cfgs: vec![],
         is_extern_crate: true,
+        gateway_anchor: None,
     }
 }
 
@@ -42,6 +43,7 @@ fn usage_record(
         defining_module: None,
         macro_body_cfgs: vec![],
         is_extern_crate: false,
+        gateway_anchor: None,
     }
 }
 
@@ -121,6 +123,7 @@ fn facade_ignores_use_imports_not_extern_crate_decls() {
         defining_module: Some("crate::lib".to_string()),
         macro_body_cfgs: vec![],
         is_extern_crate: false, // not an extern crate declaration
+        gateway_anchor: None,
     };
 
     let mut out = output(vec![
@@ -156,6 +159,91 @@ fn facade_noop_when_no_extern_crate_records() {
     resolve_local_facade_gateways(&mut out);
 
     assert_eq!(out.records[0].span.usage_crate.as_deref(), Some("core"));
+}
+
+// ---------------------------------------------------------------------------
+// gateway_anchor propagation
+//
+// The gateway is only std because an `extern crate` declaration says so, so a
+// `#[cfg]` on that declaration gates every use site downstream — even though
+// those use sites carry no attribute. Recording which declaration a record
+// inherited from is what lets the gate travel the resolution route (backtrace:
+// one gated `extern crate std as mystd`, 18 unannotated uses of the alias).
+// ---------------------------------------------------------------------------
+
+/// An anchor at a distinguishable location, so an inherited anchor can be told
+/// apart from the record's own span.
+fn anchor_at(line: usize, defining_module: &str) -> PathRecord {
+    let mut r = extern_crate_record("mystd", "std", defining_module);
+    r.span.start_line = line;
+    r.span.end_line = line;
+    r
+}
+
+#[test]
+fn upgraded_record_records_the_anchor_it_inherited_from() {
+    let mut out = output(vec![
+        anchor_at(27, "crate::symbolize::gimli"),
+        usage_record(
+            "crate::symbolize::gimli::mystd::fs::File",
+            "core",
+            Some("core"),
+            Some("crate::symbolize::gimli"),
+        ),
+    ]);
+
+    resolve_local_facade_gateways(&mut out);
+
+    assert_eq!(out.records[1].span.usage_crate.as_deref(), Some("std"));
+    let anchor = out.records[1]
+        .gateway_anchor
+        .as_ref()
+        .expect("an upgraded record must record its anchor");
+    assert_eq!(
+        anchor.start_line, 27,
+        "the anchor must be the extern crate declaration's span, not the use site's"
+    );
+}
+
+#[test]
+fn record_not_upgraded_has_no_anchor() {
+    // CONTROL: the anchor is in an unrelated module, so no upgrade happens and
+    // nothing may be excused downstream.
+    let mut out = output(vec![
+        anchor_at(27, "crate::other_module"),
+        usage_record(
+            "crate::local::Type",
+            "core",
+            Some("core"),
+            Some("crate::local"),
+        ),
+    ]);
+
+    resolve_local_facade_gateways(&mut out);
+
+    assert_eq!(out.records[1].span.usage_crate.as_deref(), Some("core"));
+    assert!(
+        out.records[1].gateway_anchor.is_none(),
+        "a record that was never upgraded must not carry an anchor to be excused by"
+    );
+}
+
+#[test]
+fn already_std_record_gets_no_anchor() {
+    // CONTROL: records already at std are skipped before the route walk, so they
+    // gain no anchor — a genuine ungated `use std::X` must not become excusable
+    // just because some other module happens to declare a gated extern crate.
+    let mut out = output(vec![
+        anchor_at(27, "crate::lib"),
+        usage_record("crate::lib::Vec", "alloc", Some("std"), Some("crate::lib")),
+    ]);
+
+    resolve_local_facade_gateways(&mut out);
+
+    assert!(
+        out.records[1].gateway_anchor.is_none(),
+        "an already-std record must not inherit an anchor"
+    );
 }
 
 // ---------------------------------------------------------------------------

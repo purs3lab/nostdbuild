@@ -173,6 +173,8 @@ impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
                     span: readable_span,
                     macro_body_cfgs: vec![],
                     is_extern_crate: true,
+                    // Set by the driver's facade-gateway pass, not here.
+                    gateway_anchor: None,
                 });
             }
             _ => {
@@ -298,6 +300,8 @@ impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
                 span: readable_span,
                 macro_body_cfgs,
                 is_extern_crate: false,
+                // Set by the driver's facade-gateway pass, not here.
+                gateway_anchor: None,
             });
         }
 

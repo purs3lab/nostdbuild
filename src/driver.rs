@@ -156,6 +156,23 @@ pub fn is_local_reexport(r: &PathRecord) -> bool {
     false
 }
 
+/// Is this record's span excused by a non-feature cfg — either one written on
+/// the span itself, or one on the `extern crate` declaration it inherited its
+/// std gateway from?
+///
+/// The second half matters because `resolve_local_facade_gateways` is what makes
+/// these spans std in the first place. backtrace writes an aliased
+/// `extern crate std` once under a negated build-script cfg, then uses the alias
+/// in three files with no attribute anywhere; the gate reaches those use sites
+/// only by travelling the same resolution route the gateway did.
+fn span_externally_gated(root: &ModNode<'_>, exemplar: &PathRecord) -> bool {
+    visitor::externally_gated_for_span(root, &exemplar.span)
+        || exemplar
+            .gateway_anchor
+            .as_ref()
+            .is_some_and(|anchor| visitor::externally_gated_for_span(root, anchor))
+}
+
 /// For crates that wrap an external crate behind a local module facade (e.g.
 /// `mod std { extern crate std; pub use std::*; mod error { extern crate std;
 /// pub use std::error::Error; } }`), the HIR resolver sees the inner segments
@@ -166,7 +183,8 @@ pub fn is_local_reexport(r: &PathRecord) -> bool {
 /// declaration (identified by `is_extern_crate == true`) records the module
 /// where it was declared.  Usage records whose `local_route` passes through one
 /// of those modules then inherit the corresponding gateway crate in
-/// `usage_crate`.
+/// `usage_crate`, and the declaration's span in `gateway_anchor` so a `#[cfg]`
+/// on it can excuse them.
 ///
 /// Only `extern crate` declarations (not glob `use` imports) are used as
 /// anchors to avoid false positives from unconditional `use std::SomeType`
@@ -175,7 +193,7 @@ pub fn resolve_local_facade_gateways(out: &mut FeatureRunOutput) {
     // Build: module_path → gateway crate names, from extern crate declarations.
     // A module may declare multiple extern crates; collect all so any prefix
     // match on a local_route can find the right one.
-    let mut module_extern_crates: std::collections::HashMap<String, Vec<String>> =
+    let mut module_extern_crates: std::collections::HashMap<String, Vec<(String, ReadableSpan)>> =
         std::collections::HashMap::new();
 
     for r in &out.records {
@@ -185,7 +203,7 @@ pub fn resolve_local_facade_gateways(out: &mut FeatureRunOutput) {
             module_extern_crates
                 .entry(dm.to_string())
                 .or_default()
-                .push(r.definition_crate.clone());
+                .push((r.definition_crate.clone(), r.span.clone()));
         }
     }
 
@@ -214,19 +232,23 @@ pub fn resolve_local_facade_gateways(out: &mut FeatureRunOutput) {
         // specific match), e.g. "crate::std::error" → ["crate::std::error",
         // "crate::std", "crate"].
         let segments: Vec<&str> = local_route.split("::").collect();
-        let found = (1..=segments.len()).rev().any(|len| {
+        let found = (1..=segments.len()).rev().find_map(|len| {
             let prefix = segments[..len].join("::");
-            module_extern_crates
-                .get(&prefix)
-                .is_some_and(|crates| crates.iter().any(|c| c == "std"))
+            module_extern_crates.get(&prefix).and_then(|crates| {
+                crates
+                    .iter()
+                    .find(|(c, _)| c == "std")
+                    .map(|(_, anchor)| anchor.clone())
+            })
         });
 
-        if found {
+        if let Some(anchor) = found {
             debug!(
-                "For record with local_route '{}' and span {:?}, found std gateway in ancestors",
-                local_route, r.span
+                "For record with local_route '{}' and span {:?}, found std gateway in ancestors declared at {:?}",
+                local_route, r.span, anchor
             );
             r.span.usage_crate = Some("std".to_string());
+            r.gateway_anchor = Some(anchor);
         }
     }
 }
@@ -1285,7 +1307,7 @@ pub fn analyze_crate<'a>(
             analysis: a.clone(),
             ancestors: visitor::ancestors_for_span(&root, &a.exemplar.span)
                 .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)),
-            externally_gated: visitor::externally_gated_for_span(&root, &a.exemplar.span),
+            externally_gated: span_externally_gated(&root, &a.exemplar),
         })
         .collect::<Vec<_>>();
 
@@ -1305,7 +1327,7 @@ pub fn analyze_crate<'a>(
             analysis: a.clone(),
             ancestors: visitor::ancestors_for_span(&root, &a.exemplar.span)
                 .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)),
-            externally_gated: visitor::externally_gated_for_span(&root, &a.exemplar.span),
+            externally_gated: span_externally_gated(&root, &a.exemplar),
         })
         .collect::<Vec<_>>();
 
@@ -1330,7 +1352,7 @@ pub fn analyze_crate<'a>(
             analysis: a.clone(),
             ancestors: visitor::ancestors_for_span(&root, &a.exemplar.span)
                 .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)),
-            externally_gated: visitor::externally_gated_for_span(&root, &a.exemplar.span),
+            externally_gated: span_externally_gated(&root, &a.exemplar),
         })
         .collect::<Vec<_>>();
 

@@ -105,6 +105,15 @@ pub struct PathRecord {
     /// module-level extern-crate anchors for local facade gateway resolution.
     #[serde(default)]
     pub is_extern_crate: bool,
+    /// Span of the `extern crate` declaration this record inherited its
+    /// `usage_crate` from, when `resolve_local_facade_gateways` rewrote it.
+    ///
+    /// The gateway is only std because that declaration says so, so a `#[cfg]`
+    /// on the declaration gates every use site downstream of it — even though
+    /// those use sites carry no attribute of their own. Set by the driver, never
+    /// by the plugin, so this stays absent from the plugin's JSON.
+    #[serde(default)]
+    pub gateway_anchor: Option<ReadableSpan>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
