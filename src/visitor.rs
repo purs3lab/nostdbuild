@@ -13,6 +13,7 @@ use std::{
 };
 
 use std::collections::HashSet;
+use std::rc::Rc;
 use z3::ast::Bool;
 
 use crate::types::*;
@@ -480,6 +481,10 @@ struct FileVisitor<'a> {
     /// because path overrides above uses different rules based on whether
     /// this is a mod-rs file or not.
     is_mod_rs: bool,
+    /// Features Cargo can enable for the crate being analysed. `feature = "X"`
+    /// naming an X outside this set is erased rather than solved over — see
+    /// [`parser::parse_main_attributes_direct_with`]. `None` disables the check.
+    known_features: Option<Rc<HashSet<String>>>,
 }
 
 impl<'a> FileVisitor<'a> {
@@ -491,6 +496,7 @@ impl<'a> FileVisitor<'a> {
         inherited: Option<Bool<'a>>,
         is_mod_rs: bool,
         inherited_externally_gated: bool,
+        known_features: Option<Rc<HashSet<String>>>,
     ) -> Self {
         Self {
             ctx,
@@ -498,6 +504,7 @@ impl<'a> FileVisitor<'a> {
             source_dir,
             current_search_dir,
             is_mod_rs,
+            known_features,
             condition_stack: vec![inherited],
             externally_gated_stack: vec![inherited_externally_gated],
             children_stack: vec![vec![]],
@@ -544,7 +551,7 @@ impl<'a> FileVisitor<'a> {
             .iter()
             .find(|a| a.path().is_ident("cfg"))
             .and_then(|attr| {
-                let (b, _) = parser::parse_main_attributes_direct(attr, self.ctx);
+                let (b, _) = parser::parse_main_attributes_direct_with(attr, self.ctx, self.known_features.as_deref());
                 b
             })
     }
@@ -576,7 +583,7 @@ impl<'a> FileVisitor<'a> {
             .iter()
             .filter(|a| a.path().is_ident("cfg"))
             .any(|attr| {
-                let (equation, parsed) = parser::parse_main_attributes_direct(attr, self.ctx);
+                let (equation, parsed) = parser::parse_main_attributes_direct_with(attr, self.ctx, self.known_features.as_deref());
                 equation.is_none() && !parsed.constants.is_empty()
             })
     }
@@ -591,7 +598,7 @@ impl<'a> FileVisitor<'a> {
             .iter()
             .filter(|a| a.path().is_ident("cfg_attr"))
             .filter_map(|attr| {
-                let (b, parsed) = parser::parse_main_attributes_direct(attr, self.ctx);
+                let (b, parsed) = parser::parse_main_attributes_direct_with(attr, self.ctx, self.known_features.as_deref());
                 parsed.filepath.map(|fp| ModSource {
                     path: source_dir.join(&fp),
                     condition: b,
@@ -603,7 +610,7 @@ impl<'a> FileVisitor<'a> {
     fn does_cfg_attr_override_path(&self, attrs: &[syn::Attribute]) -> bool {
         attrs.iter().any(|a| {
             a.path().is_ident("cfg_attr")
-                && parser::parse_main_attributes_direct(a, self.ctx)
+                && parser::parse_main_attributes_direct_with(a, self.ctx, self.known_features.as_deref())
                     .1
                     .filepath
                     .is_some()
@@ -777,7 +784,7 @@ impl<'a> FileVisitor<'a> {
                     TokenTree::Punct(Punct::new('#', Spacing::Alone)),
                     TokenTree::Group(bracket),
                 ]);
-                parse_attr_stream_cfg(&ts, self.ctx)
+                parse_attr_stream_cfg(&ts, self.ctx, self.known_features.as_deref())
             }
             _ => None,
         }
@@ -819,7 +826,7 @@ impl<'a> FileVisitor<'a> {
                 TokenTree::Punct(hash.clone()),
                 TokenTree::Group(group.clone()),
             ]);
-            if let Some(cfg_bool) = parse_attr_stream_cfg(&ts, self.ctx) {
+            if let Some(cfg_bool) = parse_attr_stream_cfg(&ts, self.ctx, self.known_features.as_deref()) {
                 result = Self::and_conditions(self.ctx, result, Some(cfg_bool));
             }
             idx += 2;
@@ -863,7 +870,7 @@ impl<'a> FileVisitor<'a> {
                                 TokenTree::Punct(hash.clone()),
                                 TokenTree::Group(attr.clone()),
                             ]);
-                            parse_attr_stream_cfg_ext(&ts, self.ctx)
+                            parse_attr_stream_cfg_ext(&ts, self.ctx, self.known_features.as_deref())
                         }
                         _ => (None, false),
                     };
@@ -1120,7 +1127,12 @@ impl<'a> FileVisitor<'a> {
 
     /// Handle `include!("path")` by parsing the included file and visiting its
     /// contents inline (same condition/items/children stacks, no new ModNode).
-    fn visit_include_macro(&mut self, tokens: &proc_macro2::TokenStream, own: Option<Bool<'a>>) {
+    fn visit_include_macro(
+        &mut self,
+        tokens: &proc_macro2::TokenStream,
+        own: Option<Bool<'a>>,
+        own_externally_gated: bool,
+    ) {
         // Gate for everything the include contributes: the condition in effect at
         // the include site, ANDed with any `#[cfg(...)]` on the `include!` item
         // itself (e.g. bigdecimal's `#[cfg(feature = "std")] include!("./with_std.rs");`).
@@ -1191,7 +1203,11 @@ impl<'a> FileVisitor<'a> {
             included_path.display(),
             effective.is_some()
         );
-        let externally_gated = self.current_externally_gated();
+        // OR in the include!'s own attribute: a `#[cfg]` that names no feature
+        // Cargo can set (blst's `#[cfg(feature = "std")] include!("pippenger.rs")`,
+        // where a build script forces `std`) contributes no Bool to `effective`,
+        // so without this the included file would look completely ungated.
+        let externally_gated = self.current_externally_gated() || own_externally_gated;
         self.push_child(ModNode {
             name,
             source_file: included_path,
@@ -1416,7 +1432,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         if i.path().is_ident("cfg_attr")
             && !self.does_cfg_attr_override_path(std::slice::from_ref(i))
         {
-            let (own, parsed) = parser::parse_main_attributes_direct(i, self.ctx);
+            let (own, parsed) = parser::parse_main_attributes_direct_with(i, self.ctx, self.known_features.as_deref());
             if let Some(own) = own {
                 if parser::is_no_std(&parsed, true) {
                     self.no_std_condition = Some(own.clone());
@@ -1744,7 +1760,8 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
             // Capture any `#[cfg(...)]` on the include! item — previously the early
             // return discarded it, so the included file's std usage looked ungated.
             let own = self.parse_cfg_gate(&i.attrs);
-            self.visit_include_macro(&i.mac.tokens, own);
+            let own_externally_gated = self.is_externally_gated(&i.attrs);
+            self.visit_include_macro(&i.mac.tokens, own, own_externally_gated);
             return;
         } else if i.mac.path.is_ident("compile_error") {
             let attrs = i.attrs.iter().filter(|a| a.path().is_ident("cfg"));
@@ -1755,7 +1772,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                         let negated: Attribute = syn::parse_quote!(
                         #[cfg(not(#tokens))]
                         );
-                        let constraint = parser::parse_main_attributes_direct(&negated, self.ctx).0;
+                        let constraint = parser::parse_main_attributes_direct_with(&negated, self.ctx, self.known_features.as_deref()).0;
                         if let Some(c) = constraint {
                             self.hard_constraints.push(c);
                         }
@@ -1875,11 +1892,15 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
 /// `lib.rs` has a bare `mod set;`). Without folding this into the module's
 /// entry condition the file's std usage looks ungated and is misclassified as
 /// hard/unconditional std usage.
-fn file_inner_cfg_gate<'a>(ctx: &'a z3::Context, attrs: &[syn::Attribute]) -> Option<Bool<'a>> {
+fn file_inner_cfg_gate<'a>(
+    ctx: &'a z3::Context,
+    attrs: &[syn::Attribute],
+    known_features: Option<&HashSet<String>>,
+) -> Option<Bool<'a>> {
     attrs
         .iter()
         .filter(|a| a.path().is_ident("cfg"))
-        .filter_map(|attr| parser::parse_main_attributes_direct(attr, ctx).0)
+        .filter_map(|attr| parser::parse_main_attributes_direct_with(attr, ctx, known_features).0)
         .reduce(|acc, b| Bool::and(ctx, &[&acc, &b]))
 }
 
@@ -1890,6 +1911,9 @@ pub struct ModCollector<'a> {
     /// Deferred `include!(concat!(env!("OUT_DIR"), …))` sites across all files,
     /// for the driver to resolve once a plugin run reveals OUT_DIR.
     pub pending_includes: Vec<PendingInclude<'a>>,
+    /// See [`FileVisitor::known_features`]. `None` keeps every `feature = "…"`
+    /// a solver variable, which is what the fixture tests want.
+    known_features: Option<Rc<HashSet<String>>>,
 }
 
 impl<'a> ModCollector<'a> {
@@ -1899,6 +1923,16 @@ impl<'a> ModCollector<'a> {
             hard_constraints: vec![],
             no_std_condition: None,
             pending_includes: vec![],
+            known_features: None,
+        }
+    }
+
+    /// As `new`, but erases `feature = "X"` atoms naming features absent from
+    /// `known_features` (see [`declared_features`]).
+    pub fn with_known_features(ctx: &'a z3::Context, known_features: HashSet<String>) -> Self {
+        Self {
+            known_features: Some(Rc::new(known_features)),
+            ..Self::new(ctx)
         }
     }
 
@@ -1920,7 +1954,7 @@ impl<'a> ModCollector<'a> {
         let source_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
         // Fold any file-level inner `#![cfg(...)]` gate into the entry condition
         // so items gated only by the inner attribute are seen as conditional.
-        let file_gate = file_inner_cfg_gate(self.ctx, &syntax.attrs);
+        let file_gate = file_inner_cfg_gate(self.ctx, &syntax.attrs, self.known_features.as_deref());
         let effective = FileVisitor::and_conditions(self.ctx, inherited, file_gate);
         let mut visitor = FileVisitor::new(
             self.ctx,
@@ -1930,6 +1964,7 @@ impl<'a> ModCollector<'a> {
             effective.clone(),
             true, // entrypoint is always mod-rs style
             false,
+            self.known_features.clone(),
         );
         visitor.visit_file(&syntax);
         let (local_items, mut children, hard_constraints, no_std_cond, pending_includes) =
@@ -1941,7 +1976,7 @@ impl<'a> ModCollector<'a> {
         }
 
         for child in &mut children {
-            Self::resolve_child(self.ctx, child, &mut self.hard_constraints, &mut self.pending_includes);
+            Self::resolve_child(self.ctx, child, &mut self.hard_constraints, &mut self.pending_includes, self.known_features.clone());
         }
 
         ModNode {
@@ -1961,10 +1996,11 @@ impl<'a> ModCollector<'a> {
         child: &mut ModNode<'a>,
         hard_constraints: &mut Vec<Bool<'a>>,
         pending_includes: &mut Vec<PendingInclude<'a>>,
+        known_features: Option<Rc<HashSet<String>>>,
     ) {
         if child.is_inline {
             for gc in &mut child.children {
-                Self::resolve_child(ctx, gc, hard_constraints, pending_includes);
+                Self::resolve_child(ctx, gc, hard_constraints, pending_includes, known_features.clone());
             }
             return;
         }
@@ -1994,7 +2030,7 @@ impl<'a> ModCollector<'a> {
             // entry condition. A `mod set;` with no gate whose file starts with
             // `#![cfg(feature = "std")]` is gated entirely by the inner
             // attribute; without this its std usage looks ungated.
-            let file_gate = file_inner_cfg_gate(ctx, &syntax.attrs);
+            let file_gate = file_inner_cfg_gate(ctx, &syntax.attrs, known_features.as_deref());
             let effective =
                 FileVisitor::and_conditions(ctx, child.entry_condition.clone(), file_gate);
 
@@ -2006,6 +2042,7 @@ impl<'a> ModCollector<'a> {
                 effective.clone(),
                 is_mod_rs,
                 child.externally_gated,
+                known_features.clone(),
             );
             fv.visit_file(&syntax);
             let (local_items, mut grandchildren, hard_constraints_child, _no_std_cond, pend) =
@@ -2015,7 +2052,7 @@ impl<'a> ModCollector<'a> {
 
             // Recurse into grandchildren
             for gc in &mut grandchildren {
-                Self::resolve_child(ctx, gc, hard_constraints, pending_includes);
+                Self::resolve_child(ctx, gc, hard_constraints, pending_includes, known_features.clone());
             }
 
             child.source_dir = source_dir;
@@ -2100,8 +2137,12 @@ fn is_cfg_if_path(path: &syn::Path) -> bool {
 /// Parse a single outer attribute from a `# [ ... ]` token stream and, if it is
 /// a `cfg(...)`, return its Z3 condition. Returns `None` for non-cfg attributes
 /// (e.g. doc comments) or on parse failure.
-fn parse_attr_stream_cfg<'a>(ts: &TokenStream, ctx: &'a z3::Context) -> Option<Bool<'a>> {
-    parse_attr_stream_cfg_ext(ts, ctx).0
+fn parse_attr_stream_cfg<'a>(
+    ts: &TokenStream,
+    ctx: &'a z3::Context,
+    known_features: Option<&HashSet<String>>,
+) -> Option<Bool<'a>> {
+    parse_attr_stream_cfg_ext(ts, ctx, known_features).0
 }
 
 /// As `parse_attr_stream_cfg`, but also reports whether the predicate is gated
@@ -2112,6 +2153,7 @@ fn parse_attr_stream_cfg<'a>(ts: &TokenStream, ctx: &'a z3::Context) -> Option<B
 fn parse_attr_stream_cfg_ext<'a>(
     ts: &TokenStream,
     ctx: &'a z3::Context,
+    known_features: Option<&HashSet<String>>,
 ) -> (Option<Bool<'a>>, bool) {
     use syn::parse::Parser;
     let Ok(attrs) = syn::Attribute::parse_outer.parse2(ts.clone()) else {
@@ -2123,7 +2165,7 @@ fn parse_attr_stream_cfg_ext<'a>(
     if !attr.path().is_ident("cfg") {
         return (None, false);
     }
-    let (equation, parsed) = parser::parse_main_attributes_direct(&attr, ctx);
+    let (equation, parsed) = parser::parse_main_attributes_direct_with(&attr, ctx, known_features);
     let externally_gated = equation.is_none() && !parsed.constants.is_empty();
     (equation, externally_gated)
 }
@@ -2216,6 +2258,20 @@ pub fn package_has_lib(manifest: &str) -> bool {
         .workspace_packages()
         .iter()
         .any(|p| p.targets.iter().any(|t| t.kind.iter().any(is_lib_kind)))
+}
+
+/// Every feature Cargo can enable for this package.
+///
+/// Taken from `cargo metadata` rather than the `[features]` table directly,
+/// because cargo synthesises an implicit feature for each optional dependency
+/// (blst's `serde`) that the table alone does not list. Treating one of those
+/// as undeclared would erase a genuinely controllable feature.
+pub fn declared_features(manifest: &str) -> HashSet<String> {
+    run_cargo_metadata(manifest)
+        .workspace_packages()
+        .iter()
+        .flat_map(|p| p.features.keys().cloned())
+        .collect()
 }
 
 /// Collect every source file covered by a resolved module tree.

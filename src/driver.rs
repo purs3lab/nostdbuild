@@ -556,6 +556,13 @@ pub fn find_feature_combs_for_all_code<'a>(
     let feat_map = downloader::read_local_features(&manifest_toml);
     let impl_constraints = solver::feature_implication_constraints(ctx, &feat_map);
 
+    // Every feature cargo will accept for this package. A `cfg(feature = "X")`
+    // naming anything else is set from outside the feature system — typically a
+    // build script keying off the target — so it must not become a solver
+    // variable. See `parser::parse_main_attributes_direct_with`.
+    let known_features = visitor::declared_features(manifest);
+    debug!("Declared features for {}: {:?}", manifest, known_features);
+
     for entry_path in &entrypoints {
         if !entry_path.exists() {
             debug!(
@@ -570,7 +577,7 @@ pub fn find_feature_combs_for_all_code<'a>(
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
 
-        let mut collector = ModCollector::new(ctx);
+        let mut collector = ModCollector::with_known_features(ctx, known_features.clone());
         let mut root = collector.collect(entry_path, name);
         let no_std_cond = collector.no_std_condition.clone();
         let mut solved_files: HashSet<PathBuf> = HashSet::new();
@@ -1201,7 +1208,11 @@ pub fn compute_valid_cross_crate_items<'a>(
 /// into Z3 Bool ancestors, reusing the existing `parse_main_attributes_direct`
 /// path.  Returns `None` when the list is empty (so callers can chain with
 /// `or_else`).
-fn macro_body_cfgs_to_ancestors<'a>(ctx: &'a Context, cfgs: &[String]) -> Option<Vec<Bool<'a>>> {
+fn macro_body_cfgs_to_ancestors<'a>(
+    ctx: &'a Context,
+    cfgs: &[String],
+    known_features: &HashSet<String>,
+) -> Option<Vec<Bool<'a>>> {
     if cfgs.is_empty() {
         return None;
     }
@@ -1212,7 +1223,12 @@ fn macro_body_cfgs_to_ancestors<'a>(ctx: &'a Context, cfgs: &[String]) -> Option
             use syn::parse::Parser;
             let attrs = syn::Attribute::parse_outer.parse_str(s).ok()?;
             let attr = attrs.into_iter().next()?;
-            let (bool_opt, _) = parser::parse_main_attributes_direct(&attr, ctx);
+            // These cfgs come from the main crate's own macro bodies, so the
+            // same undeclared-feature erasure applies: blst's `sig_variant_impl!`
+            // body carries `#[cfg(feature = "std")]`, which would otherwise
+            // reintroduce the `std` variable the visitor just erased.
+            let (bool_opt, _) =
+                parser::parse_main_attributes_direct_with(&attr, ctx, Some(known_features));
             bool_opt
         })
         .collect();
@@ -1234,6 +1250,11 @@ pub fn analyze_crate<'a>(
 ) {
     let (root, covering_runs, hard_constraints, compile_error_constraints) =
         find_feature_combs_for_all_code(ctx, manifest, crate_name, telemetry);
+
+    // Same set the module tree was built against — macro-body cfgs must undergo
+    // the identical undeclared-feature erasure or they reintroduce variables the
+    // visitor already dropped.
+    let known_features = visitor::declared_features(manifest);
 
     let coverage_comparison = match run_default_features_pass(manifest, crate_name) {
         PassOutcome::Success { full_output, .. } => {
@@ -1263,7 +1284,7 @@ pub fn analyze_crate<'a>(
         .map(|a| ProbeTarget {
             analysis: a.clone(),
             ancestors: visitor::ancestors_for_span(&root, &a.exemplar.span)
-                .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs)),
+                .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)),
             externally_gated: visitor::externally_gated_for_span(&root, &a.exemplar.span),
         })
         .collect::<Vec<_>>();
@@ -1283,7 +1304,7 @@ pub fn analyze_crate<'a>(
         .map(|a| ProbeTarget {
             analysis: a.clone(),
             ancestors: visitor::ancestors_for_span(&root, &a.exemplar.span)
-                .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs)),
+                .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)),
             externally_gated: visitor::externally_gated_for_span(&root, &a.exemplar.span),
         })
         .collect::<Vec<_>>();
@@ -1308,7 +1329,7 @@ pub fn analyze_crate<'a>(
         .map(|a| ProbeTarget {
             analysis: a.clone(),
             ancestors: visitor::ancestors_for_span(&root, &a.exemplar.span)
-                .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs)),
+                .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)),
             externally_gated: visitor::externally_gated_for_span(&root, &a.exemplar.span),
         })
         .collect::<Vec<_>>();

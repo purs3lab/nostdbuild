@@ -1630,7 +1630,7 @@ pub fn parse_main_attributes<'a>(
     for attr in &attrs.attributes {
         if attr.path().get_ident().unwrap() == "cfg_attr" {
             // println!("{}", attr.to_token_stream());
-            (equation, parsed) = parse_meta_for_cfg_attr(&attr.meta, ctx);
+            (equation, parsed) = parse_meta_for_cfg_attr(&attr.meta, ctx, None);
             if is_no_std(&parsed, false) {
                 atleast_one_no_std = true;
                 debug!("Found no_std");
@@ -1655,7 +1655,32 @@ pub fn parse_main_attributes_direct<'a>(
     attr: &Attribute,
     ctx: &'a z3::Context,
 ) -> (Option<Bool<'a>>, ParsedAttr) {
-    parse_meta_for_cfg_attr(&attr.meta, ctx)
+    parse_meta_for_cfg_attr(&attr.meta, ctx, None)
+}
+
+/// As `parse_main_attributes_direct`, but erases `feature = "X"` atoms naming
+/// features Cargo cannot enable for this crate.
+///
+/// Such a cfg is only ever satisfied by something outside the feature system —
+/// in practice a build script emitting `cargo:rustc-cfg=feature="X"` based on
+/// the target (blst does this for `std` on any non-embedded target). Modelling
+/// X as a solver variable is wrong twice over: the gate is reported unguarded
+/// because negating X never removes the code, and X leaks into `--features`,
+/// where cargo rejects it outright ("does not have the feature `std`").
+///
+/// Erasing it instead reuses the bucket-G treatment of non-feature cfgs: the
+/// atom becomes a constant, so a gate naming only undeclared features is
+/// externally gated, and a mixed gate projects onto the features that remain.
+///
+/// Safe by construction — if nothing ever set X the gated code would be dead
+/// and emit no HIR records, so this only takes effect where X is genuinely
+/// forced on from outside.
+pub fn parse_main_attributes_direct_with<'a>(
+    attr: &Attribute,
+    ctx: &'a z3::Context,
+    known_features: Option<&HashSet<String>>,
+) -> (Option<Bool<'a>>, ParsedAttr) {
+    parse_meta_for_cfg_attr(&attr.meta, ctx, known_features)
 }
 
 /// Collect all feature names mentioned across all compile_error attributes.
@@ -1686,7 +1711,7 @@ pub fn parse_attributes<'a>(attrs: &Attributes, ctx: &'a z3::Context) -> Vec<Opt
     for attr in &attrs.attributes {
         let ident = attr.path().get_ident().unwrap();
         if ident == "cfg" {
-            (temp_eq, parsed) = parse_meta_for_cfg_attr(&attr.meta, ctx);
+            (temp_eq, parsed) = parse_meta_for_cfg_attr(&attr.meta, ctx, None);
             // TODO: Should this check be removed?
             if parsed.features.len() == 1 || parsed.logic.is_empty() {
                 // Attributes like `#[cfg (feature = "serde")]` are not interesting.
@@ -3328,11 +3353,22 @@ pub(crate) fn is_no_std(parsed: &ParsedAttr, check_all: bool) -> bool {
         .any(|c| to_check.contains(&c.as_str()))
 }
 
+/// `known_features` is the set of features Cargo can actually enable for the
+/// crate these attributes belong to (the `[features]` table plus the implicit
+/// features of optional dependencies). When supplied, a `feature = "X"` naming
+/// an X outside that set is treated as a bare constant rather than a Z3 Bool —
+/// see `parse_main_attributes_direct_with` for why.
+///
+/// Pass `None` to keep every `feature = "…"` a Bool. Callers that parse a
+/// *dependency's* attributes must pass `None` (or that dependency's own set):
+/// filtering a dependency's features against the main crate's list would erase
+/// real, controllable features.
 fn parse_token_stream<'a>(
     tokens: TokenStream,
     parsed: &mut ParsedAttr,
     ctx: &'a z3::Context,
     equation: &mut Option<Bool<'a>>,
+    known_features: Option<&HashSet<String>>,
 ) -> Vec<Bool<'a>> {
     let mut was_feature = false;
     let mut was_filepath = false;
@@ -3346,7 +3382,7 @@ fn parse_token_stream<'a>(
                 let mut group_expr = None;
                 let constants_before_call = parsed.constants.len();
                 let local_group_items =
-                    parse_token_stream(g.stream(), parsed, ctx, &mut group_expr);
+                    parse_token_stream(g.stream(), parsed, ctx, &mut group_expr, known_features);
 
                 let local_group_items_refs: Vec<&Bool> = local_group_items.iter().collect();
                 if local_group_items_refs.is_empty() {
@@ -3391,11 +3427,25 @@ fn parse_token_stream<'a>(
             proc_macro2::TokenTree::Literal(l) => {
                 if was_feature {
                     let feature_str = l.to_string()[1..l.to_string().len() - 1].to_string();
+                    was_feature = false;
+
+                    // A `feature = "X"` that Cargo cannot enable is not this
+                    // tool's axis to solve over: something outside the feature
+                    // system (typically a build script emitting
+                    // `cargo:rustc-cfg=feature="X"` off the target) decides it.
+                    // Record it as a constant so it is erased exactly like a
+                    // `target_os = "…"` atom, which both excuses the gate and
+                    // keeps X out of the `--features` lists we hand to cargo.
+                    if known_features.is_some_and(|known| !known.contains(&feature_str)) {
+                        debug!("cfg names undeclared feature {feature_str:?}; treating as external");
+                        parsed.constants.push(feature_str);
+                        continue;
+                    }
+
                     parsed.features.push(feature_str.clone());
 
                     let feature_var = Bool::new_const(ctx, feature_str);
                     group_items.push(feature_var);
-                    was_feature = false;
                 } else if was_filepath {
                     let filepath_str = l.to_string()[1..l.to_string().len() - 1].to_string();
                     parsed.filepath = Some(filepath_str);
@@ -3431,13 +3481,14 @@ fn parse_token_stream<'a>(
 fn parse_meta_for_cfg_attr<'a>(
     meta: &Meta,
     ctx: &'a z3::Context,
+    known_features: Option<&HashSet<String>>,
 ) -> (Option<Bool<'a>>, ParsedAttr) {
     match meta {
         Meta::List(list) => {
             let tokens = list.tokens.clone();
             let mut parsed = ParsedAttr::default();
             let mut equation = None;
-            parse_token_stream(tokens, &mut parsed, ctx, &mut equation);
+            parse_token_stream(tokens, &mut parsed, ctx, &mut equation, known_features);
             (equation, parsed)
         }
         _ => {
