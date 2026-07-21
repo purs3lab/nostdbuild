@@ -25,6 +25,18 @@ cfg_if::cfg_if! {
 #[cfg(has_std)]
 use std::collections::hash_map::RandomState;
 
+// Negated single-atom build-script cfg: the backtrace shape, an aliased extern
+// crate under a negated build-script cfg. The atom sits
+// inside a group that yields no feature Bool, so the group-empty branch of
+// `parse_token_stream` used to truncate away the one constant that proves a
+// gate was written — making this indistinguishable from ungated std. Two-atom
+// groups (`not(all(target_arch, target_os))` above) were spared by accident.
+#[cfg(not(has_std))]
+extern crate std as mystd;
+
+#[cfg(not(has_std))]
+use std::sync::atomic::AtomicUsize;
+
 // Statement-level target gate — no LocalItem was pushed for this shape at all
 // before, since the cfg produces no feature Bool.
 fn read_it() {

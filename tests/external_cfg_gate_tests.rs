@@ -95,9 +95,89 @@ fn statement_level_target_cfg_is_externally_gated() {
     });
 }
 
+#[test]
+fn negated_single_atom_cfg_is_externally_gated() {
+    with_tree(|tree, content| {
+        // backtrace: `#[cfg(not(backtrace_in_libstd))] extern crate std as mystd;`.
+        // The atom lives in a group that yields no feature Bool, so the
+        // group-empty branch of `parse_token_stream` truncated the one constant
+        // proving a gate exists. `not(all(a, b))` survived only because it
+        // contributed two constants and missed the `+ 1` test.
+        let span = span_of(content, "std::sync::atomic::AtomicUsize");
+        assert!(
+            externally_gated_for_span(tree, &span),
+            "#[cfg(not(has_std))] names no feature and must be externally gated"
+        );
+    });
+}
+
+#[test]
+fn negated_single_atom_extern_crate_is_externally_gated() {
+    with_tree(|tree, content| {
+        // The gateway anchor itself. `resolve_local_facade_gateways` propagates
+        // this declaration's crate to every use site of the alias, so if the
+        // anchor is not excusable neither is anything downstream of it.
+        let span = span_of(content, "extern crate std as mystd");
+        assert!(
+            externally_gated_for_span(tree, &span),
+            "a gated `extern crate std as X` anchor must be externally gated"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Parse-level tests. `is_externally_gated` reduces to `equation.is_none() &&
+// !constants.is_empty()`, so the truncation is observable directly on
+// `ParsedAttr` — including the `feature(no_std)` case the truncation exists to
+// protect, which has no route through the tree API.
+// ---------------------------------------------------------------------------
+
+fn constants_of(attr: syn::Attribute) -> (bool, Vec<String>) {
+    let cfg = z3::Config::new();
+    let ctx = z3::Context::new(&cfg);
+    let (equation, parsed) = nostd::parser::parse_main_attributes_direct_with(&attr, &ctx, None);
+    (equation.is_some(), parsed.constants)
+}
+
+#[test]
+fn negated_single_atom_keeps_its_constant() {
+    let (has_eq, constants) = constants_of(syn::parse_quote!(#[cfg(not(backtrace_in_libstd))]));
+    assert!(!has_eq, "a non-feature cfg yields no equation");
+    assert_eq!(
+        constants,
+        vec!["backtrace_in_libstd".to_string()],
+        "the atom must survive as evidence that a gate was written"
+    );
+}
+
+#[test]
+fn feature_group_no_std_is_still_truncated() {
+    // CONTROL for the fix. This is the shape the truncation exists for: a group
+    // directly following a `feature` ident. Were `no_std` left in `constants`,
+    // `is_no_std` would read this crate as unconditionally no_std.
+    let (_, constants) = constants_of(syn::parse_quote!(#[cfg_attr(nightly, feature(no_std))]));
+    assert!(
+        !constants.contains(&"no_std".to_string()),
+        "`feature(no_std)` must not leak a no_std constant"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Controls — these must NOT be excused, or the rule is a blanket amnesty.
 // ---------------------------------------------------------------------------
+
+#[test]
+fn negated_single_feature_is_not_externally_gated() {
+    // The polarity mirror of the fix, on the feature axis. `not(feature = "std")`
+    // produces a real Bool, so the group is non-empty and never reaches the
+    // truncation at all — it must stay probe-able rather than being swept up.
+    let (has_eq, constants) = constants_of(syn::parse_quote!(#[cfg(not(feature = "std"))]));
+    assert!(has_eq, "a negated feature gate must still yield an equation");
+    assert!(
+        constants.is_empty(),
+        "a feature gate contributes no bare constants"
+    );
+}
 
 #[test]
 fn plain_feature_gate_is_not_externally_gated() {

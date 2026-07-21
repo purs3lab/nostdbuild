@@ -3386,10 +3386,22 @@ fn parse_token_stream<'a>(
 
                 let local_group_items_refs: Vec<&Bool> = local_group_items.iter().collect();
                 if local_group_items_refs.is_empty() {
-                    // Prevent false positives when feature(no_std) is present in an attribute
-                    if parsed.constants.len() == constants_before_call + 1 {
+                    // Prevent false positives when feature(no_std) is present in an
+                    // attribute — i.e. a group directly following a `feature` ident,
+                    // as in `#![cfg_attr(feature = "nightly", feature(no_std))]`,
+                    // whose `no_std` would otherwise read as a no_std declaration.
+                    //
+                    // A group in any *other* position is a non-feature cfg —
+                    // `not(has_std)`, `all(target_os = "…")` — and its constant is
+                    // the only evidence `is_externally_gated` has that a gate was
+                    // written at all. Truncating unconditionally erased exactly the
+                    // single-atom groups (`not(backtrace_in_libstd)`), leaving them
+                    // indistinguishable from an ungated item; groups contributing
+                    // two or more constants were spared only by the `+ 1` test.
+                    if was_feature && parsed.constants.len() == constants_before_call + 1 {
                         parsed.constants.truncate(constants_before_call);
                     }
+                    was_feature = false;
                     continue;
                 }
                 let local_expr = match curr_logic {
