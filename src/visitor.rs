@@ -476,6 +476,21 @@ struct FileVisitor<'a> {
     /// If the current module has a path override (from #[path]),
     /// this is the directory to search for its children.
     current_search_dir: PathBuf,
+    /// Base directory a `#[path = "..."]` resolves against, which is *not*
+    /// `current_search_dir`. A bare `mod b;` in the non-mod-rs file `src/a.rs`
+    /// looks in `src/a/`, but `#[path = "b.rs"] mod b;` in that same file
+    /// resolves relative to the directory holding the file — `src/` — because a
+    /// path attribute outside an inline module block is relative to the source
+    /// file's own directory. Conflating the two doubled the module component
+    /// (backtrace's `#[path = "gimli/mmap_unix.rs"]` in `src/symbolize/gimli.rs`
+    /// resolved to `src/symbolize/gimli/gimli/mmap_unix.rs`), producing a
+    /// ModNode for a file that does not exist: no items, and no span ever
+    /// matching it, so everything the plugin found in the real file was
+    /// automatically unguarded.
+    ///
+    /// Inside an inline `mod`, a path attribute *is* relative to that module's
+    /// directory, so this follows `current_search_dir` down inline blocks.
+    path_attr_base: PathBuf,
     /// Whether the current file is mod-rs style. This is either the root
     /// files or files with name mod.rs. We need to track this
     /// because path overrides above uses different rules based on whether
@@ -507,6 +522,7 @@ impl<'a> FileVisitor<'a> {
         Self {
             ctx,
             current_file: path.to_path_buf(),
+            path_attr_base: source_dir.clone(),
             source_dir,
             current_search_dir,
             is_mod_rs,
@@ -1059,7 +1075,7 @@ impl<'a> FileVisitor<'a> {
                         if semi.as_char() == ';' {
                             let name = name.to_string();
                             let source_file = match pending_path.take() {
-                                Some(p) => self.current_search_dir.join(p),
+                                Some(p) => self.path_attr_base.join(p),
                                 None => {
                                     Self::default_mod_source(&self.current_search_dir, &name).path
                                 }
@@ -1366,6 +1382,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 self.push_level(effective.clone(), externally_gated);
 
                 let old_search_dir = self.current_search_dir.clone();
+                let old_path_attr_base = self.path_attr_base.clone();
                 if let Some(path) = path {
                     // Special case if the source is a mod-rs style file
                     if !self.is_mod_rs {
@@ -1381,10 +1398,14 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 } else {
                     self.current_search_dir = self.current_search_dir.join(&name);
                 }
+                // Within an inline module a path attribute is relative to that
+                // module's own directory, so the base follows the search dir in.
+                self.path_attr_base = self.current_search_dir.clone();
 
                 syn::visit::visit_item_mod(self, i);
 
                 self.current_search_dir = old_search_dir;
+                self.path_attr_base = old_path_attr_base;
 
                 let (items, children) = self.pop_level();
 
@@ -1409,7 +1430,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                     cfg_attr_sources
                 } else if let Some(path) = path {
                     vec![ModSource {
-                        path: self.current_search_dir.join(path),
+                        path: self.path_attr_base.join(path),
                         condition: None,
                     }]
                 } else {

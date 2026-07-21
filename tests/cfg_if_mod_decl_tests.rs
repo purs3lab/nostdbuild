@@ -115,6 +115,111 @@ fn target_gated_arm_mod_is_externally_gated() {
     });
 }
 
+// ---------------------------------------------------------------------------
+// #[path] base directory, from a non-mod-rs file.
+//
+// The fixtures above all live in lib.rs, where the search dir and the source dir
+// coincide, so they cannot see this bug. backtrace's cfg_if is in the child file
+// `src/symbolize/gimli.rs`, where they differ: a bare `mod x;` resolves into
+// `gimli/`, but `#[path]` resolves relative to `src/symbolize/`. Resolving both
+// against the search dir doubled the component and produced a node for
+// `src/symbolize/gimli/gimli/mmap_unix.rs` — a file that does not exist, so the
+// node had no items and no span ever matched it, leaving every std usage in the
+// real file unguarded despite the arm being target-gated.
+// ---------------------------------------------------------------------------
+
+fn sub_child<'t>(tree: &'t ModNode<'t>, name: &str) -> &'t ModNode<'t> {
+    let sub = children_named(tree, "sub");
+    assert_eq!(sub.len(), 1, "`mod sub;` must be registered");
+    children_named(sub[0], name)
+        .into_iter()
+        .find(|c| c.source_file.exists())
+        .unwrap_or_else(|| panic!("no `{name}` child of `sub` resolved to an existing file"))
+}
+
+#[test]
+fn path_attr_in_non_mod_rs_file_resolves_against_the_files_own_dir() {
+    with_tree(|tree| {
+        let sub = children_named(tree, "sub");
+        assert_eq!(sub.len(), 1, "`mod sub;` must be registered");
+        let gated = children_named(sub[0], "gated");
+        assert_eq!(gated.len(), 2, "both cfg_if arms must register a `gated` child");
+        for c in gated {
+            // The bug put these under `sub/deep/`, which does not exist.
+            assert!(
+                c.source_file.ends_with("cfg_if_mod_decl/deep/gated_win.rs")
+                    || c.source_file.ends_with("cfg_if_mod_decl/deep/gated_unix.rs"),
+                "#[path] in a non-mod-rs file must resolve against that file's own \
+                 directory, not the module search dir; got {:?}",
+                c.source_file
+            );
+            assert!(
+                c.source_file.exists(),
+                "resolved path must be a real file, got {:?}",
+                c.source_file
+            );
+        }
+    });
+}
+
+#[test]
+fn path_attr_outside_cfg_if_uses_the_same_base() {
+    with_tree(|tree| {
+        // `visit_item_mod`'s file-based branch had the identical confusion.
+        let plain = sub_child(tree, "plain");
+        assert!(
+            plain.source_file.ends_with("cfg_if_mod_decl/deep/plain.rs"),
+            "a plain #[path] mod must use the same base, got {:?}",
+            plain.source_file
+        );
+    });
+}
+
+#[test]
+fn std_in_a_correctly_resolved_gated_path_module_is_excused() {
+    with_tree(|tree| {
+        // The point of resolving the path at all: the arm is target-gated, so
+        // once the real file is walked its std usage must be excused.
+        let gated = sub_child(tree, "gated");
+        assert!(
+            !gated.local_items.is_empty(),
+            "the resolved file must actually be walked"
+        );
+        let span = ReadableSpan {
+            file: "deep/gated_unix.rs".to_string(),
+            start_line: 4,
+            start_col: 12,
+            end_line: 4,
+            end_col: 30,
+            usage_crate: Some("std".to_string()),
+        };
+        assert!(
+            externally_gated_for_span(tree, &span),
+            "std in a target-gated cfg_if arm's #[path] module must be externally gated"
+        );
+    });
+}
+
+#[test]
+fn ungated_path_module_std_stays_hard() {
+    with_tree(|tree| {
+        // CONTROL: correct resolution must not excuse anything by itself. `plain`
+        // is reached by an unconditional #[path] mod, so its std stays hard.
+        let span = ReadableSpan {
+            file: "deep/plain.rs".to_string(),
+            start_line: 4,
+            start_col: 12,
+            end_line: 4,
+            end_col: 30,
+            usage_crate: Some("std".to_string()),
+        };
+        assert!(
+            !externally_gated_for_span(tree, &span),
+            "an ungated #[path] module's std must remain hard std"
+        );
+    });
+}
+
 #[test]
 fn cfg_if_arms_are_recorded_once() {
     with_tree(|tree| {

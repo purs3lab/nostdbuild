@@ -28,3 +28,6 @@ cfg_if::cfg_if! {
         mod host;
     }
 }
+
+// Child file exercising #[path] resolution from a non-mod-rs file.
+mod sub;
