@@ -1499,6 +1499,21 @@ pub fn analyze_crate<'a>(
     let all_constraints = visitor::collect_all_items(&root, ctx);
 
     let analyses = classify_spans(&covering_runs);
+
+    // Spans where a derive-style collision and unavoidable std-ness coincide —
+    // see `Telemetry::collided_std_spans`. Recorded before any probing so the
+    // count reflects classification alone.
+    telemetry.collided_std_spans = analyses
+        .iter()
+        .filter(|a| a.std_in_every_run && !a.non_std_configs.is_empty())
+        .count();
+    if telemetry.collided_std_spans > 0 {
+        debug!(
+            "{} std span(s) collide with non-std records at the same position and are std in every run",
+            telemetry.collided_std_spans
+        );
+    }
+
     let always_std_imports = get_always_std_imports(&analyses);
     let mut always_std_others: Vec<SpanAnalysis> = get_always_std_others(&analyses)
         .into_iter()

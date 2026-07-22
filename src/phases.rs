@@ -77,6 +77,7 @@ pub fn classify_spans(runs: &[CoveringRun]) -> Vec<SpanAnalysis> {
     index
         .into_iter()
         .map(|(span, (exemplar, std_cfgs, non_std_cfgs, std_run_idxs))| {
+            let std_in_every_run = !std_cfgs.is_empty() && std_run_idxs.len() == runs.len();
             let verdict = match (std_cfgs.is_empty(), non_std_cfgs.is_empty()) {
                 (true, _) => SpanVerdict::NeverStd,
                 (false, true) => {
@@ -94,7 +95,7 @@ pub fn classify_spans(runs: &[CoveringRun]) -> Vec<SpanAnalysis> {
                     // normal conditional-probe path. `alternate_crates` is empty
                     // here because nothing else resolved at this span — it was
                     // absent, not resolved elsewhere.
-                    if std_run_idxs.len() == runs.len() {
+                    if std_in_every_run {
                         SpanVerdict::AlwaysStd
                     } else {
                         SpanVerdict::Conditional {
@@ -125,6 +126,7 @@ pub fn classify_spans(runs: &[CoveringRun]) -> Vec<SpanAnalysis> {
                 exemplar,
                 std_configs: std_cfgs,
                 non_std_configs: non_std_cfgs,
+                std_in_every_run,
             }
         })
         .collect()

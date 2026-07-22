@@ -326,6 +326,16 @@ pub struct Telemetry {
     /// weaker result than one that clears on a real feature condition, so the
     /// count is recorded to keep the two separable in the eval.
     pub externally_gated_spans: usize,
+    /// How many std spans share a source position with records from another
+    /// crate *and* resolve to std in every covering run.
+    ///
+    /// A `#[derive(...)]` attribute span collects the whole expansion under one
+    /// position, so a single source location routinely emits std and core
+    /// records at once. Such a span is not avoidable — no run exists in which
+    /// it is std-free — but it used to be classified `Conditional` purely
+    /// because of the co-located records, and `Conditional` never reaches
+    /// `all_hard`. This counts the spans that hinge on that distinction.
+    pub collided_std_spans: usize,
     /// Maximum length of constraint string while solving features
     pub max_contraint_length: Vec<(String, usize)>,
     /// Maximum depth of constraint string while solving features

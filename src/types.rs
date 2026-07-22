@@ -53,6 +53,13 @@ pub struct SpanAnalysis {
     pub std_configs: Vec<Vec<String>>,
     /// Features under which this span was observed resolving elsewhere.
     pub non_std_configs: Vec<Vec<String>>,
+    /// Every covering run produced a std record at this span.
+    ///
+    /// This is the run-aware fact the verdict is derived from, kept separately
+    /// because `std_configs` loses run identity (it holds one entry per
+    /// *record*, so one run contributing several std records at a span is
+    /// indistinguishable from several runs contributing one each).
+    pub std_in_every_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
