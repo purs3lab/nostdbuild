@@ -241,3 +241,31 @@ fn test_feature_implies_std_transitively_is_not_hard() {
         "Expected no hard std spans — std is transitively feature-gated, but got: {hard_spans:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// import-to-use propagation — a routeless bare use inherits its
+// externally-gated import's gate (canopen_rust shape)
+// ---------------------------------------------------------------------------
+
+/// A prelude re-exports `std::collections::HashMap` behind a target cfg; other
+/// code does `use crate::prelude::*` and names `HashMap` bare, with no route
+/// back to the import. `resolve_import_to_use_gateways` joins the bare use to
+/// the gated import on the bound name and lets it inherit the (target-cfg,
+/// hence external) gate. Nothing may be hard std.
+///
+/// Wiring guard: this drives the real `analyze_crate` entry point, not the pass
+/// in isolation — the join runs on each covering run's records before
+/// `classify_spans`, so if that call is removed this goes red. The ungated
+/// counterpart is `test_vec_used_via_use` (`use std::vec::Vec` at crate root +
+/// bare `Vec::new()`), which must STAY hard — the all-imports-gated rule refuses
+/// to excuse an ungated import.
+#[cargo_test]
+fn test_import_to_use_gated_std_is_not_hard() {
+    let (_p, manifest) = load_fixture("test_import_to_use_gated");
+    let hard_spans = run_analyze(&manifest, "test_import_to_use_gated");
+    assert!(
+        hard_spans.is_empty(),
+        "Expected no hard std spans — the bare `HashMap` uses inherit the gate of \
+         their externally-gated (target-cfg) import, but got: {hard_spans:?}"
+    );
+}

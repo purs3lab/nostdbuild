@@ -339,6 +339,116 @@ pub fn resolve_local_facade_gateways(out: &mut FeatureRunOutput) {
     }
 }
 
+/// The name a path binds or references: its first `::`-segment for a use site
+/// (`HashMap::new` → `HashMap`), its last for an import (`std::collections::HashMap`
+/// → `HashMap`, the name it brings into scope).
+fn use_name(path_text: &str) -> Option<&str> {
+    path_text.split("::").next().filter(|s| !s.is_empty())
+}
+fn import_bound_name(path_text: &str) -> Option<&str> {
+    path_text.rsplit("::").next().filter(|s| !s.is_empty())
+}
+
+/// Propagate an externally-gated `use` import's gate onto the routeless bare
+/// uses of the name it introduced.
+///
+/// A crate that splits std vs. no_std by a **non-feature cfg** (e.g. per-target)
+/// typically imports the std item in one arm and its no_std replacement in the
+/// other:
+///
+/// ```ignore
+/// #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+/// mod std_items { pub use std::collections::HashMap; }   // externally gated
+/// #[cfg(...linux)] pub use std_items::*;
+/// #[cfg(all(target_arch = "arm", target_os = "none"))]
+/// mod no_std_items { pub use hashbrown::HashMap; }        // the no_std arm
+///
+/// use crate::prelude::*;
+/// fn f(m: &HashMap<K, V>) {}   // bare `HashMap`, reported std on the host build
+/// ```
+///
+/// The bare use resolves to `std::collections::HashMap` on the host, but carries
+/// no `local_route` and no `defining_module`, so `resolve_local_facade_gateways`
+/// (which needs a route) never links it back to the gated import.
+///
+/// We join import → use on the **bound name** (the import's last path segment,
+/// the use's first), restricted to std records on both sides. This is more robust
+/// than a resolved-`def_path` join, which does not survive std's re-exports:
+/// `use std::string::String` resolves to `alloc::string::String`,
+/// `use std::fmt::Debug` to `core::fmt::Debug` — the import's enclosing module is
+/// not a prefix of the canonical item, so the two sides' def paths differ.
+///
+/// A routeless bare std use inherits a gate (via `gateway_anchor`, the same
+/// mechanism `resolve_local_facade_gateways` uses) iff **every** std `use` import
+/// that binds its name is externally gated. The all-imports-must-agree rule is
+/// load-bearing: if any import of that name is *un*gated, the name genuinely
+/// resolves to std even in the no_std configuration, so we attach nothing and let
+/// the use fail. (This follows J's "yield nothing rather than guess" precedent.)
+/// Because we only touch std-resolved records on both sides, a same-named *local*
+/// item never enters — its uses resolve to the crate, not std.
+pub fn resolve_import_to_use_gateways(out: &mut FeatureRunOutput, root: &ModNode<'_>) {
+    // bound name → (every std import of it is externally gated?, an anchor span).
+    // The anchor is the span of one such gated import; a `#[cfg]` on it gates the
+    // inheriting uses.
+    let mut import_gate: std::collections::HashMap<String, (bool, Option<ReadableSpan>)> =
+        std::collections::HashMap::new();
+
+    for r in &out.records {
+        if r.context != PathContext::ImportDeclaration
+            || r.span.usage_crate.as_deref() != Some("std")
+        {
+            continue;
+        }
+        let Some(name) = import_bound_name(&r.path_text) else {
+            continue;
+        };
+        let gated = visitor::externally_gated_for_span(root, &r.span);
+        let entry = import_gate.entry(name.to_string()).or_insert((true, None));
+        entry.0 &= gated;
+        if gated && entry.1.is_none() {
+            entry.1 = Some(r.span.clone());
+        }
+    }
+
+    // Keep only names whose every std import is externally gated and that have a
+    // concrete anchor to point at.
+    let gated_imports: std::collections::HashMap<String, ReadableSpan> = import_gate
+        .into_iter()
+        .filter_map(|(name, (all_gated, anchor))| match (all_gated, anchor) {
+            (true, Some(a)) => Some((name, a)),
+            _ => None,
+        })
+        .collect();
+
+    if gated_imports.is_empty() {
+        return;
+    }
+
+    for r in &mut out.records {
+        // Only routeless bare std *uses* — the leak `resolve_local_facade_gateways`
+        // cannot see. Imports (which carry the gate themselves) and routed facade
+        // uses are excluded.
+        if r.span.usage_crate.as_deref() != Some("std")
+            || r.context == PathContext::ImportDeclaration
+            || r.local_route.is_some()
+            || r.defining_module.is_some()
+            || r.gateway_anchor.is_some()
+        {
+            continue;
+        }
+        let Some(name) = use_name(&r.path_text) else {
+            continue;
+        };
+        if let Some(anchor) = gated_imports.get(name) {
+            debug!(
+                "Routeless std use '{}' at {:?} inherits the gate of its externally-gated import(s) of `{}` at {:?}",
+                r.path_text, r.span, name, anchor
+            );
+            r.gateway_anchor = Some(anchor.clone());
+        }
+    }
+}
+
 /// Runs the plugin with the crate's default features (no --no-default-features, no extra flags).
 /// Used to produce a baseline for coverage comparison — simulating what a default-only tool sees.
 pub fn run_default_features_pass(manifest: &str, crate_name: &str) -> PassOutcome {
@@ -1356,8 +1466,17 @@ pub fn analyze_crate<'a>(
     visitor::ModNode<'a>,
     HashSet<CrossCrateRef>,
 ) {
-    let (root, covering_runs, hard_constraints, compile_error_constraints) =
+    let (root, mut covering_runs, hard_constraints, compile_error_constraints) =
         find_feature_combs_for_all_code(ctx, manifest, crate_name, telemetry);
+
+    // A routeless bare std use (e.g. a `HashMap` brought in by a glob re-export of
+    // an externally-gated `use std::collections::HashMap`) carries no route back
+    // to the import `resolve_local_facade_gateways` needs. Join it to that import
+    // by `def_path` and inherit the gate. Needs the module tree (`root`) to know
+    // which imports are externally gated, so it runs here rather than at load time.
+    for run in &mut covering_runs {
+        resolve_import_to_use_gateways(&mut run.output, &root);
+    }
 
     // Same set the module tree was built against — macro-body cfgs must undergo
     // the identical undeclared-feature erasure or they reintroduce variables the

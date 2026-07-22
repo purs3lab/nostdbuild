@@ -1,0 +1,11 @@
+[package]
+name = "test_import_to_use_gated"
+description = "A routeless bare use inherits its externally-gated import's gate"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "test_import_to_use_gated"
+
+[workspace]

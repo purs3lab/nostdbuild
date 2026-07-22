@@ -593,3 +593,194 @@ fn load_plugin_output_neutralizes_panic_expansions() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// resolve_import_to_use_gateways — a routeless bare std use inherits the gate
+// of the externally-gated import that introduced its name (canopen_rust shape).
+// ---------------------------------------------------------------------------
+
+mod import_to_use {
+    use super::*;
+    use nostd::driver::resolve_import_to_use_gateways;
+    use nostd::visitor::{LocalItem, ModNode};
+    use std::path::PathBuf;
+
+    /// A record at a specific line so import and use spans are distinguishable.
+    fn at(mut r: PathRecord, line: usize) -> PathRecord {
+        r.span.start_line = line;
+        r.span.end_line = line;
+        r
+    }
+
+    fn std_import(path_text: &str, line: usize) -> PathRecord {
+        let mut r = usage_record(path_text, "std", Some("std"), None);
+        r.context = PathContext::ImportDeclaration;
+        r.defining_module = Some("crate::prelude::std_items".to_string());
+        at(r, line)
+    }
+
+    /// A routeless bare std use (no local_route, no defining_module).
+    fn bare_std_use(path_text: &str, line: usize) -> PathRecord {
+        let mut r = usage_record(path_text, "std", Some("std"), None);
+        r.context = PathContext::Type;
+        at(r, line)
+    }
+
+    /// A tree over `src/lib.rs` that reports exactly the given lines as
+    /// externally gated (one gated `LocalItem` per line, spanning cols 0..200).
+    fn tree_gating(gated_lines: &[usize]) -> ModNode<'static> {
+        let local_items = gated_lines
+            .iter()
+            .map(|&line| LocalItem {
+                own_condition: None,
+                span: ReadableSpan {
+                    file: "src/lib.rs".to_string(),
+                    start_line: line,
+                    start_col: 0,
+                    end_line: line,
+                    end_col: 200,
+                    usage_crate: None,
+                },
+                name: None,
+                externally_gated: true,
+            })
+            .collect();
+        ModNode {
+            name: "crate".to_string(),
+            source_file: PathBuf::from("src/lib.rs"),
+            source_dir: PathBuf::from("src"),
+            entry_condition: None,
+            local_items,
+            children: vec![],
+            is_inline: false,
+            externally_gated: false,
+        }
+    }
+
+    /// Core case: the only std import of `HashMap` is externally gated, so the
+    /// bare use inherits its gate via `gateway_anchor`.
+    #[test]
+    fn gated_import_lends_its_anchor_to_the_bare_use() {
+        let mut out = output(vec![
+            std_import("std::collections::HashMap", 10),
+            bare_std_use("HashMap", 20),
+        ]);
+
+        resolve_import_to_use_gateways(&mut out, &tree_gating(&[10]));
+
+        let anchor = out.records[1]
+            .gateway_anchor
+            .as_ref()
+            .expect("the bare use must inherit the gated import's anchor");
+        assert_eq!(
+            anchor.start_line, 10,
+            "the anchor must be the import's span, not the use site's"
+        );
+    }
+
+    /// `HashMap::new` — the use's first path segment is the bound name.
+    #[test]
+    fn method_call_use_is_matched_by_first_segment() {
+        let mut out = output(vec![
+            std_import("std::collections::HashMap", 10),
+            bare_std_use("HashMap::new", 20),
+        ]);
+
+        resolve_import_to_use_gateways(&mut out, &tree_gating(&[10]));
+
+        assert!(out.records[1].gateway_anchor.is_some());
+    }
+
+    /// CONTROL: an *ungated* std import of the name must not excuse the use —
+    /// the name genuinely resolves to std even in the no_std configuration.
+    #[test]
+    fn ungated_import_does_not_excuse_the_use() {
+        let mut out = output(vec![
+            std_import("std::collections::HashMap", 10),
+            bare_std_use("HashMap", 20),
+        ]);
+
+        // line 10 is NOT gated
+        resolve_import_to_use_gateways(&mut out, &tree_gating(&[]));
+
+        assert!(
+            out.records[1].gateway_anchor.is_none(),
+            "an ungated import must not lend a gate"
+        );
+    }
+
+    /// CONTROL: the all-imports-must-agree rule. `HashMap` is imported both by a
+    /// gated import and by an unrelated ungated one — refuse to excuse, since the
+    /// ungated path keeps the name std-resolving without the gate.
+    #[test]
+    fn mixed_gated_and_ungated_imports_do_not_excuse() {
+        let mut out = output(vec![
+            std_import("std::collections::HashMap", 10), // gated
+            std_import("std::collections::HashMap", 15), // ungated
+            bare_std_use("HashMap", 20),
+        ]);
+
+        resolve_import_to_use_gateways(&mut out, &tree_gating(&[10]));
+
+        assert!(
+            out.records[2].gateway_anchor.is_none(),
+            "any ungated import of the name must block the excuse"
+        );
+    }
+
+    /// CONTROL: a differently-named bare use is not touched by a gated import.
+    #[test]
+    fn name_must_match() {
+        let mut out = output(vec![
+            std_import("std::collections::HashMap", 10),
+            bare_std_use("Vec", 20),
+        ]);
+
+        resolve_import_to_use_gateways(&mut out, &tree_gating(&[10]));
+
+        assert!(out.records[1].gateway_anchor.is_none());
+    }
+
+    /// CONTROL: a *routed* use (has a local_route) is the facade pass's domain,
+    /// not this one — left untouched here.
+    #[test]
+    fn routed_use_is_left_to_the_facade_pass() {
+        let mut routed = usage_record("HashMap", "std", Some("std"), Some("crate::foo"));
+        routed.context = PathContext::Type;
+        let mut out = output(vec![std_import("std::collections::HashMap", 10), at(routed, 20)]);
+
+        resolve_import_to_use_gateways(&mut out, &tree_gating(&[10]));
+
+        assert!(out.records[1].gateway_anchor.is_none());
+    }
+
+    /// CONTROL: an already-anchored use is not re-anchored.
+    #[test]
+    fn existing_anchor_is_preserved() {
+        let mut used = bare_std_use("HashMap", 20);
+        used.gateway_anchor = Some(span(Some("std")));
+        let existing = used.gateway_anchor.clone();
+        let mut out = output(vec![std_import("std::collections::HashMap", 10), used]);
+
+        resolve_import_to_use_gateways(&mut out, &tree_gating(&[10]));
+
+        assert_eq!(out.records[1].gateway_anchor, existing);
+    }
+
+    /// CONTROL: a non-std import (e.g. the no_std arm binding `HashMap` to
+    /// hashbrown) is ignored — only std imports establish the gate set, and only
+    /// std uses are excused.
+    #[test]
+    fn non_std_import_is_ignored() {
+        let mut hashbrown = usage_record("hashbrown::HashMap", "hashbrown", Some("hashbrown"), None);
+        hashbrown.context = PathContext::ImportDeclaration;
+        let mut out = output(vec![at(hashbrown, 10), bare_std_use("HashMap", 20)]);
+
+        resolve_import_to_use_gateways(&mut out, &tree_gating(&[10]));
+
+        assert!(
+            out.records[1].gateway_anchor.is_none(),
+            "no std import of `HashMap` exists, so there is nothing to inherit"
+        );
+    }
+}
