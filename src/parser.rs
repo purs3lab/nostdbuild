@@ -1696,6 +1696,105 @@ pub fn compile_error_feature_names(attrs: &Attributes, ctx: &z3::Context) -> Has
         .collect()
 }
 
+/// Transitively close a set of enabled feature names over the crate's own
+/// `[features]` table, so that `blst = ["blstrs_plus"]` marks `blstrs_plus`
+/// enabled once `blst` is.
+///
+/// Only plain feature-to-feature links are followed — the same rule
+/// `feature_implication_constraints` uses. `dep:foo` suppresses the implicit
+/// feature, and `dep/feat` references a *dependency's* feature, which is not a
+/// name a `compile_error!` in this crate can be testing.
+fn close_over_local_features(enabled: &HashSet<String>, features: &[(String, TupleVec)]) -> HashSet<String> {
+    let mut closed = enabled.clone();
+    loop {
+        let mut grew = false;
+        for (feat_name, deps) in features {
+            if !closed.contains(feat_name) {
+                continue;
+            }
+            for (dep_name, qualifier) in deps {
+                if qualifier != "dep:" && dep_name == qualifier && closed.insert(dep_name.clone()) {
+                    grew = true;
+                }
+            }
+        }
+        if !grew {
+            return closed;
+        }
+    }
+}
+
+/// Check a concrete, final feature set against every `compile_error!` constraint
+/// the crate declares, and return the ones it violates (rendered for logging).
+///
+/// This is the closed-world counterpart to the stage-2 check inside
+/// `process_crate`. That one asserts only the *enabled* features as true and
+/// leaves every other feature free, so a disjunctive constraint like uom's
+/// "at least one storage type" is trivially satisfiable and the check never
+/// fires — it could not detect bulletproofs-bls shipping a feature set with
+/// neither `rust` nor `blst`. Here a feature the build will not pass to cargo is
+/// asserted **false**, which is what actually happens at compile time.
+///
+/// The closed world is restricted to the atoms appearing in the constraint
+/// being checked. Closing over every declared feature would need the implicit
+/// per-optional-dependency features cargo synthesises, and nothing outside the
+/// constraint's own atoms can change its truth value.
+///
+/// Runs against the post-minimize feature list, not the solver's `enable`:
+/// features re-added by `final_feature_list_main` from `[features] default` are
+/// genuinely on, and uom's `f32`/`f64` arrive that way. Checking `enable` alone
+/// would report uom as violated when its build is fine.
+///
+/// # Arguments
+/// * `ctx` - The Z3 context
+/// * `attrs` - The main crate's attributes, holding the compile_error conditions
+/// * `crate_info` - Supplies the `[features]` table for the transitive closure
+/// * `enabled` - Features the build passes to cargo via `--features`
+/// * `default_features_on` - False when the build passes `--no-default-features`
+/// # Returns
+/// The violated constraints, rendered; empty when the feature set is consistent.
+pub fn violated_compile_error_constraints(
+    ctx: &z3::Context,
+    attrs: &Attributes,
+    crate_info: &CrateInfo,
+    enabled: &[String],
+    default_features_on: bool,
+) -> Vec<String> {
+    if attrs.compile_error_attrs.is_empty() {
+        return Vec::new();
+    }
+
+    let mut on: HashSet<String> = enabled.iter().cloned().collect();
+    if default_features_on {
+        on.insert("default".to_string());
+    }
+    let on = close_over_local_features(&on, &crate_info.features);
+    debug!("Effective feature set for compile_error check: {:?}", on);
+
+    let mut violated = Vec::new();
+    for attr in attrs.compile_error_attrs.iter() {
+        let (eq, parsed) = parse_main_attributes_direct(attr, ctx);
+        let Some(eq) = eq else {
+            continue;
+        };
+        let solver = z3::Solver::new(ctx);
+        solver.assert(&eq);
+        // Close the world over this constraint's own atoms: on => true, off => false.
+        for feat in &parsed.features {
+            let var = Bool::new_const(ctx, feat.as_str());
+            if on.contains(feat) {
+                solver.assert(&var);
+            } else {
+                solver.assert(&var.not());
+            }
+        }
+        if solver.check() != z3::SatResult::Sat {
+            violated.push(format!("{:?}", eq));
+        }
+    }
+    violated
+}
+
 /// Parse the attributes of a dependency crate.
 /// This does not need to verify if the crate is no_std or not.
 /// # Arguments

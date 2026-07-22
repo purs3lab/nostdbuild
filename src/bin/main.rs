@@ -332,23 +332,16 @@ fn main() -> anyhow::Result<()> {
 
     exchange.main_enable = enable.clone();
 
-    // Derive non_minimalizable from the intersection of the solved enable list and the feature
-    // names that must hold for no_std. Two sources:
+    // Feature names that must hold for no_std, from two sources:
     //   - compile_error conditions: avoids arbitrary Z3 picks from disjunctive constraints
     //     (e.g. uom's "at least one storage type" rule) selecting a feature that pulls in std.
     //   - hard constraints (final_condition): features a probe proved are required to avoid std
     //     (e.g. lazy_static's `spin_no_std`, which guards `extern crate std` in inline_lazy.rs).
     //     Without this the main-level minimize would strip such a feature as a droppable
     //     optional-dep enabler even though it is load-bearing for no_std.
-    // Only features already needed for no_std can appear here.
-    let non_minimalizable: HashSet<String> = {
-        let ce_features = parser::compile_error_feature_names(&main_attributes, &ctx);
-        enable
-            .iter()
-            .filter(|f| ce_features.contains(*f) || hard_constraint_features.contains(*f))
-            .cloned()
-            .collect()
-    };
+    // Intersected with the actual feature list below — only features the build really
+    // enables can be non-minimalizable.
+    let ce_features = parser::compile_error_feature_names(&main_attributes, &ctx);
 
     println!(
         "Initial main crate features to enable: {:?}, features to disable: {:?}",
@@ -382,6 +375,23 @@ fn main() -> anyhow::Result<()> {
         "Main crate arguments after extending with enable: {:?}",
         main_features
     );
+
+    // Intersect against `main_features`, not the solver's `enable`. A feature can be
+    // load-bearing for a compile_error constraint yet never appear in `enable`: when the
+    // constraint shares no feature with the crate's no_std condition it is withheld from
+    // the solver (see `excluded_compile_error_eqs` in parser.rs), so the feature reaches
+    // the build only because `final_feature_list_main` re-added it from `[features]
+    // default`. Filtering on `enable` left it unprotected and `minimize` dropped it —
+    // bulletproofs-bls lost `blst` that way and shipped a set satisfying neither `rust`
+    // nor `blst`. uom is the case that must not regress: its `f32`/`f64` arrive from
+    // `default` too, and are now pinned rather than surviving by luck.
+    let non_minimalizable: HashSet<String> = main_features
+        .iter()
+        .chain(enable.iter())
+        .filter(|f| ce_features.contains(*f) || hard_constraint_features.contains(*f))
+        .cloned()
+        .collect();
+    debug!("Non-minimalizable main features: {:?}", non_minimalizable);
 
     parser::minimize(
         &exchange.crate_info,
@@ -558,6 +568,31 @@ fn main() -> anyhow::Result<()> {
         final_args.push(combined_features.join(","));
     }
     exchange.telemetry.final_features_length = final_features_len;
+
+    // Verify the feature set we are about to build actually satisfies the crate's own
+    // `compile_error!` conditions. The stage-2 check inside `process_crate` leaves
+    // unselected features free and so is trivially satisfiable; this one closes the world.
+    let violated = parser::violated_compile_error_constraints(
+        &ctx,
+        &main_attributes,
+        &exchange.crate_info,
+        &combined_features
+            .iter()
+            .flat_map(|s| s.split(','))
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        !disable_default,
+    );
+    if !violated.is_empty() {
+        println!(
+            "WARNING: final feature set for {} violates compile_error constraint(s): {:?}",
+            exchange.name_with_version, violated
+        );
+        exchange
+            .telemetry
+            .compile_error_constraint_unsatisfied
+            .push(exchange.name_with_version.clone());
+    }
 
     println!("Final args: {:?}", final_args);
     let one_succeeded = if no_std {
