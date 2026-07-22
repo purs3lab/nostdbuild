@@ -568,14 +568,25 @@ impl<'a> FileVisitor<'a> {
     }
 
     /// Parse the own cfg gate from a set of attributes, ignoring cfg_attr.
-    /// TODO: Does this parse multiple if there are multiple cfg attrs? We could support that if needed.
     fn parse_cfg_gate(&self, attrs: &[syn::Attribute]) -> Option<Bool<'a>> {
+        // Multiple `#[cfg(..)]` attributes stacked on one item are a logical AND
+        // in Rust — the item is present only if every one holds. Taking just the
+        // first (the old `.find`) dropped the rest, so
+        // `#[cfg(feature="block-padding")] #[cfg(feature="std")] impl ..` came out
+        // gated on `block-padding` alone; negating that gate then re-enabled std
+        // and manufactured a false positive (inout). AND them all, letting an
+        // attribute that erases to no feature (a non-feature cfg → `None`) fall
+        // through as free, exactly as `and_conditions` handles it.
         attrs
             .iter()
-            .find(|a| a.path().is_ident("cfg"))
-            .and_then(|attr| {
-                let (b, _) = parser::parse_main_attributes_direct_with(attr, self.ctx, self.known_features.as_deref());
-                b
+            .filter(|a| a.path().is_ident("cfg"))
+            .fold(None, |acc, attr| {
+                let (b, _) = parser::parse_main_attributes_direct_with(
+                    attr,
+                    self.ctx,
+                    self.known_features.as_deref(),
+                );
+                Self::and_conditions(self.ctx, acc, b)
             })
     }
 
@@ -641,7 +652,16 @@ impl<'a> FileVisitor<'a> {
     }
 
     /// Standard mod file resolution: foo.rs or foo/mod.rs
+    ///
+    /// A raw-identifier module (`mod r#move;`) resolves to the file named by the
+    /// *unraw* identifier — `move.rs` / `move/mod.rs` — since `r#` is only a lexer
+    /// escape for using a keyword as a name, not part of the name itself. syn's
+    /// `Ident::to_string()` keeps the `r#` prefix, so strip it here or the whole
+    /// subtree resolves to a nonexistent `r#move.rs` and is never covered (an
+    /// automatic false positive for any std usage inside it — ref_kind's
+    /// `mod r#move;`).
     pub fn default_mod_source(source_dir: &Path, name: &str) -> ModSource<'static> {
+        let name = name.strip_prefix("r#").unwrap_or(name);
         let rs = source_dir.join(format!("{}.rs", name));
         let mod_rs = source_dir.join(name).join("mod.rs");
         let path = if rs.exists() { rs } else { mod_rs };
