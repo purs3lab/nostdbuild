@@ -648,7 +648,12 @@ fn all_subtree_deps_only(
         .find(|(name, _)| name == feat_name)
         .map(|(_, v)| v)
     else {
-        return false;
+        // An undeclared feature is normally opaque — we cannot see what it pulls
+        // in, so it is not droppable. The one exception is the feature Cargo
+        // synthesises for an optional dependency: it is absent from `[features]`
+        // precisely *because* its only value is `dep:<itself>`, which is the
+        // deps-only condition this function tests for.
+        return is_implicit_optional_dep_feature(feat_name, crate_info, optional_deps);
     };
     for (k, v) in values {
         let is_dep_ref = optional_deps.contains(k) && (v == "dep:" || v.as_str() == k.as_str());
@@ -747,11 +752,19 @@ fn find_direct_dep_enabler(
     if !visited.insert(feat_name.to_string()) {
         return None;
     }
-    let values = crate_info
+    let Some(values) = crate_info
         .features
         .iter()
         .find(|(name, _)| name == feat_name)
-        .map(|(_, v)| v)?;
+        .map(|(_, v)| v)
+    else {
+        // Cargo's implicit feature for an optional dep enables that dep directly
+        // and has no manifest entry to walk, so it is its own enabler.
+        let this_dep = [dep_name.to_string()];
+        return (feat_name == dep_name
+            && is_implicit_optional_dep_feature(feat_name, crate_info, &this_dep))
+        .then(|| feat_name.to_string());
+    };
 
     if dep_entry_string_in_toml(dep_name, values).is_some() {
         return Some(feat_name.to_string());
@@ -1004,6 +1017,37 @@ pub fn minimize(
             }
         }
     }
+
+    // Cargo's implicit `D = ["dep:D"]` feature is a consequence of D being reachable,
+    // never an independent enabler: the only way to switch it on is to name it in the
+    // enable list. So once this pass has invalidated D's declared enablers, the (D, D)
+    // pair is stale — and it is not inert, because `should_skip_dep` re-derives the
+    // link by walking the *in-memory* `[features]` table, which still holds the entry
+    // we just stripped from the manifest. watchface's `std = ["chrono"]` is the case:
+    // the entry was moved to custom-disabled, but the walk `default -> std -> chrono`
+    // still matched the implicit pair and the dep was treated as live, pulling chrono
+    // into a no_std build with only `alloc` — enough to switch the crate's own
+    // `#[cfg(feature = "chrono")]` code on while withholding the `clock` it needs.
+    let stale_implicit: Vec<(String, String)> = optional_dep_feats
+        .iter()
+        .filter(|(dep, feat)| dep == feat)
+        .filter(|(dep, _)| !handled.contains(&(dep.clone(), dep.clone())))
+        // Only when this pass actually cut a declared enabler of the dep. A dep nobody
+        // touched keeps its pair.
+        .filter(|(dep, _)| handled.iter().any(|(d, _)| d == dep))
+        // If the implicit feature is genuinely in the enable list and survived the pass,
+        // the dep really is on and must not be skipped.
+        .filter(|(dep, _)| !enable.contains(dep) || to_drop.contains(dep.as_str()))
+        .filter(|(dep, _)| is_implicit_optional_dep_feature(dep, crate_info, &optional_deps))
+        .cloned()
+        .collect();
+    if !stale_implicit.is_empty() {
+        debug!(
+            "[minimize] Evicting stale implicit optional-dep features: {:?}",
+            stale_implicit
+        );
+    }
+    handled.extend(stale_implicit);
 
     // Remove handled pairs so should_skip_dep sees the updated state.
     optional_dep_feats.retain(|pair| !handled.contains(pair));
@@ -2530,9 +2574,52 @@ pub fn features_for_optional_deps(crate_info: &CrateInfo) -> TupleVec {
         }
     }
 
+    // The loop above can only see features the manifest declares. Cargo also
+    // synthesises one feature per optional dependency (see
+    // `is_implicit_optional_dep_feature`), and that feature is a legal
+    // `cfg(feature = "…")` atom — rand_core's
+    // `#[cfg(all(feature = "getrandom", not(feature = "std")))]` makes
+    // `getrandom` a solver variable, and the solver switches it on because it is
+    // compatible with `not(std)`. Without a pair here `minimize` has no way to
+    // learn the feature exists only to pull in a dependency, so it survives into
+    // the enable list and drags the dependency into a build that never needed it.
+    for dep_name in &optional_deps {
+        if is_implicit_optional_dep_feature(dep_name, crate_info, &optional_deps) {
+            result.push((dep_name.clone(), dep_name.clone()));
+        }
+    }
+
     result.sort();
     result.dedup();
     result
+}
+
+/// Returns `true` when `feat_name` is the feature Cargo synthesises for an
+/// optional dependency of the same name, rather than one the manifest declares.
+///
+/// Cargo creates an implicit `foo = ["dep:foo"]` for every optional dependency
+/// `foo`, unless the manifest either declares a `[features] foo` entry of its own
+/// or references the dependency as `dep:foo` somewhere in the feature table —
+/// either suppresses the implicit feature. Enabling it does exactly one thing:
+/// pull in the dependency.
+fn is_implicit_optional_dep_feature(
+    feat_name: &str,
+    crate_info: &CrateInfo,
+    optional_deps: &[String],
+) -> bool {
+    if !optional_deps.iter().any(|d| d == feat_name) {
+        return false;
+    }
+    let declared = crate_info
+        .features
+        .iter()
+        .any(|(name, _)| name == feat_name);
+    let suppressed = crate_info.features.iter().any(|(_, values)| {
+        values
+            .iter()
+            .any(|(k, v)| k == feat_name && v.as_str() == "dep:")
+    });
+    !declared && !suppressed
 }
 
 /// Determine if a dependency should be skipped.

@@ -1,0 +1,284 @@
+#![feature(rustc_private)]
+
+//! Regression test for Cargo's implicit per-optional-dependency features.
+//!
+//! `rand_core` declares `[dependencies.getrandom] optional = true` and never
+//! mentions `dep:getrandom`, so Cargo synthesises a `getrandom` feature that
+//! appears nowhere in `[features]`. Its source has
+//! `#[cfg(all(feature = "getrandom", not(feature = "std")))]`, which makes
+//! `getrandom` a solver variable that is satisfiable alongside `not(std)` — so
+//! the model switches it on and it lands in the enable list.
+//!
+//! `minimize` could not take it back out: `features_for_optional_deps` only
+//! enumerated declared `[features]` entries, so the feature was never recognised
+//! as one whose sole purpose is pulling in an optional dependency. The feature
+//! survived into `custom_no_std_feature_enabled`, dragging `getrandom` into
+//! bare-metal builds where it has no backend (`compile_error!("target is not
+//! supported")` on all 26 targets in `consts::TARGET_LIST`).
+
+use std::collections::HashSet;
+use std::fs;
+use std::path::PathBuf;
+
+use nostd::CrateInfo;
+use nostd::consts;
+use nostd::parser::{features_for_optional_deps, minimize};
+use nostd::types::TupleVec;
+
+/// A `[dependencies]` entry — only `name` and `optional` are read here.
+fn dep(name: &str) -> (CrateInfo, Vec<String>) {
+    (
+        CrateInfo {
+            name: name.to_string(),
+            version: "0.0.0".to_string(),
+            optional: true,
+            ..Default::default()
+        },
+        Vec::new(),
+    )
+}
+
+/// rand_core 0.6.4's feature graph: `getrandom` and `serde` are optional deps,
+/// `std = ["alloc", "getrandom", "getrandom/std"]`. The bare `getrandom` value
+/// is what keeps Cargo's implicit feature alive — no `dep:` prefix anywhere.
+fn rand_core_like() -> CrateInfo {
+    CrateInfo {
+        name: "fixture".to_string(),
+        version: "0.0.0".to_string(),
+        deps_and_features: vec![dep("getrandom"), dep("serde")],
+        features: vec![
+            ("alloc".to_string(), vec![]),
+            (
+                "serde1".to_string(),
+                vec![("serde".to_string(), "serde".to_string())],
+            ),
+            (
+                "std".to_string(),
+                vec![
+                    ("alloc".to_string(), "alloc".to_string()),
+                    ("getrandom".to_string(), "getrandom".to_string()),
+                    ("getrandom".to_string(), "std".to_string()),
+                ],
+            ),
+        ],
+        ..Default::default()
+    }
+}
+
+/// `minimize` reads the crate's manifest off disk through
+/// `determine_manifest_file`, so a fixture needs a real file at the path that
+/// derives from its name-with-version. Each test uses its own directory so the
+/// parallel test threads cannot collide.
+struct Fixture {
+    name_with_version: String,
+    dir: PathBuf,
+}
+
+impl Fixture {
+    fn new(slug: &str) -> Self {
+        Self::with_manifest(
+            slug,
+            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n\n\
+             [dependencies.getrandom]\nversion = \"0.2\"\noptional = true\n\n\
+             [dependencies.serde]\nversion = \"1\"\noptional = true\n\n\
+             [features]\nalloc = []\nserde1 = [\"serde\"]\n\
+             std = [\"alloc\", \"getrandom\", \"getrandom/std\"]\n",
+        )
+    }
+
+    fn with_manifest(slug: &str, manifest: &str) -> Self {
+        let name_with_version = format!("{slug}:0.0.0");
+        let dir = PathBuf::from(consts::DOWNLOAD_PATH).join(format!("{slug}-0.0.0"));
+        fs::create_dir_all(&dir).expect("failed to create fixture crate dir");
+        fs::write(dir.join("Cargo.toml"), manifest).expect("failed to write fixture manifest");
+        Self {
+            name_with_version,
+            dir,
+        }
+    }
+
+    fn run_minimize(
+        &self,
+        crate_info: &CrateInfo,
+        enable: &mut Vec<String>,
+        non_minimalizable: &HashSet<String>,
+    ) -> TupleVec {
+        self.run_minimize_with_default(crate_info, enable, non_minimalizable, true)
+    }
+
+    /// Returns the surviving `(dep, feature)` pairs — what `should_skip_dep` reads
+    /// afterwards to decide whether an optional dep is still live.
+    fn run_minimize_with_default(
+        &self,
+        crate_info: &CrateInfo,
+        enable: &mut Vec<String>,
+        non_minimalizable: &HashSet<String>,
+        disable_default: bool,
+    ) -> TupleVec {
+        let mut optional_dep_feats: TupleVec = features_for_optional_deps(crate_info);
+        minimize(
+            crate_info,
+            &mut optional_dep_feats,
+            enable,
+            non_minimalizable,
+            disable_default,
+            &self.name_with_version,
+            None,
+            None,
+        );
+        optional_dep_feats
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+fn implicit_optional_dep_feature_is_reported() {
+    let pairs = features_for_optional_deps(&rand_core_like());
+
+    // The implicit feature Cargo synthesises for the optional dep.
+    assert!(
+        pairs.contains(&("getrandom".to_string(), "getrandom".to_string())),
+        "implicit `getrandom` feature must be reported as a dep enabler, got {pairs:?}"
+    );
+    // Control: the declared enablers are still found, so the new pairs are an
+    // addition rather than a replacement.
+    assert!(
+        pairs.contains(&("getrandom".to_string(), "std".to_string())),
+        "`std` must still be reported as enabling `getrandom`, got {pairs:?}"
+    );
+    assert!(
+        pairs.contains(&("serde".to_string(), "serde1".to_string())),
+        "`serde1` must still be reported as enabling `serde`, got {pairs:?}"
+    );
+}
+
+#[test]
+fn implicit_optional_dep_feature_is_minimized_away() {
+    let crate_info = rand_core_like();
+    let fixture = Fixture::new("implicit-dep-feat-drop");
+
+    let mut enable = vec!["getrandom".to_string()];
+    fixture.run_minimize(&crate_info, &mut enable, &HashSet::new());
+
+    assert!(
+        enable.is_empty(),
+        "`getrandom` exists only to pull in the optional dep and must be dropped, got {enable:?}"
+    );
+}
+
+#[test]
+fn declared_feature_with_real_content_survives() {
+    let crate_info = rand_core_like();
+    let fixture = Fixture::new("implicit-dep-feat-keep");
+
+    // Mutual control for the test above: `alloc` is a declared feature that
+    // gates real code, so minimize must leave it alone. Without this, a
+    // minimize that emptied the enable list unconditionally would pass.
+    let mut enable = vec!["alloc".to_string(), "getrandom".to_string()];
+    fixture.run_minimize(&crate_info, &mut enable, &HashSet::new());
+
+    assert_eq!(
+        enable,
+        vec!["alloc".to_string()],
+        "only the implicit dep feature may be dropped"
+    );
+}
+
+/// watchface 0.4.0's feature graph: `default = ["std"]`, `std = ["chrono"]`, with
+/// `chrono` an optional dep referenced bare (no `dep:`), so Cargo's implicit
+/// `chrono` feature is alive.
+fn watchface_like() -> CrateInfo {
+    CrateInfo {
+        name: "fixture".to_string(),
+        version: "0.0.0".to_string(),
+        deps_and_features: vec![dep("chrono")],
+        features: vec![
+            (
+                "default".to_string(),
+                vec![("std".to_string(), "std".to_string())],
+            ),
+            (
+                "std".to_string(),
+                vec![("chrono".to_string(), "chrono".to_string())],
+            ),
+        ],
+        ..Default::default()
+    }
+}
+
+const WATCHFACE_MANIFEST: &str = "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n\n\
+     [dependencies.chrono]\nversion = \"0.4\"\noptional = true\n\n\
+     [features]\ndefault = [\"std\"]\nstd = [\"chrono\"]\n";
+
+#[test]
+fn implicit_pair_dies_with_its_declared_enabler() {
+    let crate_info = watchface_like();
+    let fixture = Fixture::with_manifest("implicit-dep-feat-severed", WATCHFACE_MANIFEST);
+
+    // Nothing is explicitly enabled; `default` is live, so minimize strips the
+    // `chrono` entry out of `std` and moves it to custom-disabled. The declared
+    // pairs ("chrono","default") and ("chrono","std") are invalidated with it.
+    let mut enable: Vec<String> = Vec::new();
+    let surviving =
+        fixture.run_minimize_with_default(&crate_info, &mut enable, &HashSet::new(), false);
+
+    // The implicit pair must go too. Left behind, `should_skip_dep` rebuilds the
+    // link by walking the in-memory `default -> std -> chrono` chain — the manifest
+    // entry it re-reads is the one minimize just removed — and treats the severed
+    // dep as live. That is what dragged chrono into watchface's no_std build with
+    // only `alloc`, switching on `#[cfg(feature = "chrono")]` code that needs
+    // `chrono/clock` and failing with `E0412 cannot find type Local`.
+    assert!(
+        surviving.is_empty(),
+        "every pair for the severed dep must be invalidated, got {surviving:?}"
+    );
+}
+
+#[test]
+fn implicit_pair_survives_when_the_feature_is_really_enabled() {
+    let crate_info = watchface_like();
+    let fixture = Fixture::with_manifest("implicit-dep-feat-live", WATCHFACE_MANIFEST);
+
+    // Mutual control for the test above. Here the implicit feature is on the command
+    // line and pinned, so the dep genuinely is part of the build even though the
+    // `std -> chrono` entry gets stripped. Evicting the pair would make
+    // `should_skip_dep` skip a dependency that is actually being compiled.
+    let non_minimalizable: HashSet<String> = ["chrono".to_string()].into_iter().collect();
+    let mut enable = vec!["chrono".to_string()];
+    let surviving =
+        fixture.run_minimize_with_default(&crate_info, &mut enable, &non_minimalizable, false);
+
+    assert_eq!(
+        enable,
+        vec!["chrono".to_string()],
+        "a non-minimalizable implicit feature must not be dropped"
+    );
+    assert!(
+        surviving.contains(&("chrono".to_string(), "chrono".to_string())),
+        "the implicit pair must survive while the feature is enabled, got {surviving:?}"
+    );
+}
+
+#[test]
+fn required_implicit_feature_is_kept() {
+    let crate_info = rand_core_like();
+    let fixture = Fixture::new("implicit-dep-feat-required");
+
+    // When a parent crate's hard constraints require the dep feature, it lands in
+    // `non_minimalizable_features` and must survive — dropping it there would
+    // break the parent instead of the target.
+    let non_minimalizable: HashSet<String> = ["getrandom".to_string()].into_iter().collect();
+    let mut enable = vec!["getrandom".to_string()];
+    fixture.run_minimize(&crate_info, &mut enable, &non_minimalizable);
+
+    assert_eq!(
+        enable,
+        vec!["getrandom".to_string()],
+        "a non-minimalizable implicit feature must not be dropped"
+    );
+}
