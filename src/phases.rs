@@ -38,94 +38,114 @@ pub fn solve_with_negation<'a>(
     }
 }
 
+/// Everything accumulated for one source position across all covering runs.
+struct SpanAcc {
+    /// Representative record. Preferentially a std one — see `note_record`.
+    exemplar: PathRecord,
+    exemplar_is_std: bool,
+    std_cfgs: Vec<Vec<String>>,
+    non_std_cfgs: Vec<Vec<String>>,
+    /// *Which* runs saw std here. `std_cfgs` pushes once per record, so a run
+    /// with several std records at one span would be counted multiple times —
+    /// the set keeps run identity.
+    std_run_idxs: std::collections::HashSet<usize>,
+    /// Distinct non-std crates that resolved at this position.
+    alts: std::collections::BTreeSet<String>,
+}
+
+impl SpanAcc {
+    fn new(rec: &PathRecord) -> Self {
+        SpanAcc {
+            exemplar: rec.clone(),
+            exemplar_is_std: rec.span.usage_crate.as_deref() == Some("std"),
+            std_cfgs: Vec::new(),
+            non_std_cfgs: Vec::new(),
+            std_run_idxs: std::collections::HashSet::new(),
+            alts: std::collections::BTreeSet::new(),
+        }
+    }
+
+    fn note_record(&mut self, rec: &PathRecord, run_idx: usize, features: &[String]) {
+        match rec.span.usage_crate.as_deref() {
+            Some("std") => {
+                // A span can hold std and non-std records at once (below), and
+                // which one arrives first is arbitrary. Phase 3 reads the
+                // exemplar's `context` to route the span — imports are probed
+                // under a `PathContext::ImportDeclaration` filter, so a non-std
+                // exemplar could send a std *usage* down the import path, where
+                // it can never appear in the filtered candidates and would be
+                // excused as "disappeared". `is_local_reexport` reads the
+                // exemplar's `local_route` with the same effect. So whenever the
+                // span is std at all, the exemplar must be one of its std records.
+                if !self.exemplar_is_std {
+                    self.exemplar = rec.clone();
+                    self.exemplar_is_std = true;
+                }
+                self.std_cfgs.push(features.to_vec());
+                self.std_run_idxs.insert(run_idx);
+            }
+            Some(other) => {
+                self.non_std_cfgs.push(features.to_vec());
+                self.alts.insert(other.to_string());
+            }
+            None => {} // unresolved; ignore for classification
+        }
+    }
+}
+
 pub fn classify_spans(runs: &[CoveringRun]) -> Vec<SpanAnalysis> {
-    let mut index: std::collections::HashMap<
-        ReadableSpan,
-        (
-            PathRecord,
-            Vec<Vec<String>>,
-            Vec<Vec<String>>,
-            std::collections::HashSet<usize>,
-        ),
-    > = std::collections::HashMap::new();
+    let mut index: std::collections::HashMap<ReadableSpan, SpanAcc> =
+        std::collections::HashMap::new();
 
     for (run_idx, run) in runs.iter().enumerate() {
         for rec in &run.output.records {
-            let entry = index.entry(rec.span.clone()).or_insert_with(|| {
-                (
-                    rec.clone(),
-                    Vec::new(),
-                    Vec::new(),
-                    std::collections::HashSet::new(),
-                )
-            });
-
-            match rec.span.usage_crate.as_deref() {
-                Some("std") => {
-                    entry.1.push(run.features.clone());
-                    // Track *which* runs saw std here. `std_cfgs` pushes once per
-                    // record, so a run with several std records at one span would
-                    // be counted multiple times — the set keeps run identity.
-                    entry.3.insert(run_idx);
-                }
-                Some(_) => entry.2.push(run.features.clone()),
-                None => {} // unresolved; ignore for classification
-            }
+            index
+                .entry(rec.span.clone())
+                .or_insert_with(|| SpanAcc::new(rec))
+                .note_record(rec, run_idx, &run.features);
         }
     }
 
     index
         .into_iter()
-        .map(|(span, (exemplar, std_cfgs, non_std_cfgs, std_run_idxs))| {
-            let std_in_every_run = !std_cfgs.is_empty() && std_run_idxs.len() == runs.len();
-            let verdict = match (std_cfgs.is_empty(), non_std_cfgs.is_empty()) {
-                (true, _) => SpanVerdict::NeverStd,
-                (false, true) => {
-                    // Seen as std, never as another crate. That alone does NOT make
-                    // it unconditionally std: the span may simply be ABSENT from
-                    // some runs (the code wasn't compiled, or a macro expanded to
-                    // something else). Every CoveringRun is a successful compile,
-                    // so if any run has no std record here, there exists a working
-                    // configuration in which this span is not std usage — i.e. the
-                    // std-ness is avoidable. Only call it AlwaysStd when *every*
-                    // run recorded std at this span.
-                    //
-                    // Marking the rest Conditional both keeps them out of
-                    // `all_hard` and lets them feed `final_condition` through the
-                    // normal conditional-probe path. `alternate_crates` is empty
-                    // here because nothing else resolved at this span — it was
-                    // absent, not resolved elsewhere.
-                    if std_in_every_run {
-                        SpanVerdict::AlwaysStd
-                    } else {
-                        SpanVerdict::Conditional {
-                            alternate_crates: Vec::new(),
-                        }
-                    }
-                }
-                (false, false) => {
-                    // Collect the distinct alternate crates seen
-                    let mut alts: Vec<String> = runs
-                        .iter()
-                        .flat_map(|r| r.output.records.iter())
-                        .filter(|r| r.span == span)
-                        .filter_map(|r| r.span.usage_crate.as_deref())
-                        .filter(|c| *c != "std")
-                        .map(String::from)
-                        .collect();
-                    alts.sort();
-                    alts.dedup();
-                    SpanVerdict::Conditional {
-                        alternate_crates: alts,
-                    }
+        .map(|(span, acc)| {
+            // The verdict is per-run, not per-record. `ReadableSpan` equality
+            // ignores `usage_crate`, so one source position routinely holds std
+            // and non-std records *from the same run* — a `#[derive(...)]`
+            // attribute span collects its whole expansion under one position,
+            // and `impl std::error::Error` lands there next to a handful of
+            // core paths. Those co-located records are not evidence that the
+            // std-ness is avoidable; they are a different path that happens to
+            // share a span.
+            //
+            // The only evidence that counts is a successful run in which this
+            // span produced no std record at all. Every CoveringRun is a
+            // successful compile, so such a run is a working configuration in
+            // which the span is not std usage. Absent that, the span is std no
+            // matter what is enabled, whatever else sits on top of it.
+            let std_in_every_run =
+                !acc.std_cfgs.is_empty() && acc.std_run_idxs.len() == runs.len();
+
+            let verdict = if acc.std_cfgs.is_empty() {
+                SpanVerdict::NeverStd
+            } else if std_in_every_run {
+                SpanVerdict::AlwaysStd
+            } else {
+                // Conditional both keeps the span out of `all_hard` and lets it
+                // feed `final_condition` through the normal conditional-probe
+                // path. `alternate_crates` is empty when nothing else ever
+                // resolved here — the span was absent from those runs, not
+                // resolved elsewhere.
+                SpanVerdict::Conditional {
+                    alternate_crates: acc.alts.into_iter().collect(),
                 }
             };
             SpanAnalysis {
                 span,
                 verdict,
-                exemplar,
-                std_configs: std_cfgs,
-                non_std_configs: non_std_cfgs,
+                exemplar: acc.exemplar,
+                std_configs: acc.std_cfgs,
+                non_std_configs: acc.non_std_cfgs,
                 std_in_every_run,
             }
         })
@@ -500,6 +520,14 @@ pub fn probe_candidates<'a>(
 /// During probing of imports, we may find that some AlwaysStd spans are actually Conditional
 /// (i.e., they might show up as non-std under some feature combinations). When we find such a span, we update its verdict in the analyses
 /// to reflect this new information, so that it won't be considered a hard std import in future iterations.
+///
+/// **Currently inert**: `driver::analyze_crate` consumes `always_std_others`
+/// without re-reading the verdict, so a demotion here changes nothing. Leave it
+/// that way unless the rule is made run-aware first. The test below is
+/// `find(span)` on the records of a *single* probe run, which demotes on a
+/// co-located non-std record from that same run — exactly the fallacy
+/// `classify_spans` was fixed to stop making. Wiring it up as written would
+/// reopen the hole one level down.
 fn update_always_std_usages(usages: &mut [SpanAnalysis], output: FeatureRunOutput) {
     let all_spans = output
         .records
