@@ -379,6 +379,17 @@ pub struct LocalItem<'a> {
     /// so it can never reach the solver — there is no feature variable to
     /// constrain, only the knowledge that a guard exists.
     pub externally_gated: bool,
+    /// For `use` items only: the full `::`-segment list this leaf imports, e.g.
+    /// `use std::collections::{hash_map, HashMap}` produces two items carrying
+    /// `["std","collections","hash_map"]` and `["std","collections","HashMap"]`.
+    ///
+    /// `name` holds only the *bound* name, which is all
+    /// `collect_named_items_with_conditions` needs. The **root** segment is what
+    /// `driver::resolve_import_to_use_gateways` needs, to know a binding is
+    /// std-rooted — and the plugin cannot supply it: a braced import records one
+    /// record for its stem (`path_text: "std::collections"`) and `use
+    /// super::HashMap` records nothing at all. `None` for every non-`use` item.
+    pub use_path: Option<Vec<String>>,
 }
 
 impl LocalItem<'_> {
@@ -730,6 +741,7 @@ impl<'a> FileVisitor<'a> {
             span,
             name,
             externally_gated,
+            use_path: None,
         });
         true
     }
@@ -796,6 +808,7 @@ impl<'a> FileVisitor<'a> {
                     span,
                     name: None,
                     externally_gated: false,
+                    use_path: None,
                 });
             }
         }
@@ -844,6 +857,7 @@ impl<'a> FileVisitor<'a> {
                 span,
                 name: None,
                 externally_gated: false,
+                use_path: None,
             });
         }
         for tt in seg {
@@ -988,6 +1002,7 @@ impl<'a> FileVisitor<'a> {
             span,
             name: None,
             externally_gated,
+            use_path: None,
         });
         // Register `mod X;` declared inside this arm, gated by the arm. syn hands
         // us the cfg_if tokens opaquely, so without this the module is never
@@ -1341,18 +1356,48 @@ fn litstr_value(lit: &proc_macro2::Literal) -> Option<String> {
         .map(|l| l.value())
 }
 
-/// Walk a use tree and collect the leaf name(s) that are imported.
-/// `use foo::Bar` → ["Bar"]
-/// `use foo::{Bar, Baz}` → ["Bar", "Baz"]
-/// `use foo::Bar as B` → ["B"]
-/// `use foo::*` → ["*"]
-fn extract_use_leaf_names(tree: &syn::UseTree) -> Vec<String> {
+/// Walk a use tree and collect `(full path segments, bound name)` per leaf.
+///
+/// The bound name is what the leaf introduces into scope — the rename for `as`,
+/// the leaf ident otherwise — and is exactly what the old name-only extraction
+/// returned. The segments are the whole path down to that leaf, so a caller can
+/// tell what the binding is rooted at.
+///
+/// `use foo::Bar` → `[(["foo","Bar"], "Bar")]`
+/// `use foo::{Bar, Baz}` → `[(["foo","Bar"],"Bar"), (["foo","Baz"],"Baz")]`
+/// `use foo::Bar as B` → `[(["foo","Bar"], "B")]`
+/// `use foo::*` → `[(["foo","*"], "*")]`
+fn extract_use_leaf_paths(
+    tree: &syn::UseTree,
+    prefix: &mut Vec<String>,
+) -> Vec<(Vec<String>, String)> {
     match tree {
-        syn::UseTree::Name(n) => vec![n.ident.to_string()],
-        syn::UseTree::Rename(r) => vec![r.rename.to_string()],
-        syn::UseTree::Glob(_) => vec!["*".to_string()],
-        syn::UseTree::Group(g) => g.items.iter().flat_map(extract_use_leaf_names).collect(),
-        syn::UseTree::Path(p) => extract_use_leaf_names(&p.tree),
+        syn::UseTree::Name(n) => {
+            let mut segments = prefix.clone();
+            segments.push(n.ident.to_string());
+            vec![(segments, n.ident.to_string())]
+        }
+        syn::UseTree::Rename(r) => {
+            let mut segments = prefix.clone();
+            segments.push(r.ident.to_string());
+            vec![(segments, r.rename.to_string())]
+        }
+        syn::UseTree::Glob(_) => {
+            let mut segments = prefix.clone();
+            segments.push("*".to_string());
+            vec![(segments, "*".to_string())]
+        }
+        // Each branch of a group starts from the same prefix, so it gets its own
+        // copy — pushing into the shared one would leak segments sideways.
+        syn::UseTree::Group(g) => g
+            .items
+            .iter()
+            .flat_map(|t| extract_use_leaf_paths(t, &mut prefix.clone()))
+            .collect(),
+        syn::UseTree::Path(p) => {
+            prefix.push(p.ident.to_string());
+            extract_use_leaf_paths(&p.tree, prefix)
+        }
     }
 }
 
@@ -1520,6 +1565,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                     span: self.get_span(&i.span()),
                     name: None,
                     externally_gated: false,
+                    use_path: None,
                 });
             }
         }
@@ -1740,14 +1786,15 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         let externally_gated = self.is_externally_gated(&i.attrs);
         let span = self.get_span(&i.span());
         // Emit one LocalItem per leaf name so collect_named_items_with_conditions
-        // can determine which items a feature gates via re-exports.
-        let names = extract_use_leaf_names(&i.tree);
-        for name in names {
+        // can determine which items a feature gates via re-exports. The full path
+        // rides along in `use_path` for `resolve_import_to_use_gateways`.
+        for (segments, name) in extract_use_leaf_paths(&i.tree, &mut Vec::new()) {
             self.push_item(LocalItem {
                 own_condition: own.clone(),
                 span: span.clone(),
                 name: Some(name),
                 externally_gated,
+                use_path: Some(segments),
             });
         }
         syn::visit::visit_item_use(self, i);
@@ -1766,6 +1813,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 span: self.get_span(&i.span()),
                 name: None,
                 externally_gated,
+                use_path: None,
             });
         } else {
             self.push_item(LocalItem {
@@ -1773,6 +1821,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 span: self.get_span(&i.span()),
                 name: None,
                 externally_gated,
+                use_path: None,
             });
         }
         syn::visit::visit_item_extern_crate(self, i);
@@ -1870,6 +1919,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 span: self.get_span(&i.span()),
                 name: None,
                 externally_gated,
+                use_path: None,
             });
         }
         // A custom macro (e.g. cfg_if-style `cfg_time!`) may take `mod X;` as a
@@ -1953,6 +2003,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 span,
                 name: None,
                 externally_gated,
+                use_path: None,
             });
         }
 
@@ -2754,6 +2805,28 @@ pub fn find_ancestors_for_span<'a>(
 
 pub fn ancestors_for_span<'a>(node: &ModNode<'a>, target: &ReadableSpan) -> Option<Vec<Bool<'a>>> {
     find_ancestors_for_span(node, target, &mut vec![])
+}
+
+/// Every `use` binding in the tree, as `(path segments, bound name, span)`.
+///
+/// One entry per brace leaf — `use std::collections::{hash_map, HashMap}` yields
+/// two. Owned rather than borrowed so the caller need not hold the `'a` Z3
+/// lifetime; the consumer (`driver::resolve_import_to_use_gateways`) works in
+/// plain strings and spans.
+pub fn collect_use_bindings(node: &ModNode<'_>) -> Vec<(Vec<String>, String, ReadableSpan)> {
+    fn walk(node: &ModNode<'_>, out: &mut Vec<(Vec<String>, String, ReadableSpan)>) {
+        for item in &node.local_items {
+            if let (Some(path), Some(name)) = (&item.use_path, &item.name) {
+                out.push((path.clone(), name.clone(), item.span.clone()));
+            }
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(node, &mut out);
+    out
 }
 
 /// Is `target` under a `#[cfg(...)]` that names no feature?

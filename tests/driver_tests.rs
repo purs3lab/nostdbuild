@@ -643,6 +643,7 @@ mod import_to_use {
                 },
                 name: None,
                 externally_gated: true,
+                use_path: None,
             })
             .collect();
         ModNode {
@@ -741,17 +742,28 @@ mod import_to_use {
         assert!(out.records[1].gateway_anchor.is_none());
     }
 
-    /// CONTROL: a *routed* use (has a local_route) is the facade pass's domain,
-    /// not this one — left untouched here.
+    /// A *routed* use is no longer skipped (KI-7). It used to be excluded on the
+    /// theory that `resolve_local_facade_gateways` owned it, but that pass runs
+    /// first and sets `gateway_anchor` wherever the route was load-bearing — so a
+    /// routed record arriving here with no anchor and no gate of its own is
+    /// precisely the leak, not someone else's business. cranelift-frontend's
+    /// `use crate::hash_map::Entry` carries a route, a defining module *and* is
+    /// an import, and is one of its five false-positive spans.
+    ///
+    /// `existing_anchor_is_preserved` is the control for non-interference with
+    /// the facade pass.
     #[test]
-    fn routed_use_is_left_to_the_facade_pass() {
+    fn routed_use_with_no_facade_anchor_is_now_excused() {
         let mut routed = usage_record("HashMap", "std", Some("std"), Some("crate::foo"));
         routed.context = PathContext::Type;
         let mut out = output(vec![std_import("std::collections::HashMap", 10), at(routed, 20)]);
 
         resolve_import_to_use_gateways(&mut out, &tree_gating(&[10]));
 
-        assert!(out.records[1].gateway_anchor.is_none());
+        assert!(
+            out.records[1].gateway_anchor.is_some(),
+            "a routed use with no gate and no facade anchor must inherit the import's gate"
+        );
     }
 
     /// CONTROL: an already-anchored use is not re-anchored.

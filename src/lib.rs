@@ -336,6 +336,16 @@ pub struct Telemetry {
     /// because of the co-located records, and `Conditional` never reaches
     /// `all_hard`. This counts the spans that hinge on that distinction.
     pub collided_std_spans: usize,
+    /// Std records that inherited a `#[cfg]` from the import that bound their
+    /// name, summed over the covering runs (see
+    /// `driver::resolve_import_to_use_gateways`).
+    ///
+    /// These spans carry no attribute of their own, so before the join they
+    /// reached the prober with no gate at all and were short-circuited to
+    /// `StillStd` — reported as unguarded std usage without a single compile.
+    /// A non-zero count means the crate re-exports std items through a gated
+    /// import.
+    pub routed_import_anchors: usize,
     /// Maximum length of constraint string while solving features
     pub max_contraint_length: Vec<(String, usize)>,
     /// Maximum depth of constraint string while solving features

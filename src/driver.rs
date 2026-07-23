@@ -237,6 +237,27 @@ fn span_externally_gated(root: &ModNode<'_>, exemplar: &PathRecord) -> bool {
             .is_some_and(|anchor| visitor::externally_gated_for_span(root, anchor))
 }
 
+/// The feature gates above a record's span — its own if it has any, otherwise
+/// the ones above the `gateway_anchor` it inherited.
+///
+/// Without the second half an anchor can only ever say "externally gated"
+/// (`span_externally_gated`), so a record whose std-ness comes entirely from a
+/// `#[cfg(feature = "std")]` import reaches `initial_ungated_results` with
+/// `ancestors: None` and is short-circuited to `StillStd` **without compiling
+/// anything**. That is the KI-7 false positive: the gate exists, the tool just
+/// never looked at it.
+///
+/// `.or_else` rather than AND: a use site's own `#[cfg]` wins outright when it
+/// has one. ANDing the two is arguably more correct (both gates must hold for
+/// the span to be std) and is left as a follow-up — no crate has needed it.
+pub fn ancestors_for_record<'a>(root: &ModNode<'a>, rec: &PathRecord) -> Option<Vec<Bool<'a>>> {
+    visitor::ancestors_for_span(root, &rec.span).or_else(|| {
+        rec.gateway_anchor
+            .as_ref()
+            .and_then(|anchor| visitor::ancestors_for_span(root, anchor))
+    })
+}
+
 /// How the crate root's module path is spelled in `PathRecord::defining_module`
 /// and `local_route`. The plugin seeds `current_module_path` with this, so the
 /// root is exactly `crate` — never the empty string, and never rustc's internal
@@ -342,15 +363,78 @@ pub fn resolve_local_facade_gateways(out: &mut FeatureRunOutput) {
 /// The name a path binds or references: its first `::`-segment for a use site
 /// (`HashMap::new` → `HashMap`), its last for an import (`std::collections::HashMap`
 /// → `HashMap`, the name it brings into scope).
+///
+/// A leading `crate` / `self` / `super` is a routing prefix, not a name: the
+/// segment identifying the binding in `crate::hash_map::Entry` is `hash_map`.
+/// `strip_route_prefix` drops those first, so routed and bare references key the
+/// same table.
 fn use_name(path_text: &str) -> Option<&str> {
-    path_text.split("::").next().filter(|s| !s.is_empty())
+    strip_route_prefix(path_text)
+        .split("::")
+        .next()
+        .filter(|s| !s.is_empty())
 }
 fn import_bound_name(path_text: &str) -> Option<&str> {
     path_text.rsplit("::").next().filter(|s| !s.is_empty())
 }
 
-/// Propagate an externally-gated `use` import's gate onto the routeless bare
-/// uses of the name it introduced.
+const ROUTE_PREFIXES: [&str; 3] = ["crate", "self", "super"];
+
+fn strip_route_prefix(path_text: &str) -> &str {
+    let mut t = path_text.trim_start_matches("::");
+    loop {
+        let Some((head, rest)) = t.split_once("::") else {
+            return t;
+        };
+        if ROUTE_PREFIXES.contains(&head) {
+            t = rest;
+        } else {
+            return t;
+        }
+    }
+}
+
+fn strip_route_segments(segments: &[String]) -> &[String] {
+    let mut s = segments;
+    while s.len() > 1 && ROUTE_PREFIXES.contains(&s[0].as_str()) {
+        s = &s[1..];
+    }
+    s
+}
+
+/// Where a name's std binding is gated, and on which axis.
+///
+/// `resolve_import_to_use_gateways` originally asked only "externally gated?",
+/// because that was the only kind of gate an anchor could express: an anchor fed
+/// `span_externally_gated` and nothing else. Now that `ancestors_for_record`
+/// also reads anchors, a `#[cfg(feature = "std")]` import is a usable gate too,
+/// so the answer has to distinguish the two axes rather than collapse to a bool.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GateKind {
+    /// No `#[cfg]` above the span at all.
+    None,
+    /// A cfg naming no feature (`target_os`, a build-script `--cfg`, …).
+    External,
+    /// A cfg the solver has a variable for.
+    Feature,
+}
+
+/// Bound name → (is every std binding of it gated?, the anchor to inherit).
+/// Built by `resolve_import_to_use_gateways`; see its docs for the rules.
+type BindingTable = std::collections::HashMap<String, (bool, Option<(ReadableSpan, GateKind)>)>;
+
+fn gate_kind(root: &ModNode<'_>, span: &ReadableSpan) -> GateKind {
+    if visitor::externally_gated_for_span(root, span) {
+        GateKind::External
+    } else if visitor::ancestors_for_span(root, span).is_some() {
+        GateKind::Feature
+    } else {
+        GateKind::None
+    }
+}
+
+/// Propagate a gated `use` import's gate onto the uses of the name it
+/// introduced, following the binding through re-exports.
 ///
 /// A crate that splits std vs. no_std by a **non-feature cfg** (e.g. per-target)
 /// typically imports the std item in one arm and its no_std replacement in the
@@ -378,75 +462,194 @@ fn import_bound_name(path_text: &str) -> Option<&str> {
 /// `use std::fmt::Debug` to `core::fmt::Debug` — the import's enclosing module is
 /// not a prefix of the canonical item, so the two sides' def paths differ.
 ///
-/// A routeless bare std use inherits a gate (via `gateway_anchor`, the same
-/// mechanism `resolve_local_facade_gateways` uses) iff **every** std `use` import
-/// that binds its name is externally gated. The all-imports-must-agree rule is
-/// load-bearing: if any import of that name is *un*gated, the name genuinely
-/// resolves to std even in the no_std configuration, so we attach nothing and let
-/// the use fail. (This follows J's "yield nothing rather than guess" precedent.)
-/// Because we only touch std-resolved records on both sides, a same-named *local*
-/// item never enters — its uses resolve to the crate, not std.
-pub fn resolve_import_to_use_gateways(out: &mut FeatureRunOutput, root: &ModNode<'_>) {
-    // bound name → (every std import of it is externally gated?, an anchor span).
-    // The anchor is the span of one such gated import; a `#[cfg]` on it gates the
-    // inheriting uses.
-    let mut import_gate: std::collections::HashMap<String, (bool, Option<ReadableSpan>)> =
-        std::collections::HashMap::new();
+/// A std use inherits a gate (via `gateway_anchor`, the same mechanism
+/// `resolve_local_facade_gateways` uses) iff **every** std binding of its name is
+/// gated. The all-bindings-must-agree rule is load-bearing: if any binding of
+/// that name is *un*gated, the name genuinely resolves to std even in the no_std
+/// configuration, so we attach nothing and let the use fail. (This follows J's
+/// "yield nothing rather than guess" precedent.) Because we only touch
+/// std-resolved records on the attach side, a same-named *local* item never
+/// enters — its uses resolve to the crate, not std.
+///
+/// # Two sources, because neither alone is enough
+///
+/// **Plugin records** see macro-generated imports the syn tree cannot, but they
+/// cannot see brace leaves or local re-exports: `use std::collections::{hash_map,
+/// HashMap}` emits exactly *one* record, `path_text: "std::collections"`, so the
+/// bound names never reach the driver; and `use super::HashMap;` emits **no
+/// record at all**. **The syn tree** (`LocalItem::use_path`) has both. Seeding
+/// from the union is also strictly safer for the all-must-agree rule, which only
+/// ever gains blockers from a second source.
+///
+/// # Following the binding
+///
+/// The seed round takes std-rooted bindings (`use std::…`). A fixpoint then
+/// follows re-exports: a use whose first segment (after `crate`/`self`/`super`)
+/// is already a known std-bound name contributes *its* bound name, so
+/// `use crate::hash_map::Entry` makes `Entry` std-bound once `hash_map` is.
+///
+/// The anchor stays the **std-rooted seed's** span through every hop. That is
+/// sound because negating the seed's gate removes the binding at its source —
+/// nothing downstream can still be std — so intermediate gates are not
+/// load-bearing and one anchor span suffices. A hop off an ungated seed
+/// propagates ungated, which blocks the derived name too.
+///
+/// Globs are not followed: `use super::hash_map::Entry::*` binds names syn cannot
+/// enumerate, so the fixpoint would have to guess. They are skipped, and whatever
+/// they bind stays unexcused.
+///
+/// Returns the number of records that received an anchor.
+pub fn resolve_import_to_use_gateways(out: &mut FeatureRunOutput, root: &ModNode<'_>) -> usize {
+    // bound name → (every std binding of it is gated?, the anchor to inherit).
+    // The anchor is the span of one such gated binding; a `#[cfg]` on it gates
+    // everything that inherits it.
+    let mut binding: BindingTable = std::collections::HashMap::new();
 
+    // Record one std binding of `name`. `kind == None` means ungated, which
+    // poisons the name for good — the flag only ever goes false.
+    fn note(binding: &mut BindingTable, name: &str, span: &ReadableSpan, kind: GateKind) {
+        if name == "*" {
+            return;
+        }
+        let entry = binding.entry(name.to_string()).or_insert((true, None));
+        entry.0 &= kind != GateKind::None;
+        // Prefer a Feature anchor over an External one: an External anchor
+        // excuses the span outright (`ProbeDecision::ExternallyGated`), a Feature
+        // anchor sends it to be probed. When a name is bound on both axes, the
+        // probe is the more conservative answer.
+        let better = match (&entry.1, kind) {
+            (_, GateKind::None) => false,
+            (None, _) => true,
+            (Some((_, GateKind::External)), GateKind::Feature) => true,
+            _ => false,
+        };
+        if better {
+            entry.1 = Some((span.clone(), kind));
+        }
+    }
+
+    // --- Seed 1: plugin import records (macro-generated imports live here) ---
     for r in &out.records {
         if r.context != PathContext::ImportDeclaration
             || r.span.usage_crate.as_deref() != Some("std")
         {
             continue;
         }
+        // A *routed* import (`use crate::hash_map::Entry`) re-exports a binding
+        // that already exists; whether it is gated is the source binding's
+        // question, and only the tree can answer it — the record's `path_text`
+        // does not say what `hash_map` was rooted at. Seeding it here as an
+        // independent, ungated std binding would poison exactly the name the
+        // fixpoint exists to derive: `Entry` would be blocked by the very import
+        // that establishes it. Skip; the tree sees every routed `use`.
+        if strip_route_prefix(&r.path_text) != r.path_text.trim_start_matches("::") {
+            continue;
+        }
         let Some(name) = import_bound_name(&r.path_text) else {
             continue;
         };
-        let gated = visitor::externally_gated_for_span(root, &r.span);
-        let entry = import_gate.entry(name.to_string()).or_insert((true, None));
-        entry.0 &= gated;
-        if gated && entry.1.is_none() {
-            entry.1 = Some(r.span.clone());
+        note(&mut binding, name, &r.span, gate_kind(root, &r.span));
+    }
+
+    // --- Seed 2: std-rooted `use` items from the syn tree (brace leaves) ---
+    let use_bindings = visitor::collect_use_bindings(root);
+    for (segments, name, span) in &use_bindings {
+        if segments.first().map(String::as_str) != Some("std") {
+            continue;
+        }
+        note(&mut binding, name, span, gate_kind(root, span));
+    }
+
+    // Comparable view of the table, for fixpoint termination.
+    fn snapshot(binding: &BindingTable) -> Vec<(String, bool, Option<usize>)> {
+        let mut v: Vec<_> = binding
+            .iter()
+            .map(|(k, (gated, anchor))| {
+                (k.clone(), *gated, anchor.as_ref().map(|(s, _)| s.start_line))
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    // --- Fixpoint: follow re-exports of an already-std-bound name ---
+    // Bounded because each round can only add names or clear `all_gated` flags,
+    // both monotone; the cap is belt-and-braces against a pathological cycle.
+    for _ in 0..8 {
+        let before = snapshot(&binding);
+
+        for (segments, name, span) in &use_bindings {
+            let routed = strip_route_segments(segments);
+            // `use super::HashMap` strips to `["HashMap"]`, so head == name: the
+            // name is re-derived from itself with the same anchor, which is a
+            // no-op rather than a cycle. Left in deliberately — the hop is real
+            // (a different module's binding) and blocking it would need module
+            // scoping this table does not have.
+            let Some(head) = routed.first() else { continue };
+            let Some((src_gated, src_anchor)) = binding.get(head).cloned() else {
+                continue;
+            };
+            match (src_gated, src_anchor) {
+                (true, Some((anchor, kind))) => note(&mut binding, name, &anchor, kind),
+                // Derived from an ungated std binding: the derived name is
+                // reachable ungated too.
+                _ => note(&mut binding, name, span, GateKind::None),
+            }
+        }
+
+        if before == snapshot(&binding) {
+            break;
         }
     }
 
-    // Keep only names whose every std import is externally gated and that have a
-    // concrete anchor to point at.
-    let gated_imports: std::collections::HashMap<String, ReadableSpan> = import_gate
+    // Keep only names whose every std binding is gated and that have a concrete
+    // anchor to point at.
+    let gated_imports: std::collections::HashMap<String, ReadableSpan> = binding
         .into_iter()
         .filter_map(|(name, (all_gated, anchor))| match (all_gated, anchor) {
-            (true, Some(a)) => Some((name, a)),
+            (true, Some((a, _))) => Some((name, a)),
             _ => None,
         })
         .collect();
 
     if gated_imports.is_empty() {
-        return;
+        return 0;
     }
 
+    let mut anchored = 0usize;
     for r in &mut out.records {
-        // Only routeless bare std *uses* — the leak `resolve_local_facade_gateways`
-        // cannot see. Imports (which carry the gate themselves) and routed facade
-        // uses are excluded.
-        if r.span.usage_crate.as_deref() != Some("std")
-            || r.context == PathContext::ImportDeclaration
-            || r.local_route.is_some()
-            || r.defining_module.is_some()
-            || r.gateway_anchor.is_some()
-        {
+        if r.span.usage_crate.as_deref() != Some("std") || r.gateway_anchor.is_some() {
             continue;
         }
         let Some(name) = use_name(&r.path_text) else {
             continue;
         };
+        // Name lookup before `gate_kind`: the latter is up to two tree walks per
+        // record, and only records whose name is actually in the table can be
+        // anchored. Keeps the added cost proportional to candidates, not to every
+        // std record in the crate.
         if let Some(anchor) = gated_imports.get(name) {
+            // Only spans with no gate of their own. This replaces the older
+            // `local_route.is_some() || defining_module.is_some() || context ==
+            // ImportDeclaration` exclusions, which were proxies for the same
+            // question and excluded the routed case this pass now exists to catch
+            // (`use crate::hash_map::Entry` carries a route, a defining module
+            // *and* is an import, yet has no gate anywhere above it). A span that
+            // does carry a gate reaches the prober through `ancestors_for_span`
+            // already, and `resolve_local_facade_gateways` — which runs first —
+            // has set `gateway_anchor` wherever a route was load-bearing.
+            if gate_kind(root, &r.span) != GateKind::None {
+                continue;
+            }
             debug!(
-                "Routeless std use '{}' at {:?} inherits the gate of its externally-gated import(s) of `{}` at {:?}",
+                "Std use '{}' at {:?} inherits the gate of its gated binding(s) of `{}` at {:?}",
                 r.path_text, r.span, name, anchor
             );
             r.gateway_anchor = Some(anchor.clone());
+            anchored += 1;
         }
     }
+    anchored
 }
 
 /// Runs the plugin with the crate's default features (no --no-default-features, no extra flags).
@@ -1475,7 +1678,13 @@ pub fn analyze_crate<'a>(
     // by `def_path` and inherit the gate. Needs the module tree (`root`) to know
     // which imports are externally gated, so it runs here rather than at load time.
     for run in &mut covering_runs {
-        resolve_import_to_use_gateways(&mut run.output, &root);
+        telemetry.routed_import_anchors += resolve_import_to_use_gateways(&mut run.output, &root);
+    }
+    if telemetry.routed_import_anchors > 0 {
+        debug!(
+            "{} std record(s) inherited a gate from the import that bound their name",
+            telemetry.routed_import_anchors
+        );
     }
 
     // Same set the module tree was built against — macro-body cfgs must undergo
@@ -1525,7 +1734,7 @@ pub fn analyze_crate<'a>(
         .filter(|a| !is_local_reexport(&a.exemplar))
         .map(|a| ProbeTarget {
             analysis: a.clone(),
-            ancestors: visitor::ancestors_for_span(&root, &a.exemplar.span)
+            ancestors: ancestors_for_record(&root, &a.exemplar)
                 .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)),
             externally_gated: span_externally_gated(&root, &a.exemplar),
         })
@@ -1545,7 +1754,7 @@ pub fn analyze_crate<'a>(
         .into_iter()
         .map(|a| ProbeTarget {
             analysis: a.clone(),
-            ancestors: visitor::ancestors_for_span(&root, &a.exemplar.span)
+            ancestors: ancestors_for_record(&root, &a.exemplar)
                 .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)),
             externally_gated: span_externally_gated(&root, &a.exemplar),
         })
@@ -1570,7 +1779,7 @@ pub fn analyze_crate<'a>(
         .filter(|a| !is_local_reexport(&a.exemplar))
         .map(|a| ProbeTarget {
             analysis: a.clone(),
-            ancestors: visitor::ancestors_for_span(&root, &a.exemplar.span)
+            ancestors: ancestors_for_record(&root, &a.exemplar)
                 .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)),
             externally_gated: span_externally_gated(&root, &a.exemplar),
         })
