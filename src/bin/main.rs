@@ -281,6 +281,7 @@ fn main() -> anyhow::Result<()> {
         debug!("ERROR: Found unguarded std usage in the main crate");
         reason = "Found unguarded std usage in the main crate";
         stats.std_usage_matches = all_hard;
+        stats.telemetry = Some(exchange.telemetry);
         stats.dump(true);
         return Err(anyhow::anyhow!(reason));
     }
