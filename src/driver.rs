@@ -1896,6 +1896,20 @@ pub fn analyze_crate<'a>(
     }
     telemetry.externally_gated_spans = externally_gated_spans;
 
+    let compile_failed_spans = hard_imports
+        .iter()
+        .chain(hard_usages.iter())
+        .chain(conditional_results.iter())
+        .filter(|a| matches!(a.decision, ProbeDecision::CompileFailed))
+        .count();
+    if compile_failed_spans > 0 {
+        debug!(
+            "{} std span(s) dropped from all_hard because their probe never compiled",
+            compile_failed_spans
+        );
+    }
+    telemetry.compile_failed_spans = compile_failed_spans;
+
     let all_hard: Vec<ReadableSpan> = hard_imports
         .into_iter()
         .chain(hard_usages)

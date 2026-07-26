@@ -346,6 +346,16 @@ pub struct Telemetry {
     /// A non-zero count means the crate re-exports std items through a gated
     /// import.
     pub routed_import_anchors: usize,
+    /// How many std spans were dropped because their probe could never compile
+    /// (`ProbeDecision::CompileFailed` — broken dep tree or unsatisfiable
+    /// feature combo).
+    ///
+    /// `all_hard` keeps only `StillStd`, so a `CompileFailed` span silently
+    /// disappears from `std_usages.json` with no counter — a false *negative*
+    /// of the collided-span family: a crate whose only hard std sits behind an
+    /// uncompilable probe reads clean. This observation makes the quiet
+    /// clearance visible (KI-7 routes far more spans into it).
+    pub compile_failed_spans: usize,
     /// Maximum length of constraint string while solving features
     pub max_contraint_length: Vec<(String, usize)>,
     /// Maximum depth of constraint string while solving features
