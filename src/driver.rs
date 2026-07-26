@@ -2,6 +2,7 @@ use log::{debug, warn};
 use proc_macro2::Span;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::{fs, process::Command};
 use uuid::Uuid;
 use which::which;
@@ -19,6 +20,13 @@ use crate::{
     consts::{self, PLUGIN_OUTPUT_ENV},
     downloader, parser, solver,
 };
+
+/// The last bare-metal `--target` that successfully compiled a no_std plugin pass.
+/// Tried first on the next pass so that the many covering-set runs for one crate
+/// don't each re-scan `TARGET_LIST` from the top. Process-global is safe: the tool
+/// analyses one main crate per process, and this is only an ordering hint — a miss
+/// falls through to the full list and the host fallback.
+static LAST_GOOD_TARGET: Mutex<Option<&'static str>> = Mutex::new(None);
 
 fn unique_output_path(crate_name: &str) -> PathBuf {
     let sanitized = crate_name.replace('-', "_").replace(':', "-");
@@ -823,63 +831,129 @@ pub fn run_rustc_plugin_pass(
     // reported as unguarded std usage — e.g. the `println!` in a stock
     // `fn main() { println!("Hello, world!"); }` sinks an otherwise no_std crate.
     // Bin-only crates keep building their bin, matching the entrypoint rule.
-    let mut args = vec![
-        "hir",
-        "--",
-        "--manifest-path",
-        manifest,
-        "--no-default-features",
-        "--features",
-        &feats,
-    ];
-    if visitor::package_has_lib(manifest) {
-        args.push("--lib");
+    let has_lib = visitor::package_has_lib(manifest);
+
+    // The plugin must gather records on a target the no_std config actually
+    // compiles for. The host (no `--target`) is the wrong environment for a
+    // no_std verdict: it is 64-bit and its target cfgs resolve to std-enabled
+    // values (`target_os = "linux"`, `unix`, wide pointers), so `#[cfg(target_os
+    // = "none")]` no_std guards take their std branch and 64-bit static asserts in
+    // deps like sp-runtime-interface (`assert_eq_size!(*const u8, u32)`) hard-fail,
+    // sinking the whole Substrate/Polkadot family. So try each bare-metal target
+    // in `TARGET_LIST` (like the verification compile in `compiler.rs` already
+    // does) and gather records from the first that compiles. Only if *no*
+    // bare-metal target compiles do we fall back to the host — that is the case of
+    // a crate that genuinely needs std (e.g. unconditional `std::vec::Vec`, which
+    // fails to resolve on every no_std target), where the host build is what still
+    // locates the std usage instead of dropping it as an uncompilable probe.
+    let cached = *LAST_GOOD_TARGET.lock().unwrap();
+    let mut targets: Vec<Option<&'static str>> = Vec::with_capacity(consts::TARGET_LIST.len() + 1);
+    if let Some(t) = cached {
+        targets.push(Some(t));
     }
+    for t in consts::TARGET_LIST.iter() {
+        if cached != Some(*t) {
+            targets.push(Some(*t));
+        }
+    }
+    // Host fallback, tried last.
+    targets.push(None);
 
-    debug!(
-        "Running rustc plugin pass for {} with features [{}], output -> {:?}",
-        crate_name, feats, output_path
-    );
+    let mut last_stderr = String::new();
+    let mut last_exit: Option<i32> = None;
+    let mut succeeded_on: Option<Option<&'static str>> = None;
 
-    let output = match Command::new("cargo")
-        .args(args)
-        .env(PLUGIN_OUTPUT_ENV, &output_path)
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            return PassOutcome::CompileFailed {
-                stderr: format!("failed to spawn cargo: {}", e),
-                exit_code: None,
+    for target in targets {
+        // Fresh output slot per attempt so a stale success can't be mistaken for
+        // this attempt's.
+        if output_path.exists() {
+            let _ = fs::remove_file(&output_path);
+        }
+
+        let mut args = vec![
+            "hir",
+            "--",
+            "--manifest-path",
+            manifest,
+            "--no-default-features",
+            "--features",
+            &feats,
+        ];
+        if let Some(t) = target {
+            args.push("--target");
+            args.push(t);
+        }
+        if has_lib {
+            args.push("--lib");
+        }
+
+        debug!(
+            "Running rustc plugin pass for {} with features [{}] target [{}], output -> {:?}",
+            crate_name,
+            feats,
+            target.unwrap_or("host"),
+            output_path
+        );
+
+        let output = match Command::new("cargo")
+            .args(&args)
+            .env(PLUGIN_OUTPUT_ENV, &output_path)
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                return PassOutcome::CompileFailed {
+                    stderr: format!("failed to spawn cargo: {}", e),
+                    exit_code: None,
+                };
+            }
+        };
+
+        if output.status.success() {
+            if output_path.exists() {
+                succeeded_on = Some(target);
+                break;
+            }
+            // Compiled but wrote no JSON — a plugin/env fault, not target-specific;
+            // retrying other targets will not help.
+            warn!(
+                "Plugin succeeded but output file missing at {:?} (crate {}, target [{}])",
+                output_path,
+                crate_name,
+                target.unwrap_or("host")
+            );
+            return PassOutcome::PluginMissingOutput {
+                expected_path: output_path,
             };
         }
-    };
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        last_stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        last_exit = output.status.code();
         debug!(
-            "cargo hir failed for {} (exit {}): {}",
+            "cargo hir failed for {} on target [{}] (exit {})",
             crate_name,
-            output.status.code().unwrap_or(-1),
-            stderr
+            target.unwrap_or("host"),
+            last_exit.unwrap_or(-1)
         );
-        let _ = fs::remove_file(&output_path);
-        return PassOutcome::CompileFailed {
-            stderr,
-            exit_code: output.status.code(),
-        };
     }
 
-    debug!("cargo hir succeeded for {}", crate_name,);
-
-    if !output_path.exists() {
-        warn!(
-            "Plugin succeeded but output file missing at {:?} (crate {})",
-            output_path, crate_name
-        );
-        return PassOutcome::PluginMissingOutput {
-            expected_path: output_path,
+    let Some(succeeded_target) = succeeded_on else {
+        let _ = fs::remove_file(&output_path);
+        return PassOutcome::CompileFailed {
+            stderr: last_stderr,
+            exit_code: last_exit,
         };
+    };
+
+    match succeeded_target {
+        Some(t) => {
+            *LAST_GOOD_TARGET.lock().unwrap() = Some(t);
+            debug!("cargo hir succeeded for {} on target {}", crate_name, t);
+        }
+        None => debug!(
+            "cargo hir succeeded for {} on host (no bare-metal target compiled)",
+            crate_name
+        ),
     }
 
     let mut full_output = match load_plugin_output(&output_path) {
