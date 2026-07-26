@@ -405,6 +405,14 @@ fn main() -> anyhow::Result<()> {
         None,
     );
 
+    // `minimize` rewrites the crate's `[features]` table on disk, but
+    // `exchange.crate_info.features` still holds the pre-edit version. Only
+    // `should_skip_dep`'s sever branch refreshed it before, so downstream
+    // consumers could reconstruct a `default → std → dep` chain from an entry the
+    // manifest no longer has (watchface's chrono link). Re-read the rewritten
+    // manifest so every later reader of `crate_info.features` sees the truth.
+    parser::refresh_crate_features(&mut exchange);
+
     println!(
         "Main crate arguments after minimization: {:?}",
         main_features
