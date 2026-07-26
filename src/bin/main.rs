@@ -156,6 +156,10 @@ fn main() -> anyhow::Result<()> {
                     consts::TARGET_LIST
                 ));
             }
+            // Pin the plugin record pass to this target too, not just the final
+            // verification compile — otherwise it sweeps all 26 bare-metal targets
+            // per covering/CEGAR run and ignores the target the user asked for.
+            driver::set_explicit_target(&target);
             target
         }
         None => {

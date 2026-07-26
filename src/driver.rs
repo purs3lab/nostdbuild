@@ -21,12 +21,33 @@ use crate::{
     downloader, parser, solver,
 };
 
-/// The last bare-metal `--target` that successfully compiled a no_std plugin pass.
-/// Tried first on the next pass so that the many covering-set runs for one crate
-/// don't each re-scan `TARGET_LIST` from the top. Process-global is safe: the tool
-/// analyses one main crate per process, and this is only an ordering hint — a miss
-/// falls through to the full list and the host fallback.
+/// The first bare-metal `--target` that successfully compiled a no_std plugin
+/// pass for this crate. Once set, every later pass reuses *only* it (plus the
+/// host fallback) instead of re-scanning `TARGET_LIST` — the many covering-set
+/// and CEGAR runs for one crate would otherwise each grind through all 26
+/// targets, and for a feature combo that does not compile that is 26 wasted
+/// builds per iteration. A combo that fails on the crate's established good
+/// target is almost never rescued by a different triple, and the host fallback
+/// still catches genuine std; the cost is a minor precision loss (host cfgs) for
+/// exactly those combos. Process-global is safe: the tool analyses one main
+/// crate per process.
 static LAST_GOOD_TARGET: Mutex<Option<&'static str>> = Mutex::new(None);
+
+/// The `--target` the user pinned on the command line, if any. When set, the
+/// plugin record pass compiles *only* for this target (host as the genuine-std
+/// fallback) and never sweeps `TARGET_LIST` — a pinned target is the environment
+/// to analyse, not a hint to search for one that happens to compile. Takes
+/// precedence over `LAST_GOOD_TARGET`.
+static EXPLICIT_TARGET: Mutex<Option<&'static str>> = Mutex::new(None);
+
+/// Pin the plugin record pass to a single target (the CLI `--target`). `target`
+/// must be a member of `TARGET_LIST`; a non-member is ignored (the CLI already
+/// validates it, so this only guards against a stray caller).
+pub fn set_explicit_target(target: &str) {
+    if let Some(t) = consts::TARGET_LIST.iter().find(|t| **t == target) {
+        *EXPLICIT_TARGET.lock().unwrap() = Some(*t);
+    }
+}
 
 fn unique_output_path(crate_name: &str) -> PathBuf {
     let sanitized = crate_name.replace('-', "_").replace(':', "-");
@@ -839,20 +860,29 @@ pub fn run_rustc_plugin_pass(
     // values (`target_os = "linux"`, `unix`, wide pointers), so `#[cfg(target_os
     // = "none")]` no_std guards take their std branch and 64-bit static asserts in
     // deps like sp-runtime-interface (`assert_eq_size!(*const u8, u32)`) hard-fail,
-    // sinking the whole Substrate/Polkadot family. So try each bare-metal target
-    // in `TARGET_LIST` (like the verification compile in `compiler.rs` already
-    // does) and gather records from the first that compiles. Only if *no*
-    // bare-metal target compiles do we fall back to the host — that is the case of
-    // a crate that genuinely needs std (e.g. unconditional `std::vec::Vec`, which
-    // fails to resolve on every no_std target), where the host build is what still
-    // locates the std usage instead of dropping it as an uncompilable probe.
+    // sinking the whole Substrate/Polkadot family. So compile for a bare-metal
+    // target (like the verification compile in `compiler.rs` already does) and
+    // gather records from it. Only if the bare-metal build fails do we fall back
+    // to the host — that is the case of a crate that genuinely needs std (e.g.
+    // unconditional `std::vec::Vec`, which fails to resolve on every no_std
+    // target), where the host build is what still locates the std usage instead
+    // of dropping it as an uncompilable probe.
+    //
+    // Which bare-metal target(s) to try, in order:
+    //   * an explicit CLI `--target` pins the analysis to exactly that target;
+    //   * else the crate's already-established good target (`LAST_GOOD_TARGET`),
+    //     so the covering-set/CEGAR runs don't re-scan all 26 every call;
+    //   * else, on the very first pass, scan `TARGET_LIST` for the first that
+    //     compiles and cache it.
+    let explicit = *EXPLICIT_TARGET.lock().unwrap();
     let cached = *LAST_GOOD_TARGET.lock().unwrap();
     let mut targets: Vec<Option<&'static str>> = Vec::with_capacity(consts::TARGET_LIST.len() + 1);
-    if let Some(t) = cached {
+    if let Some(t) = explicit {
         targets.push(Some(t));
-    }
-    for t in consts::TARGET_LIST.iter() {
-        if cached != Some(*t) {
+    } else if let Some(t) = cached {
+        targets.push(Some(t));
+    } else {
+        for t in consts::TARGET_LIST.iter() {
             targets.push(Some(*t));
         }
     }
