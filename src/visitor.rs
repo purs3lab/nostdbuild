@@ -629,7 +629,25 @@ impl<'a> FileVisitor<'a> {
             .filter(|a| a.path().is_ident("cfg"))
             .any(|attr| {
                 let (equation, parsed) = parser::parse_main_attributes_direct_with(attr, self.ctx, self.known_features.as_deref());
-                equation.is_none() && !parsed.constants.is_empty()
+                // A pure non-feature gate (`#[cfg(unix)]`, `#[cfg(has_std)]`):
+                // no feature became a Bool, but a constant proves a gate exists.
+                let pure = equation.is_none() && !parsed.constants.is_empty();
+                // Bucket 3C: `#[cfg(any(feature = "std", unix, windows))]`. The
+                // feature disjunct produces a Bool (`equation` is `Some`), while
+                // the target atoms are erased into `constants`. Erasing a
+                // non-feature atom is only sound under `all()`; under `any()` it
+                // strengthens the gate, so on a host where the target atom is
+                // true the std usage is present regardless of features and the
+                // probe wrongly reports it hard. But the target disjuncts are the
+                // consumer's choice (bucket G): on a bare-metal target they are
+                // false, the gate reduces to the feature disjunct, and feature-off
+                // then removes the std usage. Keyed on the *outermost* combinator
+                // so `all(target, feature = "std")` stays probe-able. Introduces
+                // no unsoundness beyond what G already accepts for the pure form.
+                let any_mixed = equation.is_some()
+                    && !parsed.constants.is_empty()
+                    && matches!(parsed.logic.first(), Some(parser::Logic::Any | parser::Logic::Or));
+                pure || any_mixed
             })
     }
 

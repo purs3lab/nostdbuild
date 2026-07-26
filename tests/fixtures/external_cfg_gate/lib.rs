@@ -44,6 +44,15 @@ fn read_it() {
     let _f = std::fs::File::open("/etc/hostname");
 }
 
+// Bucket 3C: the wasmtime shape. `any()` mixing a feature with target atoms.
+// On a bare-metal target `unix`/`windows` are false, so the gate reduces to
+// `feature = "std"`, which feature-off removes — externally gated, same class as
+// the pure-target gates above. Erasing the target atoms is sound under `all()`
+// but strengthens an `any()`, so the probe used to report this hard on a host
+// where a target atom is true.
+#[cfg(any(feature = "std", unix, windows))]
+use std::collections::BTreeMap;
+
 // CONTROL: a real feature gate must keep behaving as a feature gate.
 #[cfg(feature = "std")]
 use std::vec::Vec;

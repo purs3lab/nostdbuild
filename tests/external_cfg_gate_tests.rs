@@ -213,6 +213,23 @@ fn mixed_predicate_keeps_its_feature_gate() {
 }
 
 #[test]
+fn any_mixing_feature_with_target_is_externally_gated() {
+    with_tree(|tree, content| {
+        // Bucket 3C: `any(feature = "std", unix, windows)`. Unlike the `all(...)`
+        // mixed predicate above, erasing the target atoms strengthens the gate,
+        // so it cannot be probed away on a host where a target atom is true. The
+        // target disjuncts are the consumer's choice: on a bare-metal target they
+        // vanish, the gate reduces to `feature = "std"`, and feature-off removes
+        // the std usage — so it is excused, keyed on the outermost `any`.
+        let span = span_of(content, "std::collections::BTreeMap");
+        assert!(
+            externally_gated_for_span(tree, &span),
+            "`any(feature, target...)` must be externally gated (bucket 3C)"
+        );
+    });
+}
+
+#[test]
 fn ungated_std_is_not_externally_gated() {
     with_tree(|tree, content| {
         let span = span_of(content, "std::io::Write");
