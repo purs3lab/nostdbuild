@@ -91,6 +91,35 @@ fn collect_cfg_attrs_from_tokens(
     result
 }
 
+/// Recursively collect every `macro_rules!` body's `#[cfg(…)]` attributes,
+/// keyed by macro name, descending into module items. Runs at
+/// `after_expansion`, so file-based modules are already `Loaded` inline in the
+/// AST and their macros are reached by walking `ModKind::Loaded` children.
+///
+/// Names are not qualified by module path — two same-named macros in different
+/// modules merge their cfgs, matching how `visit_path` looks a macro up by the
+/// bare `ExpnKind::Macro` name from the expansion backtrace.
+fn collect_macro_cfgs<T: std::ops::Deref<Target = rustc_ast::Item>>(
+    items: &[T],
+    source_map: &SourceMap,
+    out: &mut HashMap<Symbol, Vec<String>>,
+) {
+    for item in items {
+        match &item.kind {
+            rustc_ast::ItemKind::MacroDef(ident, mac_def) => {
+                let cfgs = collect_cfg_attrs_from_tokens(&mac_def.body.tokens, source_map);
+                if !cfgs.is_empty() {
+                    out.entry(ident.name).or_default().extend(cfgs);
+                }
+            }
+            rustc_ast::ItemKind::Mod(_, _, rustc_ast::ModKind::Loaded(sub_items, _, _)) => {
+                collect_macro_cfgs(sub_items, source_map, out);
+            }
+            _ => {}
+        }
+    }
+}
+
 impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
     fn visit_item(&mut self, item: &'a rustc_ast::Item) {
         let old_context = self.current_context;
@@ -347,17 +376,16 @@ impl rustc_driver::Callbacks for MyCompilerCalls {
             let (resolver, krate) = &*resolver_wrapper;
 
             // Pre-scan all macro_rules! definitions to collect #[cfg(…)] attribute
-            // strings from their bodies, keyed by macro name.
+            // strings from their bodies, keyed by macro name. Recurses through
+            // modules: a `macro_rules!` is far more often defined inside `mod foo`
+            // (`src/foo.rs`) than at the crate root, and iterating only
+            // `krate.items` left every such macro's body cfg unrecorded — so an
+            // `if_std!`/`trace!`-style body gate never reached its expansion
+            // records (stak-vm's `mod vm` trace!, vls-core's `mod util::log_utils`
+            // catch_panic!).
             let source_map = tcx.sess.source_map();
             let mut macro_cfg_map: HashMap<Symbol, Vec<String>> = HashMap::new();
-            for item in krate.items.iter() {
-                if let rustc_ast::ItemKind::MacroDef(ident, mac_def) = &item.kind {
-                    let cfgs = collect_cfg_attrs_from_tokens(&mac_def.body.tokens, source_map);
-                    if !cfgs.is_empty() {
-                        macro_cfg_map.entry(ident.name).or_default().extend(cfgs);
-                    }
-                }
-            }
+            collect_macro_cfgs(&krate.items, source_map, &mut macro_cfg_map);
 
             let mut visitor = PathResolver {
                 resolver,

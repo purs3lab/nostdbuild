@@ -201,3 +201,27 @@ fn test_watchface() {
 fn test_chainable_if() {
     run_main_test("chainable-if", "0.1.1", "x86_64-unknown-none");
 }
+
+/// Regression: a `macro_rules!` whose body gates a std statement behind a
+/// `#[cfg(...)]`, defined inside a submodule. `stak-vm`'s `mod vm` holds
+///
+/// ```ignore
+/// macro_rules! trace {
+///     ($p:literal, $d:expr) => {
+///         #[cfg(feature = "trace_instruction")]
+///         std::eprintln!("{}: {}", $p, $d);
+///     };
+/// }
+/// ```
+///
+/// invoked in statement position deep inside fns. The plugin extracts a
+/// macro body's `#[cfg]` and attaches it (via the expansion backtrace) as
+/// `macro_body_cfgs` so the probe can disable the feature — but the pre-scan
+/// only walked crate-root items, so a macro under `mod vm` got no entry and
+/// all 13 `std::eprintln!` spans read as unguarded. `collect_macro_cfgs` now
+/// recurses through modules; the probe disables `trace_instruction`/
+/// `trace_memory` and the crate clears.
+#[cargo_test]
+fn test_stak_vm() {
+    run_main_test("stak-vm", "0.10.21", "x86_64-unknown-none");
+}

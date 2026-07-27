@@ -1,0 +1,19 @@
+[
+  {
+    "name": "stak-vm",
+    "version": "0.10.21",
+    "target": "x86_64-unknown-none",
+    "args": [
+      "+nightly",
+      "build",
+      "--release",
+      "--target",
+      "x86_64-unknown-none",
+      "--manifest-path",
+      "/evaldisk/sourag/downloads/stak-vm-0.10.21/Cargo.toml",
+      "--lib"
+    ],
+    "status": "Success",
+    "error": null
+  }
+]
