@@ -1087,7 +1087,15 @@ pub fn find_feature_combs_for_all_code<'a>(
         .and_then(|s| s.parse().ok())
         .unwrap_or(toml::Value::Table(toml::map::Map::new()));
     let feat_map = downloader::read_local_features(&manifest_toml);
-    let impl_constraints = solver::feature_implication_constraints(ctx, &feat_map);
+    let mut impl_constraints = solver::feature_implication_constraints(ctx, &feat_map);
+    // `dep/feat` references to optional dependencies also enable that dep's
+    // implicit feature; teach the solver `feat => dep` so it can't pick a set
+    // Cargo would silently re-unify (bucket 3c).
+    let opt_dep_edges = downloader::optional_dep_feature_edges(&manifest_toml);
+    impl_constraints.extend(solver::optional_dep_implication_constraints(
+        ctx,
+        &opt_dep_edges,
+    ));
 
     // Every feature cargo will accept for this package. A `cfg(feature = "X")`
     // naming anything else is set from outside the feature system — typically a

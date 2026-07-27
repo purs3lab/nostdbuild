@@ -282,3 +282,131 @@ fn required_implicit_feature_is_kept() {
         "a non-minimalizable implicit feature must not be dropped"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Bucket 3c: `feat = ["<optdep>/<subfeat>"]` implies the implicit `<optdep>`
+// feature. `optional_dep_feature_edges` must emit `(feat, dep)` for a strong
+// reference to an optional dep, and nothing for weak / required / `dep:` refs.
+// ---------------------------------------------------------------------------
+
+use nostd::downloader::{optional_dep_feature_edges, read_local_features};
+use nostd::solver::{feature_implication_constraints, optional_dep_implication_constraints};
+
+fn parse_manifest(manifest: &str) -> toml::Value {
+    manifest.parse().expect("failed to parse fixture manifest")
+}
+
+/// inout 0.1.4: `std = ["block-padding/std"]`, `block-padding` optional.
+const INOUT_MANIFEST: &str = "[package]\nname = \"inout\"\nversion = \"0.1.4\"\n\n\
+     [features]\nstd = [\"block-padding/std\"]\n\n\
+     [dependencies.block-padding]\nversion = \"0.3\"\noptional = true\n\n\
+     [dependencies.generic-array]\nversion = \"0.14\"\n";
+
+#[test]
+fn strong_ref_to_optional_dep_yields_edge() {
+    let toml = parse_manifest(INOUT_MANIFEST);
+    let edges = optional_dep_feature_edges(&toml);
+    assert_eq!(
+        edges,
+        vec![("std".to_string(), "block-padding".to_string())],
+        "std => block-padding must be emitted for `std = [\"block-padding/std\"]`, got {edges:?}"
+    );
+}
+
+#[test]
+fn weak_ref_yields_no_edge() {
+    // `block-padding?/std` enables the sub-feature only if block-padding is
+    // already on, so it does NOT imply block-padding. Adding the edge would be
+    // unsound.
+    let manifest = INOUT_MANIFEST.replace("block-padding/std", "block-padding?/std");
+    let toml = parse_manifest(&manifest);
+    let edges = optional_dep_feature_edges(&toml);
+    assert!(
+        edges.is_empty(),
+        "a weak `dep?/feat` reference must not produce an implication edge, got {edges:?}"
+    );
+}
+
+#[test]
+fn ref_to_required_dep_yields_no_edge() {
+    // generic-array is not optional, so there is no implicit `generic-array`
+    // feature to imply.
+    let manifest = INOUT_MANIFEST.replace("block-padding/std", "generic-array/std");
+    let toml = parse_manifest(&manifest);
+    let edges = optional_dep_feature_edges(&toml);
+    assert!(
+        edges.is_empty(),
+        "a `dep/feat` reference to a required dep must not produce an edge, got {edges:?}"
+    );
+}
+
+#[test]
+fn dep_and_plain_refs_yield_no_optional_edge() {
+    // `dep:` names a dependency (handled elsewhere) and a plain `alloc` link is a
+    // feature-to-feature edge handled by `feature_implication_constraints`.
+    // Neither is a `dep/feat` optional reference.
+    let manifest = "[package]\nname = \"x\"\nversion = \"0.0.0\"\n\n\
+         [features]\nstd = [\"dep:block-padding\", \"alloc\"]\nalloc = []\n\n\
+         [dependencies.block-padding]\nversion = \"0.3\"\noptional = true\n";
+    let toml = parse_manifest(manifest);
+    let edges = optional_dep_feature_edges(&toml);
+    assert!(
+        edges.is_empty(),
+        "`dep:` and plain feature links must not be treated as optional-dep edges, got {edges:?}"
+    );
+}
+
+#[test]
+fn target_specific_optional_dep_is_recognised() {
+    let manifest = "[package]\nname = \"x\"\nversion = \"0.0.0\"\n\n\
+         [features]\nstd = [\"foo/std\"]\n\n\
+         [target.'cfg(unix)'.dependencies.foo]\nversion = \"1\"\noptional = true\n";
+    let toml = parse_manifest(manifest);
+    let edges = optional_dep_feature_edges(&toml);
+    assert_eq!(
+        edges,
+        vec![("std".to_string(), "foo".to_string())],
+        "an optional dep under [target.*.dependencies] must be recognised, got {edges:?}"
+    );
+}
+
+#[test]
+fn constraint_forbids_feat_on_dep_off() {
+    // The whole point: with the edge asserted, `std & !block-padding` is unsat, so
+    // the probe can never pick the model that Cargo would re-unify (bucket 3c).
+    let ctx = z3::Context::new(&z3::Config::new());
+    let toml = parse_manifest(INOUT_MANIFEST);
+    let edges = optional_dep_feature_edges(&toml);
+    let constraints = optional_dep_implication_constraints(&ctx, &edges);
+    assert_eq!(constraints.len(), 1, "expected exactly one edge constraint");
+
+    let solver = z3::Solver::new(&ctx);
+    for c in &constraints {
+        solver.assert(c);
+    }
+    let std_var = z3::ast::Bool::new_const(&ctx, "std");
+    let bp_var = z3::ast::Bool::new_const(&ctx, "block-padding");
+    solver.assert(&std_var);
+    solver.assert(&bp_var.not());
+    assert_eq!(
+        solver.check(),
+        z3::SatResult::Unsat,
+        "std=true, block-padding=false must be forbidden by the edge"
+    );
+
+    // Control: the existing plain-link function alone does NOT forbid it — proving
+    // the new path is what closes the gap, not pre-existing behaviour.
+    let feat_map = read_local_features(&toml);
+    let plain = feature_implication_constraints(&ctx, &feat_map);
+    let solver2 = z3::Solver::new(&ctx);
+    for c in &plain {
+        solver2.assert(c);
+    }
+    solver2.assert(&std_var);
+    solver2.assert(&bp_var.not());
+    assert_eq!(
+        solver2.check(),
+        z3::SatResult::Sat,
+        "plain-link constraints alone must NOT forbid std&!block-padding (the 3c gap)"
+    );
+}

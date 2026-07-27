@@ -579,6 +579,24 @@ pub fn feature_implication_constraints<'a>(
     constraints
 }
 
+/// Turn `(feat, dep)` implication edges from `downloader::optional_dep_feature_edges`
+/// into Z3 constraints `feat => dep` (`¬feat ∨ dep`). These cover `dep/feat`
+/// references to optional dependencies, which `feature_implication_constraints`
+/// (plain feature-to-feature links only) does not — see bucket 3c.
+pub fn optional_dep_implication_constraints<'a>(
+    ctx: &'a z3::Context,
+    edges: &[(String, String)],
+) -> Vec<Bool<'a>> {
+    edges
+        .iter()
+        .map(|(feat_name, dep_name)| {
+            let feat_var = Bool::new_const(ctx, feat_name.as_str());
+            let dep_var = Bool::new_const(ctx, dep_name.as_str());
+            Bool::or(ctx, &[&feat_var.not(), &dep_var])
+        })
+        .collect()
+}
+
 /// Similar to `find_possible_equations`, but we are given a set of equations that
 /// are already known to be satisfiable together. We want to find the equations
 /// from the others that are satisfiable with the set.

@@ -413,7 +413,7 @@ pub fn contains_one_rs_file(path: &str) -> bool {
     false
 }
 
-pub(crate) fn read_local_features(toml: &toml::Value) -> Vec<(String, TupleVec)> {
+pub fn read_local_features(toml: &toml::Value) -> Vec<(String, TupleVec)> {
     let features = toml
         .get("features")
         .and_then(Value::as_table)
@@ -448,6 +448,91 @@ pub(crate) fn read_local_features(toml: &toml::Value) -> Vec<(String, TupleVec)>
             )
         })
         .collect()
+}
+
+/// Collect the names of all optional dependencies declared in a manifest.
+///
+/// An optional dependency creates an implicit feature of the same name, so
+/// `feat = ["<optdep>/<subfeat>"]` transitively enables that implicit feature.
+/// Covers both `[dependencies]` and target-specific `[target.*.dependencies]`;
+/// `[build-dependencies]` are excluded because optional build deps do not create
+/// features, and dev-dependencies cannot be optional.
+fn optional_deps_in_manifest(toml: &toml::Value) -> HashSet<String> {
+    let mut out = HashSet::new();
+
+    let collect = |table: Option<&Value>, out: &mut HashSet<String>| {
+        if let Some(deps) = table.and_then(Value::as_table) {
+            for (name, spec) in deps {
+                let optional = spec
+                    .as_table()
+                    .and_then(|t| t.get("optional"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if optional {
+                    out.insert(name.clone());
+                }
+            }
+        }
+    };
+
+    collect(toml.get("dependencies"), &mut out);
+
+    if let Some(targets) = toml.get("target").and_then(Value::as_table) {
+        for (_, cfg) in targets {
+            collect(cfg.get("dependencies"), &mut out);
+        }
+    }
+
+    out
+}
+
+/// For each `feat = ["<dep>/<subfeat>"]` reference where `<dep>` is an optional
+/// dependency and the reference is **not** weak (`<dep>?/...`), yield the edge
+/// `(feat, dep)`.
+///
+/// Enabling `feat` turns on the implicit `<dep>` feature, so the solver must
+/// learn `feat => dep`; otherwise it can pick a covering set with `feat` on and
+/// `dep` off that Cargo will silently re-unify (bucket 3c). This parses the
+/// `[features]` table directly rather than via `read_local_features` so the weak
+/// `?` marker — which `read_local_features` strips — is still visible: a weak
+/// `dep?/feat` enables the sub-feature only if the dep is already on, so it
+/// implies nothing and must be excluded.
+pub fn optional_dep_feature_edges(toml: &toml::Value) -> Vec<(String, String)> {
+    let optional_deps = optional_deps_in_manifest(toml);
+    let mut edges = Vec::new();
+
+    let features = match toml.get("features").and_then(Value::as_table) {
+        Some(f) => f,
+        None => return edges,
+    };
+
+    for (feat_name, values) in features {
+        let Some(arr) = values.as_array() else {
+            continue;
+        };
+        for v in arr {
+            let Some(entry) = v.as_str() else { continue };
+            // `dep:foo` names a dependency, not a `dep/feat` reference.
+            if entry.starts_with("dep:") {
+                continue;
+            }
+            let Some((dep_part, _subfeat)) = entry.split_once('/') else {
+                // No slash: a plain feature link, handled by
+                // `feature_implication_constraints`.
+                continue;
+            };
+            // Weak reference: enables the sub-feature only if the dep is already
+            // on, so it does not imply the dep. Exclude.
+            if dep_part.ends_with('?') {
+                continue;
+            }
+            if optional_deps.contains(dep_part) {
+                edges.push((feat_name.clone(), dep_part.to_string()));
+            }
+        }
+    }
+
+    edges
 }
 
 fn index_path(name: &str) -> String {
