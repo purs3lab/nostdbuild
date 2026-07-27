@@ -886,7 +886,15 @@ pub fn run_rustc_plugin_pass(
             targets.push(Some(*t));
         }
     }
-    // Host fallback, tried last.
+    // Host fallback, tried last. Load-bearing, not merely a genuine-std backstop:
+    // a feature combo that fails on the bare-metal target (e.g. it enables a
+    // feature whose code does `use std::fs::File`) emits no records there, so the
+    // host build is the *only* place that std usage surfaces. Gating this on
+    // "no target has compiled yet" makes such spans vanish as CompileFailed, and
+    // the covering-set/minimize logic then treats the std-requiring feature as
+    // std-free and enables it — emitting a config that does not build (observed:
+    // tarfs enabling `builtin_devices`, E0433 on `std`). The extra build per
+    // failing combo is the cost of detecting std in feature-gated code.
     targets.push(None);
 
     let mut last_stderr = String::new();

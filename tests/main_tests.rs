@@ -36,9 +36,27 @@ fn run_main_test(crate_name: &str, crate_version: &str, arch: &str) {
             .expect("Failed to remove existing crate download directory");
     }
 
+    // Per-crate CARGO_TARGET_DIR, mirroring eval.py. The rustc_plugin framework
+    // derives the plugin's `--target-dir` from `cargo metadata` run in the tool's
+    // CWD, not the analysed crate (rustc_plugin `cli.rs`: `metadata.target_directory
+    // .join("plugin-<channel>")`), so *every* plugin pass defaults to the single
+    // shared `<cwd>/target/plugin-<channel>`. With the suite running 21 tests in
+    // parallel, all their plugin passes then serialize on that one directory's cargo
+    // build lock (silently — the plugin runs `cargo check -q`). Setting
+    // CARGO_TARGET_DIR redirects `metadata.target_directory` (and thus the plugin
+    // dir) to a per-crate path, so the tests build concurrently instead of queuing.
+    // A stable per-crate path (not a fresh temp) keeps cargo's cache warm across
+    // reruns. Does not affect emitted results — those go to consts::RESULTS_PATH.
+    let cargo_target_dir = std::env::temp_dir()
+        .join("nostd_main_tests")
+        .join(format!("{}-{}", crate_name.replace('-', "_"), crate_version));
+    std::fs::create_dir_all(&cargo_target_dir)
+        .expect("Failed to create per-crate CARGO_TARGET_DIR");
+
     let output = Command::new(cargo_bin!("main"))
         .args(&args)
         .env("LD_LIBRARY_PATH", common::get_sysroot_lib_path())
+        .env("CARGO_TARGET_DIR", &cargo_target_dir)
         .output()
         .expect("Failed to run main binary");
 
