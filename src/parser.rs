@@ -679,6 +679,88 @@ fn all_subtree_deps_only(
     true
 }
 
+/// Returns the features in `enable` whose *sole* effect is linking an optional
+/// dependency, so dropping them from `--features` changes nothing else about the
+/// build.
+///
+/// This is the retry material for the case where a dependency passes every
+/// no_std-capability check and still cannot build for the target we picked:
+/// lazy-exclusive's `use-locks` pulls in `libc`, which is a perfectly no_std
+/// crate, but the `pthread_mutex_*` items the crate imports from it do not exist
+/// on bare metal. No dependency-level probe can see that — `libc` alone compiles
+/// for the target fine — so the only evidence is a failed compile of the crate
+/// itself, and the only safe use of this list is as material for a retry whose
+/// result is verified by a build. It must never be asserted into a solve: doing
+/// so just reshuffles which arbitrary model Z3 returns.
+///
+/// A feature is a candidate only if it actually reaches an optional dep
+/// (`features_for_optional_deps`), which keeps marker features like `foo = []`
+/// out, and only if `all_subtree_deps_only` holds for its whole subtree.
+/// Features `default` already pulls in are excluded when defaults are on:
+/// removing those from the command line would not turn them off.
+pub fn deps_only_enable_features(
+    crate_name: &str,
+    crate_info: &CrateInfo,
+    enable: &[String],
+    non_minimalizable_features: &HashSet<String>,
+    default_features_on: bool,
+) -> Vec<String> {
+    let mut optional_deps: Vec<String> = crate_info
+        .deps_and_features
+        .iter()
+        .filter(|(dep, _)| dep.optional)
+        .map(|(dep, _)| dep.name.clone())
+        .collect();
+    // `gather_crate_info` only reads `[dependencies]`, so an optional dep under
+    // `[target.'cfg(…)'.dependencies]` is missing from `deps_and_features` —
+    // which is exactly lazy-exclusive's shape, where both deps `use-locks` pulls
+    // in are target-scoped. Read them off the manifest as well.
+    let manifest = determine_manifest_file(crate_name, None);
+    if let Ok(toml) = fs::read_to_string(&manifest)
+        .map_err(anyhow::Error::from)
+        .and_then(|s| toml::from_str::<toml::Value>(&s).map_err(anyhow::Error::from))
+    {
+        for dep in downloader::optional_deps_in_manifest(&toml) {
+            if !optional_deps.contains(&dep) {
+                optional_deps.push(dep);
+            }
+        }
+    }
+    if optional_deps.is_empty() {
+        return Vec::new();
+    }
+
+    let dep_enablers = features_for_optional_deps_with(crate_info, &optional_deps);
+    let via_default: HashSet<String> =
+        if default_features_on && crate_info.features.iter().any(|(name, _)| name == "default") {
+            close_over_local_features(
+                &HashSet::from(["default".to_string()]),
+                &crate_info.features,
+            )
+        } else {
+            HashSet::new()
+        };
+
+    let mut candidates: Vec<String> = enable
+        .iter()
+        .filter(|feat| !via_default.contains(feat.as_str()))
+        .filter(|feat| dep_enablers.iter().any(|(_, f)| f == *feat))
+        .filter(|feat| {
+            all_subtree_deps_only(
+                feat,
+                crate_info,
+                &optional_deps,
+                non_minimalizable_features,
+                &mut HashSet::new(),
+            )
+        })
+        .cloned()
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
 /// Returns `true` if `feat_name` and every feature reachable from it transitively
 /// serves no purpose other than enabling features of optional deps that are NOT in
 /// `enabled_optional_deps`. If a dep/feat entry points to a dep that IS enabled, or
@@ -2558,7 +2640,19 @@ pub fn features_for_optional_deps(crate_info: &CrateInfo) -> TupleVec {
         .filter(|(dep, _)| dep.optional)
         .map(|(dep, _)| dep.name.clone())
         .collect();
+    features_for_optional_deps_with(crate_info, &optional_deps)
+}
 
+/// `features_for_optional_deps` against a caller-supplied set of optional
+/// dependencies, for callers that know of optional deps `crate_info` does not.
+/// `gather_crate_info` only walks `[dependencies]`, so a dep declared under
+/// `[target.'cfg(…)'.dependencies]` is absent from `deps_and_features` even
+/// though its implicit feature is perfectly real.
+pub fn features_for_optional_deps_with(
+    crate_info: &CrateInfo,
+    optional_deps: &[String],
+) -> TupleVec {
+    let optional_deps = optional_deps.to_vec();
     let mut result: TupleVec = Vec::new();
 
     for (feat_name, _) in &crate_info.features {

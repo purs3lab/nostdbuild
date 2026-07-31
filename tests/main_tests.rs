@@ -115,11 +115,12 @@ fn test_log() {
     run_main_test("log", "0.4.29", "x86_64-unknown-none");
 }
 
-/// Looks like recent changes made is such that we add
-/// `use-locks` to the set of features to enable and this causes
-/// compilation error. But according to README of the crate
-/// `use-locks` possible but untested. So we will leave it as
-/// a known failure.
+/// The KI-11 case: `use-locks` gets enabled, pulls in `libc`, and the build dies
+/// on `libc::pthread_mutex_*` items that do not exist on a bare-metal target —
+/// even though `libc` itself is no_std-capable and compiles for that target.
+/// `use-locks` exists only to link an optional dep (and the crate's README calls
+/// it "possible but untested"), so the failed build triggers a retry without it,
+/// which succeeds. The golden records the retry's config, not the failed attempt.
 #[cargo_test]
 fn test_lazy_exclusive() {
     run_main_test("lazy-exclusive", "1.0.5", "x86_64-unknown-none");

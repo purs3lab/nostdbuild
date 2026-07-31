@@ -305,6 +305,11 @@ pub struct Telemetry {
     /// For the above list, the features that caused them to be enabled in the first place, that were then moved to
     /// another list.
     pub optional_deps_disabled_features_moved: Vec<(String, Vec<String>)>,
+    /// Features dropped from the emitted set after the first build failed and a
+    /// retry without them succeeded. Each exists only to link an optional
+    /// dependency that turned out to be unusable for the target (KI-11), which
+    /// no dependency-level check can predict — the retry is the evidence.
+    pub optional_dep_features_dropped: Vec<String>,
     /// Was the crate build successful for any target
     pub build_success: bool,
     /// Number of targets the crate built successfully for

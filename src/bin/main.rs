@@ -34,6 +34,53 @@ struct Cli {
     no_recursive: bool,
 }
 
+/// Assemble the cargo flags for one feature selection: `--no-default-features`
+/// when defaults are off, plus the merged `--features` list.
+///
+/// Returns the flags, the merged feature groups (what the `compile_error!` check
+/// reads), and the feature count for telemetry. Both inputs are taken by
+/// reference and copied so the same selection can be assembled twice — the
+/// KI-11 retry re-assembles with a reduced `main_features` and needs the
+/// original `deps_args`, not the first call's filtered leftovers.
+fn assemble_final_args(
+    disable_default: bool,
+    main_features: &[String],
+    deps_args: &[String],
+) -> (Vec<String>, Vec<String>, usize) {
+    let mut final_args = Vec::new();
+    let mut combined_features = Vec::new();
+    let mut final_features_len = main_features.len();
+    let mut deps_args = deps_args.to_vec();
+    let main_feature_string = main_features.join(",");
+
+    if !deps_args.is_empty() {
+        if !main_feature_string.is_empty() {
+            deps_args.retain(|x| !main_feature_string.contains(x));
+        }
+        deps_args.sort();
+        deps_args.dedup();
+    }
+    final_features_len += deps_args.len();
+
+    if disable_default {
+        final_args.push("--no-default-features".to_string());
+    }
+
+    if !main_feature_string.is_empty() {
+        combined_features.push(main_feature_string);
+    }
+    if !deps_args.is_empty() {
+        combined_features.push(deps_args.join(","));
+    }
+    if !combined_features.is_empty() {
+        combined_features.sort();
+        combined_features.dedup();
+        final_args.push("--features".to_string());
+        final_args.push(combined_features.join(","));
+    }
+    (final_args, combined_features, final_features_len)
+}
+
 fn process_dep_crate_wrapper(
     exchange: &mut nostd::DataExchange,
     dep: &mut Attributes,
@@ -338,7 +385,7 @@ fn main() -> anyhow::Result<()> {
         None => HashSet::new(),
     };
 
-    let (mut enable, disable) = parser::process_crate(
+    let (mut enable, mut disable) = parser::process_crate(
         &mut exchange,
         &ctx,
         &mut main_attributes,
@@ -588,43 +635,104 @@ fn main() -> anyhow::Result<()> {
         main_features
     );
 
-    let mut final_args = Vec::new();
-    let mut combined_features = Vec::new();
-    let mut final_features_len = main_features.len();
     main_features.sort();
     main_features.dedup();
-    let main_feature_string = main_features.join(",");
+    let (mut final_args, mut combined_features, mut final_features_len) =
+        assemble_final_args(disable_default, &main_features, &deps_args);
 
-    if !deps_args.is_empty() {
-        if !main_feature_string.is_empty() {
-            deps_args.retain(|x| !main_feature_string.contains(x));
+    println!("Final args: {:?}", final_args);
+    let before_build = compiler::mark_build_records(&stats, &exchange.telemetry);
+    let mut one_succeeded = if no_std {
+        compiler::try_compile(
+            &exchange.name_with_version,
+            &target,
+            &final_args,
+            &mut stats,
+            &mut exchange.telemetry,
+        )
+    } else {
+        Ok(false)
+    }?;
+
+    // KI-11: a dependency can clear every no_std-capability check and still be
+    // unbuildable for the target we chose — lazy-exclusive's `use-locks` pulls in
+    // `libc`, whose `pthread_mutex_*` items do not exist on bare metal. Nothing
+    // short of compiling this crate can produce that evidence, so the only place
+    // to act on it is here, after a build that failed on every target. Features
+    // that exist solely to link an optional dep are dropped and the build retried;
+    // the retry is kept only if it succeeds, which is what makes a batch drop safe
+    // even when a candidate turns out to be load-bearing. Deliberately not fed
+    // back into a solve — asserting these edges there only shuffles which
+    // arbitrary model Z3 returns and breaks unrelated crates.
+    if no_std && !one_succeeded {
+        let droppable = parser::deps_only_enable_features(
+            &exchange.name_with_version,
+            &exchange.crate_info,
+            &main_features,
+            &non_minimalizable,
+            !disable_default,
+        );
+        let reduced: Vec<String> = main_features
+            .iter()
+            .filter(|feat| !droppable.contains(feat))
+            .cloned()
+            .collect();
+        let (retry_args, retry_combined, retry_len) =
+            assemble_final_args(disable_default, &reduced, &deps_args);
+
+        if !droppable.is_empty() && retry_args != final_args {
+            println!(
+                "Build failed for every target; retrying without optional-dep-only feature(s) {:?}: {:?}",
+                droppable, retry_args
+            );
+            let before_retry = compiler::mark_build_records(&stats, &exchange.telemetry);
+            let retry_succeeded = compiler::try_compile(
+                &exchange.name_with_version,
+                &target,
+                &retry_args,
+                &mut stats,
+                &mut exchange.telemetry,
+            )?;
+            if retry_succeeded {
+                // The retry is the emitted config now, so the failed attempt's rows
+                // are dropped — one feature set per target in the results.
+                compiler::discard_build_records(
+                    &mut stats,
+                    &mut exchange.telemetry,
+                    &before_build,
+                    &before_retry,
+                );
+                // The DB hands this crate's chosen features to any later build that
+                // depends on it, so a feature the retry just proved unbuildable has
+                // to change sides there too, not only in `final_args`.
+                enable.retain(|feat| !droppable.contains(feat));
+                for feat in &droppable {
+                    if !disable.contains(feat) {
+                        disable.push(feat.clone());
+                    }
+                }
+                exchange.telemetry.optional_dep_features_dropped = droppable;
+                final_args = retry_args;
+                combined_features = retry_combined;
+                final_features_len = retry_len;
+                one_succeeded = true;
+                println!("Final args after retry: {:?}", final_args);
+            } else {
+                compiler::rewind_build_records(
+                    &mut stats,
+                    &mut exchange.telemetry,
+                    &before_retry,
+                );
+            }
         }
-        deps_args.sort();
-        deps_args.dedup();
-    }
-    final_features_len += deps_args.len();
-
-    if disable_default {
-        final_args.push("--no-default-features".to_string());
     }
 
-    if !main_feature_string.is_empty() {
-        combined_features.push(main_feature_string);
-    }
-    if !deps_args.is_empty() {
-        combined_features.push(deps_args.join(","));
-    }
-    if !combined_features.is_empty() {
-        combined_features.sort();
-        combined_features.dedup();
-        final_args.push("--features".to_string());
-        final_args.push(combined_features.join(","));
-    }
     exchange.telemetry.final_features_length = final_features_len;
 
-    // Verify the feature set we are about to build actually satisfies the crate's own
+    // Verify the feature set we built actually satisfies the crate's own
     // `compile_error!` conditions. The stage-2 check inside `process_crate` leaves
-    // unselected features free and so is trivially satisfiable; this one closes the world.
+    // unselected features free and so is trivially satisfiable; this one closes the
+    // world. Runs on the emitted set, so a retry above is what gets checked.
     let violated = parser::violated_compile_error_constraints(
         &ctx,
         &main_attributes,
@@ -646,19 +754,6 @@ fn main() -> anyhow::Result<()> {
             .compile_error_constraint_unsatisfied
             .push(exchange.name_with_version.clone());
     }
-
-    println!("Final args: {:?}", final_args);
-    let one_succeeded = if no_std {
-        compiler::try_compile(
-            &exchange.name_with_version,
-            &target,
-            &final_args,
-            &mut stats,
-            &mut exchange.telemetry,
-        )
-    } else {
-        Ok(false)
-    }?;
 
     if one_succeeded {
         exchange.telemetry.build_success = true;

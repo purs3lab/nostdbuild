@@ -3,6 +3,60 @@ use log::debug;
 
 use crate::{AllStats, Results, Status, Telemetry, consts, parser};
 
+/// Position of the build bookkeeping before a `try_compile` call, so a
+/// speculative attempt can be taken back out again.
+///
+/// `try_compile` appends one `Results` row per target, plus a target entry in
+/// the telemetry's success/fail lists. When a crate is built more than once —
+/// the KI-11 retry drops optional-dep-only features and builds again — only the
+/// attempt whose feature set we actually emit may leave records behind.
+/// Otherwise `compilation_results.json` reports two different `args` for the
+/// same target and nothing downstream can tell which one is the answer.
+#[derive(Clone, Copy)]
+pub struct BuildRecordMark {
+    results: usize,
+    success_targets: usize,
+    success_count: u32,
+    fail_targets: usize,
+}
+
+/// Snapshot the build bookkeeping before a speculative `try_compile`.
+pub fn mark_build_records(stats: &AllStats, telemetry: &Telemetry) -> BuildRecordMark {
+    BuildRecordMark {
+        results: stats.compilation_res.len(),
+        success_targets: telemetry.build_success_targets.len(),
+        success_count: telemetry.build_success_count,
+        fail_targets: telemetry.build_fail_targets.len(),
+    }
+}
+
+/// Discard everything recorded since `mark` — used when a speculative attempt
+/// loses and the caller keeps the earlier feature set.
+pub fn rewind_build_records(stats: &mut AllStats, telemetry: &mut Telemetry, mark: &BuildRecordMark) {
+    stats.compilation_res.truncate(mark.results);
+    telemetry.build_success_targets.truncate(mark.success_targets);
+    telemetry.build_fail_targets.truncate(mark.fail_targets);
+    telemetry.build_success_count = mark.success_count;
+}
+
+/// Discard the records written between `from` and `to`, keeping anything after
+/// `to` — used when a later attempt wins and supersedes an earlier one.
+pub fn discard_build_records(
+    stats: &mut AllStats,
+    telemetry: &mut Telemetry,
+    from: &BuildRecordMark,
+    to: &BuildRecordMark,
+) {
+    stats.compilation_res.drain(from.results..to.results);
+    telemetry
+        .build_success_targets
+        .drain(from.success_targets..to.success_targets);
+    telemetry
+        .build_fail_targets
+        .drain(from.fail_targets..to.fail_targets);
+    telemetry.build_success_count -= to.success_count - from.success_count;
+}
+
 pub fn try_compile(
     name_with_version: &str,
     clitarget: &str,

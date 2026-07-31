@@ -457,7 +457,7 @@ pub fn read_local_features(toml: &toml::Value) -> Vec<(String, TupleVec)> {
 /// Covers both `[dependencies]` and target-specific `[target.*.dependencies]`;
 /// `[build-dependencies]` are excluded because optional build deps do not create
 /// features, and dev-dependencies cannot be optional.
-fn optional_deps_in_manifest(toml: &toml::Value) -> HashSet<String> {
+pub fn optional_deps_in_manifest(toml: &toml::Value) -> HashSet<String> {
     let mut out = HashSet::new();
 
     let collect = |table: Option<&Value>, out: &mut HashSet<String>| {
