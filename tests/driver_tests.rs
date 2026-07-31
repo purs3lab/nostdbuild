@@ -644,6 +644,7 @@ mod import_to_use {
                 name: None,
                 externally_gated: true,
                 use_path: None,
+                extern_roots: Vec::new(),
             })
             .collect();
         ModNode {

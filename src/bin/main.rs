@@ -305,6 +305,20 @@ fn main() -> anyhow::Result<()> {
 
     let mut dep_and_feats = parser::features_for_optional_deps(&exchange.crate_info);
 
+    // The covering runs learned which optional dependencies the no_std half needs
+    // linked (bucket 11). The final feature selection is a *separate* solve, so it
+    // has to be told the same thing: `caches-0.3.0` clears the std analysis and then
+    // emits `--no-default-features` with nothing else, which fails to build with
+    // `can't find crate hashbrown` / `unresolved import libm` — the very configuration
+    // the covering run had already rejected.
+    let main_manifest = parser::determine_manifest_file(&exchange.name_with_version, None);
+    let (optdep_constraints, optdep_enablers) = driver::optional_dep_link_constraints(
+        &ctx,
+        &driver::read_manifest_toml(&main_manifest),
+        &nostd::visitor::declared_features(&main_manifest),
+        &main_root,
+    );
+
     // Feature names forced by the no_std hard constraints (probe-derived `final_condition`).
     // Captured here because `hard_constraints` is moved into `process_crate` below.
     // These must be protected from the later minimize passes (see `non_minimalizable`).
@@ -334,6 +348,22 @@ fn main() -> anyhow::Result<()> {
         &mut dep_and_feats,
         hard_constraints,
     )?;
+
+    // Add the optional dependencies the chosen assignment cannot link without
+    // (bucket 11). `caches-0.3.0` picks `not(std)`, and its no_std half imports
+    // `hashbrown` and `libm` — without their implicit features the emitted build fails
+    // with `can't find crate hashbrown`, the same configuration the covering run had
+    // already rejected. Additive: features the solve chose are never disturbed.
+    for feat in solver::forced_optional_dep_enablers(
+        &ctx,
+        &optdep_constraints,
+        &optdep_enablers,
+        &enable,
+        &disable,
+    ) {
+        println!("Enabling optional-dep feature '{feat}' required by the no_std feature set");
+        enable.push(feat);
+    }
 
     exchange.main_enable = enable.clone();
 
@@ -390,10 +420,20 @@ fn main() -> anyhow::Result<()> {
     // bulletproofs-bls lost `blst` that way and shipped a set satisfying neither `rust`
     // nor `blst`. uom is the case that must not regress: its `f32`/`f64` arrive from
     // `default` too, and are now pinned rather than surviving by luck.
+    // `optdep_enablers` joins the two sources above: a feature that links an optional
+    // dependency the no_std half imports. It gates no code of its own, so minimize's
+    // "exists only to pull in a dep" rule would drop it — but the solver only put it in
+    // `enable` because a `#[cfg]` needs that dependency linked (caches: hashbrown, libm).
+    // Membership in `enable`/`main_features` is what makes this deterministic: an enabler
+    // the solve did not choose is never protected.
     let non_minimalizable: HashSet<String> = main_features
         .iter()
         .chain(enable.iter())
-        .filter(|f| ce_features.contains(*f) || hard_constraint_features.contains(*f))
+        .filter(|f| {
+            ce_features.contains(*f)
+                || hard_constraint_features.contains(*f)
+                || optdep_enablers.contains(*f)
+        })
         .cloned()
         .collect();
     debug!("Non-minimalizable main features: {:?}", non_minimalizable);

@@ -390,6 +390,17 @@ pub struct LocalItem<'a> {
     /// record for its stem (`path_text: "std::collections"`) and `use
     /// super::HashMap` records nothing at all. `None` for every non-`use` item.
     pub use_path: Option<Vec<String>>,
+    /// Crate roots this item makes reachable: `use hashbrown::HashMap` →
+    /// `["hashbrown"]`, `extern crate core_io;` → `["core_io"]`, and for a
+    /// `cfg_if!` arm every `use`/`extern crate` root inside its body — that arm
+    /// is one opaque `LocalItem`, so `use_path` cannot carry them.
+    ///
+    /// Read only by `collect_gated_extern_roots`, which pairs each root with the
+    /// item's effective condition so the solver can learn that a cfg requires an
+    /// optional dependency to be linked. A *field* is inert; synthesising extra
+    /// `LocalItem`s for these roots would not be — `collect_all_items` feeds
+    /// items into the covering-set pool, so it would change feature selection.
+    pub extern_roots: Vec<String>,
 }
 
 impl LocalItem<'_> {
@@ -760,6 +771,7 @@ impl<'a> FileVisitor<'a> {
             name,
             externally_gated,
             use_path: None,
+            extern_roots: Vec::new(),
         });
         true
     }
@@ -827,6 +839,7 @@ impl<'a> FileVisitor<'a> {
                     name: None,
                     externally_gated: false,
                     use_path: None,
+                    extern_roots: Vec::new(),
                 });
             }
         }
@@ -876,6 +889,7 @@ impl<'a> FileVisitor<'a> {
                 name: None,
                 externally_gated: false,
                 use_path: None,
+                extern_roots: Vec::new(),
             });
         }
         for tt in seg {
@@ -1021,6 +1035,12 @@ impl<'a> FileVisitor<'a> {
             name: None,
             externally_gated,
             use_path: None,
+            // The arm body is one opaque token group, so an `extern crate hashbrown;`
+            // or `use libm;` inside it reaches no `visit_item_use` /
+            // `visit_item_extern_crate`. Scan the tokens for the roots directly, or
+            // the arm's cfg never learns which dependency it needs linked
+            // (caches-0.3.0's `else { use libm; … }`).
+            extern_roots: scan_extern_roots(&body.stream()),
         });
         // Register `mod X;` declared inside this arm, gated by the arm. syn hands
         // us the cfg_if tokens opaquely, so without this the module is never
@@ -1419,6 +1439,51 @@ fn extract_use_leaf_paths(
     }
 }
 
+/// Scan an opaque token stream for the crate roots of the `use` / `extern crate`
+/// items inside it — `use libm;` → `libm`, `use hashbrown::HashMap;` →
+/// `hashbrown`, `extern crate core_io;` → `core_io`. Recurses into groups, so
+/// items nested in blocks are found too.
+///
+/// A `cfg_if!` arm reaches the visitor as a single token group: syn never parses
+/// its contents into items, so `visit_item_use` / `visit_item_extern_crate` never
+/// fire for them and the arm's `LocalItem` would otherwise carry no roots at all
+/// (caches-0.3.0's `else { use libm; … }`).
+fn scan_extern_roots(tokens: &TokenStream) -> Vec<String> {
+    let trees: Vec<TokenTree> = tokens.clone().into_iter().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut idx = 0usize;
+    while idx < trees.len() {
+        match &trees[idx] {
+            // `use <root>` — a leading `::` or `{` yields no root, which is
+            // correct: neither names a crate.
+            TokenTree::Ident(kw) if kw == "use" => {
+                if let Some(TokenTree::Ident(root)) = trees.get(idx + 1) {
+                    out.push(root.to_string());
+                }
+                idx += 2;
+            }
+            // `extern crate <root>`
+            TokenTree::Ident(kw) if kw == "extern" => {
+                match (trees.get(idx + 1), trees.get(idx + 2)) {
+                    (Some(TokenTree::Ident(c)), Some(TokenTree::Ident(root))) if c == "crate" => {
+                        out.push(root.to_string());
+                        idx += 3;
+                    }
+                    _ => idx += 1,
+                }
+            }
+            TokenTree::Group(g) => {
+                out.extend(scan_extern_roots(&g.stream()));
+                idx += 1;
+            }
+            _ => idx += 1,
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 impl<'a> Visit<'_> for FileVisitor<'a> {
     fn visit_item_mod(&mut self, i: &'_ syn::ItemMod) {
         if self.should_skip(&i.attrs) {
@@ -1584,6 +1649,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                     name: None,
                     externally_gated: false,
                     use_path: None,
+                    extern_roots: Vec::new(),
                 });
             }
         }
@@ -1807,12 +1873,17 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         // can determine which items a feature gates via re-exports. The full path
         // rides along in `use_path` for `resolve_import_to_use_gateways`.
         for (segments, name) in extract_use_leaf_paths(&i.tree, &mut Vec::new()) {
+            // The first segment names the crate this import roots at, when it
+            // names a crate at all (`crate::`, `self::`, … are filtered out by
+            // the consumer, which only matches declared dependency names).
+            let extern_roots = segments.first().cloned().into_iter().collect();
             self.push_item(LocalItem {
                 own_condition: own.clone(),
                 span: span.clone(),
                 name: Some(name),
                 externally_gated,
                 use_path: Some(segments),
+                extern_roots,
             });
         }
         syn::visit::visit_item_use(self, i);
@@ -1825,6 +1896,11 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         }
 
         let externally_gated = self.is_externally_gated(&i.attrs);
+        // `#[cfg(not(feature = "std"))] extern crate core_io;` is the edition-2015
+        // spelling of the same statement `use core_io::…` makes: under this cfg the
+        // crate must be linked. `use_path` stays None — giving an `extern crate` a
+        // use path would make it a binding for `resolve_import_to_use_gateways`.
+        let extern_roots = vec![i.ident.to_string()];
         if let Some(own) = self.parse_cfg_gate(&i.attrs) {
             self.push_item(LocalItem {
                 own_condition: Some(own),
@@ -1832,6 +1908,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 name: None,
                 externally_gated,
                 use_path: None,
+                extern_roots,
             });
         } else {
             self.push_item(LocalItem {
@@ -1840,6 +1917,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 name: None,
                 externally_gated,
                 use_path: None,
+                extern_roots,
             });
         }
         syn::visit::visit_item_extern_crate(self, i);
@@ -1938,6 +2016,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 name: None,
                 externally_gated,
                 use_path: None,
+                extern_roots: Vec::new(),
             });
         }
         // A custom macro (e.g. cfg_if-style `cfg_time!`) may take `mod X;` as a
@@ -2022,6 +2101,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 name: None,
                 externally_gated,
                 use_path: None,
+                extern_roots: Vec::new(),
             });
         }
 
@@ -2620,6 +2700,61 @@ fn collect_named_recursive<'a>(
 
     for child in &node.children {
         collect_named_recursive(child, module_gate.clone(), ctx, out);
+    }
+}
+
+/// Every crate root reachable from a **gated** item, paired with the condition
+/// that gates it — `(root, entry_conditions AND own_condition)`.
+///
+/// `#[cfg(not(feature = "std"))] use hashbrown::HashMap;` yields
+/// `("hashbrown", ¬std)`: whenever that cfg holds, `hashbrown` must be linked.
+/// `solver::optional_dep_use_constraints` turns the pairs whose root names an
+/// optional dependency into implication edges, so the solver stops handing cargo
+/// a feature set that activates the cfg with the dependency switched off.
+///
+/// Ungated items are skipped: they say nothing about *when* a dependency is
+/// needed, and a required dependency needs no edge at all.
+pub fn collect_gated_extern_roots<'a>(
+    node: &ModNode<'a>,
+    ctx: &'a z3::Context,
+) -> Vec<(String, Bool<'a>)> {
+    let mut result = vec![];
+    collect_extern_roots_recursive(node, node.entry_condition.clone(), ctx, &mut result);
+    result
+}
+
+fn collect_extern_roots_recursive<'a>(
+    node: &ModNode<'a>,
+    inherited: Option<Bool<'a>>,
+    ctx: &'a z3::Context,
+    out: &mut Vec<(String, Bool<'a>)>,
+) {
+    let module_gate = match (&inherited, &node.entry_condition) {
+        (Some(i), Some(e)) => Some(Bool::and(ctx, &[i, e])),
+        (Some(i), None) => Some(i.clone()),
+        (None, Some(e)) => Some(e.clone()),
+        (None, None) => None,
+    };
+
+    for item in &node.local_items {
+        if item.extern_roots.is_empty() {
+            continue;
+        }
+        let effective = match (&module_gate, &item.own_condition) {
+            (Some(g), Some(c)) => Bool::and(ctx, &[g, c]),
+            (Some(g), None) => g.clone(),
+            (None, Some(c)) => c.clone(),
+            // Unconditional: an import that is always present tells the solver
+            // nothing it can act on.
+            (None, None) => continue,
+        };
+        for root in &item.extern_roots {
+            out.push((root.clone(), effective.clone()));
+        }
+    }
+
+    for child in &node.children {
+        collect_extern_roots_recursive(child, module_gate.clone(), ctx, out);
     }
 }
 

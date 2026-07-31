@@ -1,5 +1,6 @@
 use anyhow::Context;
 use log::debug;
+use std::collections::HashSet;
 use std::{fs, vec};
 use toml;
 use z3::ast::Ast;
@@ -595,6 +596,135 @@ pub fn optional_dep_implication_constraints<'a>(
             Bool::or(ctx, &[&feat_var.not(), &dep_var])
         })
         .collect()
+}
+
+/// Turn `(crate root, gating condition)` pairs from
+/// `visitor::collect_gated_extern_roots` into `cond => (f1 ∨ … ∨ fn)` constraints,
+/// where the `f`s are the features that link the optional dependency the root
+/// names (`downloader::optional_dep_enablers`).
+///
+/// `#[cfg(not(feature = "std"))] use hashbrown::HashMap;` becomes
+/// `¬std => hashbrown`. Without it the solver is free to pick a covering set with
+/// `std` off *and* `hashbrown` off — a set Cargo accepts and rustc then rejects
+/// with `E0432: unresolved import`, so the run is lost and every span that had a
+/// non-std resolution in it reads as std-in-every-run (bucket 11).
+///
+/// A root that names no optional dependency yields nothing: required deps are
+/// always linked, and a dep whose implicit feature is suppressed by `dep:` has no
+/// enabler to name.
+///
+/// # Erasure guard
+/// Non-feature cfg atoms are erased to constants rather than weakened (policy G),
+/// so `#[cfg(target_arch = "wasm32")] use foo::…` arrives here as the condition
+/// `true` — and `true => foo` would force the dependency on unconditionally, for
+/// every target. Conditions that simplify to a constant are therefore skipped:
+/// they carry no feature information to key the dependency on.
+pub fn optional_dep_use_constraints<'a>(
+    ctx: &'a z3::Context,
+    gated_roots: &[(String, Bool<'a>)],
+    dep_enablers: &[(String, Vec<String>)],
+) -> Vec<Bool<'a>> {
+    let normalize = |s: &str| s.replace('-', "_");
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut constraints = Vec::new();
+
+    for (root, cond) in gated_roots {
+        let Some((dep, enablers)) = dep_enablers
+            .iter()
+            .find(|(dep, _)| normalize(dep) == normalize(root))
+        else {
+            continue;
+        };
+        let simplified = cond.simplify();
+        if simplified.as_bool().is_some() {
+            debug!(
+                "Skipping optional-dep edge for {dep}: its cfg erased to the constant {simplified} \
+                 and carries no feature to key on"
+            );
+            continue;
+        }
+        // The same dep is usually imported under the same cfg from several files;
+        // one edge per (dep, condition) is enough.
+        if !seen.insert((dep.clone(), simplified.to_string())) {
+            continue;
+        }
+        let vars: Vec<Bool<'a>> = enablers
+            .iter()
+            .map(|f| Bool::new_const(ctx, f.as_str()))
+            .collect();
+        let refs: Vec<&Bool<'a>> = vars.iter().collect();
+        let any_enabler = Bool::or(ctx, &refs);
+        debug!("Optional-dep edge: ({simplified}) => any of {enablers:?} for dep {dep}");
+        constraints.push(Bool::or(ctx, &[&simplified.not(), &any_enabler]));
+    }
+
+    constraints
+}
+
+/// Which optional-dep enabler features the chosen feature assignment *makes
+/// mandatory*, given the `cond => enablers` edges.
+///
+/// Additive by construction, and that is the point. Asserting the edges as extra
+/// constraints on the final solve instead would work in principle, but that solve
+/// reports an arbitrary model: adding conjuncts silently reshuffles unrelated
+/// optional features (it dropped `parser` from tinywasm and `use-locks` from
+/// lazy-exclusive — both features the solve had picked for its own reasons). So the
+/// assignment is pinned first — `enable` true, `disable` false, everything else free
+/// — and a feature is returned only when its negation is then UNSAT, i.e. the build
+/// cannot link without it. Nothing the solve already decided can move.
+///
+/// Returns an empty list when the pinned assignment contradicts the edges: the
+/// caller's configuration is already unsatisfiable and every feature would look
+/// "forced".
+pub fn forced_optional_dep_enablers(
+    ctx: &z3::Context,
+    edges: &[Bool],
+    enablers: &HashSet<String>,
+    enable: &[String],
+    disable: &[String],
+) -> Vec<String> {
+    if edges.is_empty() || enablers.is_empty() {
+        return Vec::new();
+    }
+
+    let pin = |solver: &z3::Solver| {
+        for e in edges {
+            solver.assert(e);
+        }
+        for f in enable {
+            solver.assert(&Bool::new_const(ctx, f.as_str()));
+        }
+        for f in disable {
+            solver.assert(&Bool::new_const(ctx, f.as_str()).not());
+        }
+    };
+
+    let base = z3::Solver::new(ctx);
+    pin(&base);
+    if base.check() != z3::SatResult::Sat {
+        debug!(
+            "Optional-dep edges are unsatisfiable with enable={enable:?} disable={disable:?}; \
+             not forcing any enabler"
+        );
+        return Vec::new();
+    }
+
+    let mut names: Vec<&String> = enablers.iter().collect();
+    names.sort();
+    let mut forced = Vec::new();
+    for name in names {
+        if enable.contains(name) {
+            continue;
+        }
+        let solver = z3::Solver::new(ctx);
+        pin(&solver);
+        solver.assert(&Bool::new_const(ctx, name.as_str()).not());
+        if solver.check() == z3::SatResult::Unsat {
+            debug!("Optional-dep enabler '{name}' is required by the chosen feature set");
+            forced.push(name.clone());
+        }
+    }
+    forced
 }
 
 /// Similar to `find_possible_equations`, but we are given a set of equations that

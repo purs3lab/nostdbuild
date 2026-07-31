@@ -51,6 +51,7 @@ fn gated_and_ungated_root<'a>(ctx: &'a z3::Context) -> ModNode<'a> {
                 name: Some("gated".to_string()),
                 externally_gated: false,
                 use_path: None,
+                extern_roots: Vec::new(),
             },
             LocalItem {
                 own_condition: None,
@@ -58,6 +59,7 @@ fn gated_and_ungated_root<'a>(ctx: &'a z3::Context) -> ModNode<'a> {
                 name: Some("ungated".to_string()),
                 externally_gated: false,
                 use_path: None,
+                extern_roots: Vec::new(),
             },
         ],
         children: Vec::new(),

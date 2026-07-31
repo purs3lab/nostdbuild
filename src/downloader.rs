@@ -535,6 +535,61 @@ pub fn optional_dep_feature_edges(toml: &toml::Value) -> Vec<(String, String)> {
     edges
 }
 
+/// For every optional dependency, the feature names Cargo accepts on the command
+/// line to link it: `("hashbrown", ["hashbrown"])`.
+///
+/// Two ways a feature links an optional dep directly:
+/// * the **implicit** feature Cargo synthesises for a dep never referenced as
+///   `dep:foo` — it appears in `cargo metadata` but nowhere in the `[features]`
+///   table, which is why `declared` (built from metadata by
+///   `visitor::declared_features`) is the authority here rather than the table;
+/// * an explicit `feat = ["dep:foo"]`, which *suppresses* the implicit feature —
+///   handled for free, since the suppressed name is then absent from `declared`.
+///
+/// Plain `feat = ["foo"]` links are deliberately not collected: they are already
+/// modelled by `feature_implication_constraints`, and the implicit feature is the
+/// minimal way to ask for the dependency.
+///
+/// Deps with no enabler are omitted — nothing can be asserted about them.
+pub fn optional_dep_enablers(
+    toml: &toml::Value,
+    declared: &HashSet<String>,
+) -> Vec<(String, Vec<String>)> {
+    let optional_deps = optional_deps_in_manifest(toml);
+    let features = toml.get("features").and_then(Value::as_table);
+
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for dep in optional_deps {
+        let mut enablers: Vec<String> = Vec::new();
+        if declared.contains(&dep) {
+            enablers.push(dep.clone());
+        }
+        if let Some(features) = features {
+            let marker = format!("dep:{dep}");
+            for (feat_name, values) in features {
+                if !declared.contains(feat_name) {
+                    continue;
+                }
+                let names_dep = values
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .any(|v| v == marker);
+                if names_dep && !enablers.contains(feat_name) {
+                    enablers.push(feat_name.clone());
+                }
+            }
+        }
+        if !enablers.is_empty() {
+            enablers.sort();
+            out.push((dep, enablers));
+        }
+    }
+    out.sort();
+    out
+}
+
 fn index_path(name: &str) -> String {
     let lower = name.to_lowercase();
     match lower.len() {

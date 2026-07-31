@@ -1024,6 +1024,56 @@ pub fn run_rustc_plugin_pass(
     }
 }
 
+/// Parse a crate's manifest, or an empty table when it cannot be read.
+pub fn read_manifest_toml(manifest: &str) -> toml::Value {
+    fs::read_to_string(manifest)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(toml::Value::Table(toml::map::Map::new()))
+}
+
+/// The `cfg => optional-dependency` edges for one crate: every gated
+/// `use`/`extern crate` in `root` paired with the features that link the
+/// dependency it names (bucket 11).
+///
+/// Both consumers need the identical set. The covering-run solver needs it so a
+/// no_std run is handed a feature set that actually links its backend; the final
+/// feature selection in `bin/main.rs` needs it for the same reason — otherwise the
+/// analysis clears the crate and the emitted config fails to build for exactly the
+/// reason the discarded run did (caches-0.3.0: cleared, then
+/// `can't find crate hashbrown`).
+///
+/// `known_features` must be Cargo's declared set (`visitor::declared_features`),
+/// not the `[features]` table: the implicit feature of an optional dependency
+/// exists only in `cargo metadata`.
+/// Returns the edges plus the feature names they can require, which the caller
+/// needs to keep `minimize` from stripping an enabler it just switched on: such a
+/// feature gates no code of its own, so the "exists only to pull in an optional
+/// dep" rule drops it (see implicit_dep_feature_tests) — correct in general,
+/// wrong for exactly these.
+pub fn optional_dep_link_constraints<'a>(
+    ctx: &'a Context,
+    manifest_toml: &toml::Value,
+    known_features: &HashSet<String>,
+    root: &ModNode<'a>,
+) -> (Vec<Bool<'a>>, HashSet<String>) {
+    let dep_enablers = downloader::optional_dep_enablers(manifest_toml, known_features);
+    if dep_enablers.is_empty() {
+        return (Vec::new(), HashSet::new());
+    }
+    debug!("Optional-dep enablers: {:?}", dep_enablers);
+    let constraints = solver::optional_dep_use_constraints(
+        ctx,
+        &visitor::collect_gated_extern_roots(root, ctx),
+        &dep_enablers,
+    );
+    let names = dep_enablers
+        .into_iter()
+        .flat_map(|(_, enablers)| enablers)
+        .collect();
+    (constraints, names)
+}
+
 /// Extend a covering-set equation with an extra constraint, check SAT, and if
 /// satisfiable return the feature list derived from the extended model.
 fn features_for_mode<'a>(
@@ -1082,10 +1132,7 @@ pub fn find_feature_combs_for_all_code<'a>(
     let crate_root = visitor::find_entrypoints(manifest, &mut entrypoints);
     debug!("Crate root: {}", crate_root.display());
 
-    let manifest_toml: toml::Value = fs::read_to_string(manifest)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(toml::Value::Table(toml::map::Map::new()));
+    let manifest_toml = read_manifest_toml(manifest);
     let feat_map = downloader::read_local_features(&manifest_toml);
     let mut impl_constraints = solver::feature_implication_constraints(ctx, &feat_map);
     // `dep/feat` references to optional dependencies also enable that dep's
@@ -1131,8 +1178,16 @@ pub fn find_feature_combs_for_all_code<'a>(
             "Compile-error constraints: {:#?}",
             compile_error_constraints
         );
+        // `#[cfg(C)] use <optional dep>::…` means C requires that dep linked. Without
+        // the edge the solver can satisfy C with the dep off, cargo accepts the set,
+        // and rustc fails the whole run on `unresolved import` — losing every record
+        // that run would have contributed (bucket 11).
+        let (optdep_constraints, _) =
+            optional_dep_link_constraints(ctx, &manifest_toml, &known_features, &root);
+
         let mut all_hard: Vec<Bool> = compile_error_constraints.clone();
         all_hard.extend(impl_constraints.iter().cloned());
+        all_hard.extend(optdep_constraints.iter().cloned());
 
         let mut pending_modules: Vec<(Option<Bool>, String, String)> = vec![];
 
@@ -1141,8 +1196,11 @@ pub fn find_feature_combs_for_all_code<'a>(
         // This covers code paths that are active in no_std mode but not gated
         // by any specific feature — paths that would otherwise be missed when
         // every covering set requires std (e.g., all features → std transitively).
+        // The optional-dep edges ride along: the baseline is the run most likely to
+        // drop a dependency the no_std half imports, and it is otherwise solved with
+        // no constraints at all.
         if let Some(ref cond) = no_std_cond
-            && let Some(baseline_feats) = features_for_mode(ctx, &[], cond)
+            && let Some(baseline_feats) = features_for_mode(ctx, &optdep_constraints, cond)
             && previously_ran_feats.insert(baseline_feats.clone())
         {
             compile_error_constraints.push(cond.clone());

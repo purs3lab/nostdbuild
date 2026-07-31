@@ -1,0 +1,11 @@
+[package]
+name = "shim"
+description = "The optional no_std backend of the optional_dep_backend fixture"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+name = "shim"
+
+[workspace]

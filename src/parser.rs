@@ -1462,27 +1462,31 @@ pub fn move_unnecessary_dep_feats(
     // one feature that has to be disabled.
     let mut needed_dropped: HashSet<String> = HashSet::new();
     flexible_main_args.retain(|feature| {
-        main_features
-            .get_mut(feature)
-            .and_then(|f| f.as_array_mut())
-            .is_some_and(|arr| {
-                let mut has_mismatch = false;
-                let mut local_needed_dropped: HashSet<String> = HashSet::new();
-                for f in arr.iter().filter_map(|v| v.as_str()) {
-                    if f.starts_with(&prefix1) || f.starts_with(&prefix2) {
-                        let key = extract_key(f);
-                        if deps_args.contains(&key.to_string()) {
-                            local_needed_dropped.insert(f.to_string());
-                        } else {
-                            has_mismatch = true;
-                        }
-                    }
+        // A feature with no `[features]` array is Cargo's implicit per-optional-dep
+        // feature (`hashbrown = ["dep:hashbrown"]`, synthesised, never written down).
+        // It references no dependency features, so it cannot mismatch this dep's build
+        // — the question this retain asks does not apply. Dropping it on a `None` was
+        // what removed `hashbrown`/`libm` from caches-0.3.0's args after the solver had
+        // put them there, emitting a config that fails with `can't find crate hashbrown`.
+        let Some(arr) = main_features.get_mut(feature).and_then(|f| f.as_array_mut()) else {
+            return true;
+        };
+        let mut has_mismatch = false;
+        let mut local_needed_dropped: HashSet<String> = HashSet::new();
+        for f in arr.iter().filter_map(|v| v.as_str()) {
+            if f.starts_with(&prefix1) || f.starts_with(&prefix2) {
+                let key = extract_key(f);
+                if deps_args.contains(&key.to_string()) {
+                    local_needed_dropped.insert(f.to_string());
+                } else {
+                    has_mismatch = true;
                 }
-                if has_mismatch {
-                    needed_dropped.extend(local_needed_dropped);
-                }
-                !has_mismatch
-            })
+            }
+        }
+        if has_mismatch {
+            needed_dropped.extend(local_needed_dropped);
+        }
+        !has_mismatch
     });
 
     let dep_norm = dep_name_only.replace('-', "_");

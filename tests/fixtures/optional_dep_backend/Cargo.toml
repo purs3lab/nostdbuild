@@ -1,0 +1,26 @@
+[package]
+name = "optional_dep_backend"
+description = "A no_std backend behind an optional dependency, selected by cfg(not(feature = \"std\"))"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "optional_dep_backend"
+
+# Never referenced as `dep:shim`, so Cargo synthesises an implicit `shim`
+# feature — the only way to ask for this dependency on the command line.
+[dependencies.shim]
+path = "shim"
+optional = true
+
+# `std` on by default, as in every crate with this shape (cranelift-codegen,
+# caches, fatfs) — the no_std half is what has to be discovered.
+[features]
+default = ["std"]
+std = []
+
+# `exclude` keeps the backend out of the workspace: as a member it would show up
+# in `cargo metadata --workspace`, and `find_entrypoints` would analyse its lib.
+[workspace]
+exclude = ["shim"]
