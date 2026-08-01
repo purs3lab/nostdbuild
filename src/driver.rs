@@ -557,10 +557,52 @@ pub fn resolve_import_to_use_gateways(out: &mut FeatureRunOutput, root: &ModNode
         }
     }
 
+    // Collected before seed 1 so seed 1 can tell which imports the tree already
+    // names correctly — see the brace-prefix guard below.
+    let use_bindings = visitor::collect_use_bindings(root);
+
+    // Imports the syn tree already enumerates, keyed by source position. A
+    // plugin record on one of these lines carries no information the tree does
+    // not have, and the tree's version is strictly better: it lists the brace
+    // leaves the plugin collapses away.
+    let tree_named: std::collections::HashSet<(&str, usize)> = use_bindings
+        .iter()
+        .map(|(_, _, s)| (s.file.as_str(), s.start_line))
+        .collect();
+
     // --- Seed 1: plugin import records (macro-generated imports live here) ---
     for r in &out.records {
         if r.context != PathContext::ImportDeclaration
             || r.span.usage_crate.as_deref() != Some("std")
+        {
+            continue;
+        }
+        // A braced import emits exactly one record holding the *prefix*, not a
+        // bound name: `use std::{borrow, …}` → `path_text: "std"`,
+        // `use std::sync::{Arc, Mutex}` → `"std::sync"`. `import_bound_name`
+        // cannot see the braces, so it reads the prefix's last segment as the
+        // binding — and for `use std::{…}` that registers the *extern crate name*
+        // `std` as a locally bound name. Every `std::…`-rooted path in the crate
+        // then keys the table on `std` (`use_name` takes the first segment) and
+        // inherits that import's gate.
+        //
+        // wasmer-compiler 6.0.0 is the case in point: `use std::{borrow, …}` sits
+        // in `#[cfg(feature = "std")] pub mod std` inside its `mod lib` facade,
+        // and `use std::{collections::…, ptr::…}` sits under
+        // `#[cfg(not(target_arch = "wasm32"))]`. Both spell `path_text: "std"`,
+        // nothing binds `std` ungated, so the all-gated rule holds and 15 genuine
+        // std spans — `use std::sync::atomic`, `std::sync::MutexGuard`,
+        // `std::any::Any`, … — inherited a `feature = "std"` gate they do not
+        // have. Negating it probes the crate in `core` mode, which does not
+        // compile, so all 15 left as `CompileFailed`: dropped from `all_hard`
+        // with no counter. The crate reported 2 std spans (the two bare `Mutex`
+        // references, saved only because the tree seeds brace leaves ungated).
+        //
+        // Where the tree names the import, defer to it. Seed 1 keeps naming only
+        // what the tree cannot see — macro-generated imports — and even there a
+        // bare single-segment path is a brace prefix, never a leaf.
+        if tree_named.contains(&(r.span.file.as_str(), r.span.start_line))
+            || !r.path_text.contains("::")
         {
             continue;
         }
@@ -581,7 +623,6 @@ pub fn resolve_import_to_use_gateways(out: &mut FeatureRunOutput, root: &ModNode
     }
 
     // --- Seed 2: std-rooted `use` items from the syn tree (brace leaves) ---
-    let use_bindings = visitor::collect_use_bindings(root);
     for (segments, name, span) in &use_bindings {
         if segments.first().map(String::as_str) != Some("std") {
             continue;
