@@ -231,7 +231,7 @@ pub fn parse_deps_crate(
 
         // Create a new ctx per dependency
         let ctx = z3::Context::new(&z3::Config::new());
-        let (all_hard, _, _, _, _, _) =
+        let (all_hard, _, _, _, _, _, _) =
             driver::analyze_crate_wrapper(&ctx, &dep.clone(), Some(main_name), telemetry);
         attributes.push(parse_crate(&dep.clone(), true, Some(main_name), &all_hard, None));
     }
@@ -1433,7 +1433,7 @@ pub fn process_dep_crate(
     let dep_crate_name = dep.crate_name.clone();
     let main_name = exchange.name_with_version.clone();
     let ctx = z3::Context::new(&z3::Config::new());
-    let (_hard_std, hard_constraints, _, _, dep_root, _) = driver::analyze_crate_wrapper(
+    let (_hard_std, hard_constraints, _, _, dep_root, _, _) = driver::analyze_crate_wrapper(
         &ctx,
         &dep.crate_name,
         Some(&exchange.name_with_version),
@@ -3158,7 +3158,7 @@ pub fn recursive_dep_requirement_check(
                 (enable, disable, feature_to_items)
             } else {
                 let ctx = z3::Context::new(&z3::Config::new());
-                let (all_hard, hard_constraints, _, _, dep_root, dep_records) =
+                let (all_hard, hard_constraints, _, _, dep_root, dep_records, _) =
                     driver::analyze_crate_wrapper(
                         &ctx,
                         &dep_name_with_version,

@@ -1,0 +1,15 @@
+[package]
+name = "test_unproven_probe"
+description = "Std span whose gate is negatable in the solver but whose negated build does not compile"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+path = "main.rs"
+name = "test_unproven_probe"
+
+[features]
+default = ["std"]
+std = []
+
+[workspace]

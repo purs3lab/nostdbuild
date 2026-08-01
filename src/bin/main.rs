@@ -307,6 +307,7 @@ fn main() -> anyhow::Result<()> {
         _compile_error_constraints,
         main_root,
         covering_records,
+        unproven_std,
     ) = driver::analyze_crate_wrapper(
         &ctx,
         &exchange.name_with_version,
@@ -323,6 +324,9 @@ fn main() -> anyhow::Result<()> {
     );
 
     stats.coverage_comparison = coverage_comparison;
+    // Recorded whatever the verdict — they are diagnostics for both outcomes,
+    // and `dump` writes the file either way.
+    stats.unproven_std_usage_matches = unproven_std;
 
     let mut failed = false;
     let mut reason = "";
@@ -332,6 +336,23 @@ fn main() -> anyhow::Result<()> {
         debug!("ERROR: Found unguarded std usage in the main crate");
         reason = "Found unguarded std usage in the main crate";
         stats.std_usage_matches = all_hard;
+        stats.telemetry = Some(exchange.telemetry);
+        stats.dump(true);
+        return Err(anyhow::anyhow!(reason));
+    }
+
+    // Nothing proven unavoidable, but some spans were never proven *avoidable*:
+    // they are std in every covering run and every feature set that negates their
+    // gate failed to compile. Passing here would emit a config on the strength of
+    // a clearance nothing verified — the quiet-clearance hole
+    // `Telemetry::compile_failed_spans` only counted. Fail with a distinct reason
+    // so the eval can separate "proven clean" from "not shown dirty".
+    if !stats.unproven_std_usage_matches.is_empty() {
+        debug!(
+            "ERROR: {} std span(s) in the main crate could not be proven avoidable",
+            stats.unproven_std_usage_matches.len()
+        );
+        reason = "Std usage in the main crate could not be proven avoidable";
         stats.telemetry = Some(exchange.telemetry);
         stats.dump(true);
         return Err(anyhow::anyhow!(reason));

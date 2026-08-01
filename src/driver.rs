@@ -1699,6 +1699,7 @@ pub fn analyze_crate_wrapper<'a>(
     Vec<Bool<'a>>,
     visitor::ModNode<'a>,
     HashSet<CrossCrateRef>,
+    Vec<ReadableSpan>,
 ) {
     let manifest = parser::determine_manifest_file(crate_name, main_name);
     analyze_crate(ctx, &manifest, crate_name, telemetry)
@@ -1875,6 +1876,10 @@ fn macro_body_cfgs_to_ancestors<'a>(
     if bools.is_empty() { None } else { Some(bools) }
 }
 
+/// The last element is the *unproven* spans — std spans that are std in every
+/// covering run and whose probe never compiled. They are not in `all_hard`,
+/// which means proven-unavoidable std, but a crate holding any of them has not
+/// been shown clean either. See `Telemetry::unproven_std_spans`.
 pub fn analyze_crate<'a>(
     ctx: &'a Context,
     manifest: &str,
@@ -1887,6 +1892,7 @@ pub fn analyze_crate<'a>(
     Vec<Bool<'a>>,
     visitor::ModNode<'a>,
     HashSet<CrossCrateRef>,
+    Vec<ReadableSpan>,
 ) {
     let (root, mut covering_runs, hard_constraints, compile_error_constraints) =
         find_feature_combs_for_all_code(ctx, manifest, crate_name, telemetry);
@@ -2055,6 +2061,30 @@ pub fn analyze_crate<'a>(
     }
     telemetry.compile_failed_spans = compile_failed_spans;
 
+    // The subset of those that leaves the crate's std-ness *unknown*, reported
+    // separately so a quiet clearance cannot pass for a proven one.
+    //
+    // Drawn only from the two AlwaysStd populations. A `Conditional` span has
+    // direct evidence it can be non-std — a covering run in which it produced no
+    // std record at all — so its probe failing leaves the *condition* unpinned,
+    // not the avoidability, and folding it in here would fail crates that are
+    // demonstrably fine. `compile_failed_spans` keeps counting all three, so the
+    // existing metric is unchanged and the difference between the two is exactly
+    // the conditional-origin failures.
+    let unproven: Vec<ReadableSpan> = hard_imports
+        .iter()
+        .chain(hard_usages.iter())
+        .filter(|a| matches!(a.decision, ProbeDecision::CompileFailed))
+        .map(|a| a.target.analysis.span.clone())
+        .collect();
+    if !unproven.is_empty() {
+        debug!(
+            "{} std span(s) could not be proven avoidable: every feature set negating their gate failed to compile",
+            unproven.len()
+        );
+    }
+    telemetry.unproven_std_spans = unproven.len();
+
     let all_hard: Vec<ReadableSpan> = hard_imports
         .into_iter()
         .chain(hard_usages)
@@ -2089,6 +2119,7 @@ pub fn analyze_crate<'a>(
         compile_error_constraints,
         root,
         covering_records,
+        unproven,
     )
 }
 

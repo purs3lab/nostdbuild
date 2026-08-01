@@ -38,7 +38,7 @@ fn test_probe_cegar_retry() {
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
 
-    let (hard_spans, _condition, _coverage, _, _, _) =
+    let (hard_spans, _condition, _coverage, _, _, _, _) =
         analyze_crate(&ctx, &manifest, "test_probe_cegar_retry", &mut telemetry);
 
     // The `impl Error for ParseError` span is behind `#[cfg(feature = "std")]`.

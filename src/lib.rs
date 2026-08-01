@@ -157,6 +157,10 @@ pub struct AllStats {
     pub crate_info: Option<CrateInfo>,
     // Collects all unguarded std usages found by hir analysis
     pub std_usage_matches: Vec<ReadableSpan>,
+    // Std spans that are std in every covering run but whose probe never
+    // compiled, so they were never shown avoidable — see
+    // `Telemetry::unproven_std_spans`.
+    pub unproven_std_usage_matches: Vec<ReadableSpan>,
     pub telemetry: Option<Telemetry>,
     pub coverage_comparison: Option<types::CoverageComparison>,
 }
@@ -168,6 +172,7 @@ impl AllStats {
             compilation_res: Vec::new(),
             crate_info: None,
             std_usage_matches: Vec::new(),
+            unproven_std_usage_matches: Vec::new(),
             telemetry: None,
             coverage_comparison: None,
         }
@@ -215,6 +220,12 @@ impl AllStats {
         let std_usage_data = serde_json::to_string_pretty(&self.std_usage_matches).unwrap();
         std::fs::write(compilation_res_file, compilation_res_data).unwrap();
         std::fs::write(std_usage_file, std_usage_data).unwrap();
+        // Written unconditionally, like `std_usages.json`: an empty file is the
+        // positive statement that nothing was left unproven, which is what
+        // separates a proven clearance from a quiet one.
+        let unproven_data =
+            serde_json::to_string_pretty(&self.unproven_std_usage_matches).unwrap();
+        std::fs::write(stats_dir.join("unproven_std_usages.json"), unproven_data).unwrap();
         if let Some(cov) = &self.coverage_comparison {
             let cov_data = serde_json::to_string_pretty(cov).unwrap();
             std::fs::write(stats_dir.join("coverage_comparison.json"), cov_data).unwrap();
@@ -375,6 +386,22 @@ pub struct Telemetry {
     /// uncompilable probe reads clean. This observation makes the quiet
     /// clearance visible (KI-7 routes far more spans into it).
     pub compile_failed_spans: usize,
+    /// The `AlwaysStd` subset of `compile_failed_spans` — the spans that leave
+    /// the crate's std-ness genuinely *unknown*.
+    ///
+    /// A `Conditional` span that fails its probe is excluded: a covering run
+    /// already exists in which it produced no std record, so only its *condition*
+    /// is unpinned. What is left is std in every run and never shown avoidable.
+    ///
+    /// These do not go in `std_usages.json`, which asserts *proven* unavoidable
+    /// std usage and would gain false positives from the (b) case — a probe that
+    /// failed for a reason unrelated to the span (broken dep tree, infeasible
+    /// combo). They go in `unproven_std_usages.json` instead, and a non-empty
+    /// list stops the crate reading clean. Measured over the 12289-crate corpus
+    /// before this split: 166 crates had `compile_failed_spans > 0`, 55 of them
+    /// reported no std usage at all, and none of those 55 produced a config that
+    /// built — so the separation costs no crate that currently works.
+    pub unproven_std_spans: usize,
     /// Maximum length of constraint string while solving features
     pub max_contraint_length: Vec<(String, usize)>,
     /// Maximum depth of constraint string while solving features

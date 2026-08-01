@@ -269,3 +269,48 @@ fn test_import_to_use_gated_std_is_not_hard() {
          their externally-gated (target-cfg) import, but got: {hard_spans:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Unproven spans — neither proven std nor proven avoidable
+// ---------------------------------------------------------------------------
+
+/// `locked()` is gated on `feature = "std"`, so the prober negates that gate —
+/// but the resulting no_std configuration does not compile, for a reason the
+/// solver cannot see. CEGAR exhausts its models and the span settles on
+/// `ProbeDecision::CompileFailed`.
+///
+/// Such a span must stay out of `hard_spans`, which asserts *proven* unavoidable
+/// std usage and would gain false positives from probes that failed for reasons
+/// unrelated to the span. It must equally not vanish: before this split it was
+/// dropped with only `Telemetry::compile_failed_spans` to show for it, and the
+/// crate read clean. It now comes back in the seventh return value and the crate
+/// is failed on it by `main`.
+#[cargo_test]
+fn test_unproven_probe_is_reported_but_not_hard() {
+    let (_p, manifest) = load_fixture("test_unproven_probe");
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut telemetry = Telemetry::default();
+    let (hard_spans, _, _, _, _, _, unproven) =
+        analyze_crate(&ctx, &manifest, "test_unproven_probe", &mut telemetry);
+
+    assert!(
+        hard_spans.is_empty(),
+        "A span whose probe never compiled was never proven unavoidable, so it \
+         must not be reported as hard std, but got: {hard_spans:?}"
+    );
+    assert!(
+        !unproven.is_empty(),
+        "The `std::sync::Mutex` spans in `locked()` are std in every covering \
+         run and their probe never compiled, so they must surface as unproven \
+         rather than being dropped"
+    );
+    assert_eq!(
+        unproven.len(),
+        telemetry.unproven_std_spans,
+        "the counter and the reported list must describe the same spans"
+    );
+    assert!(
+        telemetry.compile_failed_spans >= telemetry.unproven_std_spans,
+        "unproven is the AlwaysStd subset of the compile-failed spans"
+    );
+}
