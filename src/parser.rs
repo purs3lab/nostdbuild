@@ -1378,6 +1378,51 @@ pub fn finalize_dep_crate(
 /// post-processing to `finalize_dep_crate`.
 /// Callers are responsible for checking the DB before invoking this — see
 /// `process_dep_crate_wrapper` in `main.rs`.
+/// Record the optional-dep enablers a dependency's solved feature set makes
+/// mandatory but which its emitted feature list does not contain (KI-12).
+///
+/// Pure observation — nothing is enabled. A non-empty result is the repro KI-12
+/// has been waiting for: a dependency with the bucket-11 shape
+/// (`#[cfg(not(feature = "std"))] use <optional dep>::…`) whose emitted config
+/// therefore cannot link. Enablers already implied by the dep's `[features]`
+/// table are expected and harmless — the redundant edge, e.g. rand 0.8's
+/// `serde1 = ["serde", …]` — so entries need reading before they are believed.
+fn record_missing_optional_dep_enablers<'a>(
+    ctx: &'a z3::Context,
+    dep_crate_name: &str,
+    main_name: &str,
+    dep_root: &crate::visitor::ModNode<'a>,
+    enable: &[String],
+    disable: &[String],
+    telemetry: &mut Telemetry,
+) {
+    let manifest = determine_manifest_file(dep_crate_name, Some(main_name));
+    let Ok(text) = fs::read_to_string(&manifest) else {
+        debug!("KI-12 probe: no manifest at {manifest} for dep {dep_crate_name}");
+        return;
+    };
+    let Ok(manifest_toml) = toml::from_str::<toml::Value>(&text) else {
+        debug!("KI-12 probe: unparsable manifest at {manifest} for dep {dep_crate_name}");
+        return;
+    };
+
+    let known_features = crate::visitor::declared_features(&manifest);
+    let (edges, enablers) =
+        driver::optional_dep_link_constraints(ctx, &manifest_toml, &known_features, dep_root);
+    let forced = solver::forced_optional_dep_enablers(ctx, &edges, &enablers, enable, disable);
+    if forced.is_empty() {
+        return;
+    }
+
+    println!(
+        "[KI-12] Dependency {dep_crate_name} needs optional-dep feature(s) {forced:?} for the \
+         chosen no_std feature set, and the emitted list does not have them (not applied)"
+    );
+    telemetry
+        .dep_missing_optional_dep_enablers
+        .push((dep_crate_name.to_string(), forced));
+}
+
 pub fn process_dep_crate(
     exchange: &mut DataExchange,
     dep: &mut Attributes,
@@ -1386,6 +1431,7 @@ pub fn process_dep_crate(
         downloader::gather_crate_info(&dep.crate_name, true, Some(&exchange.name_with_version))?;
     let mut optional_dep_feats = features_for_optional_deps(&dep_crate_info);
     let dep_crate_name = dep.crate_name.clone();
+    let main_name = exchange.name_with_version.clone();
     let ctx = z3::Context::new(&z3::Config::new());
     let (_hard_std, hard_constraints, _, _, dep_root, _) = driver::analyze_crate_wrapper(
         &ctx,
@@ -1403,6 +1449,22 @@ pub fn process_dep_crate(
         &mut optional_dep_feats,
         hard_constraints,
     )?;
+
+    // KI-12 observation. The optional-dep link edges are built for dependencies
+    // exactly as they are for the main crate, but they never leave
+    // `find_feature_combs_for_all_code`, so nothing adds back the enablers this
+    // assignment makes mandatory — `bin/main.rs` does that step for the main
+    // crate only. Records what the missing step would have added; the feature
+    // set is left untouched.
+    record_missing_optional_dep_enablers(
+        &ctx,
+        &dep_crate_name,
+        &main_name,
+        &dep_root,
+        &enable,
+        &disable,
+        &mut exchange.telemetry,
+    );
 
     // Build feature→items map from the dep's tree while dep ctx is live.
     // dep_root's Z3 Bools are tied to `ctx` — must not outlive this scope.

@@ -310,6 +310,20 @@ pub struct Telemetry {
     /// dependency that turned out to be unusable for the target (KI-11), which
     /// no dependency-level check can predict — the retry is the evidence.
     pub optional_dep_features_dropped: Vec<String>,
+    /// Dependencies whose chosen feature assignment makes an optional-dep
+    /// enabler mandatory, where that enabler is *not* in the feature list we
+    /// emit for the dependency (KI-12).
+    ///
+    /// The main crate gets these added back in `bin/main.rs` via
+    /// `solver::forced_optional_dep_enablers`; `process_dep_crate` never ran
+    /// that step, so a dependency with the bucket-11 shape
+    /// (`#[cfg(not(feature = "std"))] use hashbrown::…`, `hashbrown` optional
+    /// with only its implicit feature) can be emitted without the dependency
+    /// its own no_std half imports. Observation only — nothing is added to the
+    /// feature list. A non-empty entry here is the repro KI-12 is waiting for;
+    /// an entry whose enablers are already implied by the dep's `[features]`
+    /// table (rand 0.8's `serde1 = ["serde", …]`) is benign and expected.
+    pub dep_missing_optional_dep_enablers: Vec<(String, Vec<String>)>,
     /// Was the crate build successful for any target
     pub build_success: bool,
     /// Number of targets the crate built successfully for

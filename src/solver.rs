@@ -628,7 +628,20 @@ pub fn optional_dep_use_constraints<'a>(
     let mut seen: HashSet<(String, String)> = HashSet::new();
     let mut constraints = Vec::new();
 
+    // Crate roots the compiler provides, plus the path keywords. `use core::…`
+    // names the sysroot crate, never a dependency — but hashbrown 0.15.2
+    // declares optional deps *renamed* to `core`/`alloc`/`compiler_builtins`
+    // (`package = "rustc-std-workspace-core"`, reachable only via
+    // `rustc-dep-of-std`). Matching on name alone therefore reads
+    // `#[cfg(not(feature = "nightly"))] use core::convert::…` (src/util.rs:3) as
+    // "this cfg requires the `core` dependency linked" and forces the `core`
+    // feature on. Only a build of std itself resolves those paths to the deps.
+    const BUILTIN_ROOTS: [&str; 7] = ["core", "alloc", "std", "crate", "self", "super", "Self"];
+
     for (root, cond) in gated_roots {
+        if BUILTIN_ROOTS.contains(&root.as_str()) {
+            continue;
+        }
         let Some((dep, enablers)) = dep_enablers
             .iter()
             .find(|(dep, _)| normalize(dep) == normalize(root))
