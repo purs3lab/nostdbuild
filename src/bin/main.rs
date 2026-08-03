@@ -252,8 +252,12 @@ fn main() -> anyhow::Result<()> {
         ));
     }
 
+    // A dry run only reports the `check_for_no_std` verdict below, and that check
+    // reads the manifest without needing it rewritten. Gathering read-only keeps the
+    // shared download dir untouched (no `Cargo.toml.bak` dance), so a dry run can be
+    // run concurrently with a full evaluation over the same download cache.
     let (mut worklist, crate_name_rename, mut crate_info) =
-        downloader::gather_crate_info(&name, false, None)?;
+        downloader::gather_crate_info(&name, cli.dry_run, None)?;
     telemetry.num_deps = crate_info.deps_and_features.len();
 
     debug!("Dependencies: {:?}", crate_info);
@@ -264,7 +268,8 @@ fn main() -> anyhow::Result<()> {
 
     if !found || telemetry.wrong_unconditional_setup {
         stats.telemetry = Some(telemetry);
-        stats.dump(true);
+        // Nothing was modified on a dry run, so there is no backup to restore.
+        stats.dump(!cli.dry_run);
         if !found {
             return Err(anyhow::anyhow!("Main crate does not support no_std build"));
         } else {
@@ -272,6 +277,23 @@ fn main() -> anyhow::Result<()> {
                 "Main crate has incorrect unconditional no_std setup"
             ));
         }
+    }
+
+    // The no_std verdict is fully decided by the check above: it is what tells a
+    // crate that declares `#![no_std]` (unconditionally or under some feature
+    // configuration) from one that never can. Everything past this point —
+    // downloading the dependency graph, the plugin record passes, the solve — exists
+    // to *pick a feature set*, which a dry run does not use. Exiting here keeps a dry
+    // run to parsing plus `cargo metadata --no-deps`: no cargo builds, and in
+    // particular no `cargo hir` invocations, so the plugin can be reinstalled while a
+    // dry run is in flight.
+    if cli.dry_run {
+        println!("Dry run enabled, exiting now!");
+        telemetry.no_std = found;
+        stats.crate_info = Some(crate_info);
+        stats.telemetry = Some(telemetry);
+        stats.dump(false);
+        return Ok(());
     }
 
     let mut top_level_deps: Vec<(String, String)> = Vec::new();
@@ -450,12 +472,6 @@ fn main() -> anyhow::Result<()> {
         "Initial main crate features to enable: {:?}, features to disable: {:?}",
         enable, disable
     );
-
-    if cli.dry_run {
-        println!("Dry run enabled, exiting now!");
-        stats.dump(true);
-        return Ok(());
-    }
 
     let (mut disable_default, mut main_features, to_disable) = solver::final_feature_list_main(
         &exchange.crate_info,
