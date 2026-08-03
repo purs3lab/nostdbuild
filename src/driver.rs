@@ -1115,6 +1115,108 @@ pub fn optional_dep_link_constraints<'a>(
     (constraints, names)
 }
 
+/// The optional dependencies `minimize` must not unlink: ones the crate imports
+/// from under a cfg that stays **true** once the dependency is gone.
+///
+/// `minimize` unlinks an optional dependency by deleting its entry out of the
+/// feature that names it, leaving that feature itself enabled. The only cfg that
+/// flips as a result is cargo's implicit `feature = "<dep>"`, so the edit is sound
+/// exactly when every import of the dependency sits behind that feature —
+/// watchface's `std = ["chrono"]` with `#[cfg(feature = "chrono")] use chrono::…`
+/// is the shape it was written for.
+///
+/// a7105 is the shape it breaks on: `default = ["async"]`, `async =
+/// ["embedded-hal-async"]`, and the import gated by `#[cfg(feature = "async")]`.
+/// Stripping the entry leaves `async` on, so the `use embedded_hal_async::…`
+/// still compiles — against a crate cargo was never told to link (`E0433`).
+///
+/// The evidence used is the crate's `use`/`extern crate` items, because those are
+/// the only references whose gate is known exactly: the condition is read off the
+/// item's own attributes as it is parsed. Each is evaluated in the world the edit
+/// would create — every declared feature pinned to its value in `active_features`,
+/// the dependency's own implicit feature pinned false. An import that is still
+/// satisfiable there survives the unlink and pins the dependency; an ungated import
+/// pins it outright. Gates carrying non-`feature` cfgs keep those atoms free, which
+/// can only make an import look reachable — erring towards keeping the dep linked.
+///
+/// When a dependency has **no** import at all but the covering runs recorded
+/// references to it, every reference is an inline path — aht20-driver-2.0.0 names
+/// `defmt` only as `defmt::debug!(…)`. There is no import to read a condition off,
+/// so the unlink cannot be shown safe and the dependency is pinned. (Resolving those
+/// spans against the module tree was tried and is not sound: a span the tree has no
+/// item for yields the same "no condition" answer as a genuinely ungated one, which
+/// pinned watchface's `chrono` and cost it its build.)
+///
+/// The `dep:D` spelling needs no special case and gets the right answer for free:
+/// it suppresses the implicit feature entirely, so nothing in the manifest can turn
+/// an import's gate off and every such dependency comes back pinned.
+pub fn deps_pinned_by_active_use<'a>(
+    ctx: &'a Context,
+    manifest_toml: &toml::Value,
+    known_features: &HashSet<String>,
+    active_features: &HashSet<String>,
+    root: &ModNode<'a>,
+    records: &HashSet<CrossCrateRef>,
+) -> HashSet<String> {
+    let optional_deps = downloader::optional_deps_in_manifest(manifest_toml);
+    if optional_deps.is_empty() {
+        return HashSet::new();
+    }
+    let roots = visitor::collect_extern_roots_with_gates(root, ctx);
+
+    let mut pinned = HashSet::new();
+    for dep in optional_deps {
+        let dep_norm = dep.replace('-', "_");
+        let imports: Vec<&Option<Bool>> = roots
+            .iter()
+            .filter(|(name, _)| *name == dep_norm)
+            .map(|(_, gate)| gate)
+            .collect();
+
+        if imports.is_empty() {
+            if records.iter().any(|record| record.dep == dep_norm) {
+                debug!(
+                    "Optional dep '{dep}' is referenced only by inline paths — no import to read \
+                     a condition off, so it must not be unlinked"
+                );
+                pinned.insert(dep);
+            }
+            continue;
+        }
+
+        let solver = z3::Solver::new(ctx);
+        for feat in known_features {
+            let var = Bool::new_const(ctx, feat.as_str());
+            if *feat != dep && active_features.contains(feat) {
+                solver.assert(&var);
+            } else {
+                solver.assert(&var.not());
+            }
+        }
+        for gate in imports {
+            let survives = match gate {
+                None => true,
+                Some(gate) => {
+                    solver.push();
+                    solver.assert(gate);
+                    let sat = solver.check() == z3::SatResult::Sat;
+                    solver.pop(1);
+                    sat
+                }
+            };
+            if survives {
+                debug!(
+                    "Optional dep '{dep}' is imported under a gate that stays true without it \
+                     ({gate:?}); it must not be unlinked"
+                );
+                pinned.insert(dep);
+                break;
+            }
+        }
+    }
+    pinned
+}
+
 /// Extend a covering-set equation with an extra constraint, check SAT, and if
 /// satisfiable return the feature list derived from the extended model.
 fn features_for_mode<'a>(

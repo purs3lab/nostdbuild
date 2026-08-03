@@ -142,6 +142,12 @@ fn test_wg() {
     run_main_test("wg", "0.9.2", "x86_64-unknown-none");
 }
 
+/// Baseline re-blessed with T1 (`ALL_TARGET_FAILURES.md`): the emitted set now also
+/// carries `log`. `default` lists the optional dep `log` by bare name, and
+/// `process_dep_crate_wrapper` used to read that linkage entry as a *feature of*
+/// `log` and hand it to `final_feature_list_main` as one to disable — which took the
+/// implicit feature out of the default closure as a side effect. Only genuine
+/// `<dep>/<subfeat>` references count now, so `log` stays on. Builds either way.
 #[cargo_test]
 fn test_ya_smoltcp() {
     run_main_test("ya-smoltcp", "0.1.0", "x86_64-unknown-none");

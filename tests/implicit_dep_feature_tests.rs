@@ -125,6 +125,7 @@ impl Fixture {
             &self.name_with_version,
             None,
             None,
+            &HashSet::new(),
         );
         optional_dep_feats
     }

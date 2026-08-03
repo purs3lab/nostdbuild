@@ -91,6 +91,7 @@ fn process_dep_crate_wrapper(
     deps_args: &mut Vec<String>,
     previously_disabled: &mut HashSet<String>,
     non_minimalizable: &HashSet<String>,
+    deps_to_keep: &HashSet<String>,
 ) -> anyhow::Result<()> {
     // Check the DB first: if we already have a result for this dep, skip the expensive
     // gather_crate_info + analyze_crate_wrapper + process_crate path entirely.
@@ -122,12 +123,19 @@ fn process_dep_crate_wrapper(
 
     let crate_name = dep.crate_name.split(":").next().unwrap_or_default();
 
+    // Only genuine `<dep>/<subfeat>` references. `read_local_features` renders a bare
+    // `foo` as `("foo", "foo")` and `dep:foo` as `("foo", "dep:")`, both of which match
+    // on the name alone — and neither names a feature of the dependency. Reading the
+    // bare form as one made `final_feature_list_main` disable a feature of the *main*
+    // crate to switch off a dep feature that does not exist: a7105's
+    // `async = ["embedded-hal-async"]` turned into `--no-default-features`, dropping the
+    // `async` gate its unconditional `impl<SPI: SpiDevice>` needs.
     let all_dep_feats: Vec<String> = exchange
         .crate_info
         .features
         .iter()
         .flat_map(|(_, feats)| feats.iter())
-        .filter(|(name, _)| *name == crate_name)
+        .filter(|(name, feat)| *name == crate_name && feat != name && feat != "dep:")
         .map(|(_, feat)| feat.clone())
         .collect();
 
@@ -168,6 +176,7 @@ fn process_dep_crate_wrapper(
         &exchange.name_with_version,
         None,
         None,
+        deps_to_keep,
     );
 
     parser::move_unnecessary_dep_feats(
@@ -402,10 +411,15 @@ fn main() -> anyhow::Result<()> {
     // `can't find crate hashbrown` / `unresolved import libm` — the very configuration
     // the covering run had already rejected.
     let main_manifest = parser::determine_manifest_file(&exchange.name_with_version, None);
+    let main_manifest_toml = driver::read_manifest_toml(&main_manifest);
+    // Cargo's declared set, not the `[features]` table — the implicit feature of an
+    // optional dependency exists only in `cargo metadata`. Read once: both this and
+    // `deps_pinned_by_active_use` below need it, and it shells out to cargo.
+    let main_declared_features = nostd::visitor::declared_features(&main_manifest);
     let (optdep_constraints, optdep_enablers) = driver::optional_dep_link_constraints(
         &ctx,
-        &driver::read_manifest_toml(&main_manifest),
-        &nostd::visitor::declared_features(&main_manifest),
+        &main_manifest_toml,
+        &main_declared_features,
         &main_root,
     );
 
@@ -522,6 +536,35 @@ fn main() -> anyhow::Result<()> {
         .collect();
     debug!("Non-minimalizable main features: {:?}", non_minimalizable);
 
+    // Optional dependencies `minimize` must leave linked. `non_minimalizable` cannot
+    // express this: it protects *features*, and the feature at risk here is the one
+    // cargo synthesises for the dependency, which nothing in `enable`/`main_features`
+    // ever names. Evaluated against `main_features` plus the `default` closure, since
+    // it is the features that are actually ON — not the solver's `enable` — that decide
+    // whether an import's cfg is live. The dep passes below can still add to
+    // `main_features`, so this is the smallest active set the build can have; a later
+    // addition can only switch more gates on, and a dep pinned here stays pinned.
+    let mut active_features: HashSet<String> = main_features.iter().cloned().collect();
+    if !disable_default {
+        active_features.insert("default".to_string());
+    }
+    let active_features =
+        parser::close_over_local_features(&active_features, &exchange.crate_info.features);
+    let deps_to_keep = driver::deps_pinned_by_active_use(
+        &ctx,
+        &main_manifest_toml,
+        &main_declared_features,
+        &active_features,
+        &main_root,
+        &covering_records,
+    );
+    if !deps_to_keep.is_empty() {
+        println!(
+            "Optional deps that must stay linked (imported under a cfg the unlink would not turn off): {:?}",
+            deps_to_keep
+        );
+    }
+
     parser::minimize(
         &exchange.crate_info,
         &mut dep_and_feats,
@@ -531,6 +574,7 @@ fn main() -> anyhow::Result<()> {
         &exchange.name_with_version,
         None,
         None,
+        &deps_to_keep,
     );
 
     // `minimize` rewrites the crate's `[features]` table on disk, but
@@ -606,6 +650,7 @@ fn main() -> anyhow::Result<()> {
             &mut deps_args,
             &mut previously_disabled,
             &non_minimalizable,
+            &deps_to_keep,
         )?;
     }
 
@@ -644,6 +689,7 @@ fn main() -> anyhow::Result<()> {
                 &mut dep_args_skipped,
                 &mut previously_disabled,
                 &non_minimalizable,
+                &deps_to_keep,
             )?;
         }
     }
@@ -662,6 +708,7 @@ fn main() -> anyhow::Result<()> {
         &exchange.name_with_version,
         None,
         Some(&enabled_optional_deps),
+        &deps_to_keep,
     );
 
     deps_args.extend(dep_args_skipped);

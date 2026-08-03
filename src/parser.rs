@@ -600,6 +600,9 @@ pub fn process_crate(
         name_with_version,
         main_name,
         None,
+        // Dependency crates: no module tree is resolved here, so nothing pins a
+        // dep of this dep. The main crate's own minimize is where the check runs.
+        &HashSet::new(),
     );
 
     Ok((enable, disable))
@@ -943,6 +946,9 @@ fn remove_dep_from_toml_feature(
 /// * `crate_name` - The name-with-version of the crate whose Cargo.toml to modify
 /// * `main_name` - When minimizing a dep crate, the name-with-version of the main
 ///   crate (needed to locate the dep's manifest); `None` when minimizing the main crate
+/// * `deps_to_keep` - Optional dependencies that must stay linked because the crate
+///   imports from them under a cfg that survives the unlink
+///   (`driver::deps_pinned_by_active_use`)
 pub fn minimize(
     crate_info: &CrateInfo,
     optional_dep_feats: &mut TupleVec,
@@ -952,6 +958,7 @@ pub fn minimize(
     crate_name: &str,
     main_name: Option<&str>,
     enabled_optional_deps: Option<&HashSet<String>>,
+    deps_to_keep: &HashSet<String>,
 ) {
     debug!(
         "Non-minimalizable features for crate '{}': {:?}",
@@ -1049,6 +1056,17 @@ pub fn minimize(
                     crate_info,
                     optional_dep_feats,
                     &mut handled,
+                );
+            } else if deps_to_keep.contains(dep_name.as_str()) {
+                // The crate imports items from this dep under a cfg that stays true
+                // once the dep is unlinked — stripping the entry below would leave
+                // those imports resolving against a crate cargo never links
+                // (a7105-0.1.0: `default = ["async"]`, `async = ["embedded-hal-async"]`,
+                // `#[cfg(feature = "async")] use embedded_hal_async::…` → E0433).
+                // The dep stays.
+                println!(
+                    "[minimize] KEEP dep '{}' in feature '{}': the crate imports it under a cfg that survives unlinking",
+                    dep_name, leaf
                 );
             } else if is_direct
                 && leaf_only_dep_values
@@ -1896,7 +1914,10 @@ pub fn compile_error_feature_names(attrs: &Attributes, ctx: &z3::Context) -> Has
 /// `feature_implication_constraints` uses. `dep:foo` suppresses the implicit
 /// feature, and `dep/feat` references a *dependency's* feature, which is not a
 /// name a `compile_error!` in this crate can be testing.
-fn close_over_local_features(enabled: &HashSet<String>, features: &[(String, TupleVec)]) -> HashSet<String> {
+pub fn close_over_local_features(
+    enabled: &HashSet<String>,
+    features: &[(String, TupleVec)],
+) -> HashSet<String> {
     let mut closed = enabled.clone();
     loop {
         let mut grew = false;

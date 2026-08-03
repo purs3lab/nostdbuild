@@ -2718,6 +2718,23 @@ pub fn collect_gated_extern_roots<'a>(
     node: &ModNode<'a>,
     ctx: &'a z3::Context,
 ) -> Vec<(String, Bool<'a>)> {
+    collect_extern_roots_with_gates(node, ctx)
+        .into_iter()
+        // Ungated items are skipped: they say nothing about *when* a dependency is
+        // needed, and a required dependency needs no edge at all.
+        .filter_map(|(root, gate)| gate.map(|gate| (root, gate)))
+        .collect()
+}
+
+/// The same roots, keeping the ungated ones with a `None` condition.
+///
+/// The solver has no use for an import that is always present, but a caller asking
+/// whether a dependency can be *unlinked* does: an ungated `use` of it is decisive
+/// (`driver::deps_pinned_by_active_use`).
+pub fn collect_extern_roots_with_gates<'a>(
+    node: &ModNode<'a>,
+    ctx: &'a z3::Context,
+) -> Vec<(String, Option<Bool<'a>>)> {
     let mut result = vec![];
     collect_extern_roots_recursive(node, node.entry_condition.clone(), ctx, &mut result);
     result
@@ -2727,7 +2744,7 @@ fn collect_extern_roots_recursive<'a>(
     node: &ModNode<'a>,
     inherited: Option<Bool<'a>>,
     ctx: &'a z3::Context,
-    out: &mut Vec<(String, Bool<'a>)>,
+    out: &mut Vec<(String, Option<Bool<'a>>)>,
 ) {
     let module_gate = match (&inherited, &node.entry_condition) {
         (Some(i), Some(e)) => Some(Bool::and(ctx, &[i, e])),
@@ -2741,12 +2758,10 @@ fn collect_extern_roots_recursive<'a>(
             continue;
         }
         let effective = match (&module_gate, &item.own_condition) {
-            (Some(g), Some(c)) => Bool::and(ctx, &[g, c]),
-            (Some(g), None) => g.clone(),
-            (None, Some(c)) => c.clone(),
-            // Unconditional: an import that is always present tells the solver
-            // nothing it can act on.
-            (None, None) => continue,
+            (Some(g), Some(c)) => Some(Bool::and(ctx, &[g, c])),
+            (Some(g), None) => Some(g.clone()),
+            (None, Some(c)) => Some(c.clone()),
+            (None, None) => None,
         };
         for root in &item.extern_roots {
             out.push((root.clone(), effective.clone()));
