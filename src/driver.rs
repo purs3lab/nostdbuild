@@ -862,6 +862,22 @@ pub fn run_rustc_plugin_pass(
     enable: &[String],
     context_filter: Option<PathContext>,
 ) -> PassOutcome {
+    run_rustc_plugin_pass_with(manifest, crate_name, enable, context_filter, true)
+}
+
+/// As [`run_rustc_plugin_pass`], but with the host fallback under caller control.
+///
+/// `allow_host_fallback = false` asks the strictly stronger question *does this
+/// feature set compile for a bare-metal target*, which is what
+/// [`discover_build_enablers`] needs: a set that only builds on the host proves
+/// nothing about no_std and would make every candidate look like a fix.
+pub fn run_rustc_plugin_pass_with(
+    manifest: &str,
+    crate_name: &str,
+    enable: &[String],
+    context_filter: Option<PathContext>,
+    allow_host_fallback: bool,
+) -> PassOutcome {
     if !is_cargo_hir_installed() {
         return PassOutcome::CompileFailed {
             stderr: "cargo-hir is not installed or not found in PATH".to_string(),
@@ -936,7 +952,9 @@ pub fn run_rustc_plugin_pass(
     // std-free and enables it — emitting a config that does not build (observed:
     // tarfs enabling `builtin_devices`, E0433 on `std`). The extra build per
     // failing combo is the cost of detecting std in feature-gated code.
-    targets.push(None);
+    if allow_host_fallback {
+        targets.push(None);
+    }
 
     let mut last_stderr = String::new();
     let mut last_exit: Option<i32> = None;
@@ -1978,6 +1996,200 @@ fn macro_body_cfgs_to_ancestors<'a>(
     if bools.is_empty() { None } else { Some(bools) }
 }
 
+/// Upper bound on the compiles [`discover_build_enablers`] will spend. The first
+/// is the all-candidates trial; the rest go to shrinking it. Reached only by a
+/// crate with many features whose minimal enabler set is large, which is also the
+/// case where the answer is least likely to be useful.
+const MAX_ENABLER_PROBES: usize = 24;
+
+/// Features the crate cannot compile *at all* without on a bare-metal target.
+///
+/// A feature like bevy_input's `libm` (`libm = ["bevy_math/libm"]`) gates no code
+/// of the crate's own, so no `#[cfg]` ever mentions it and it is never a variable
+/// the covering-set or probe solves reason about — which means every model leaves
+/// it off. With `std` off and `libm` off, glam has no `sqrt`, so *every* feature
+/// set the prober tries fails to compile, every span comes back
+/// `ProbeDecision::CompileFailed`, and the crate is reported as "std usage could
+/// not be proven avoidable" (triage bucket T2) even though
+/// `--no-default-features --features libm` builds clean on all 26 targets.
+///
+/// This finds such features by search rather than by name: start from the base
+/// no_std set plus *every* candidate the constraints allow, and shrink back to a
+/// set nothing can be removed from. What survives is, by construction, a feature
+/// the crate does not build without — so pinning it true costs nothing that was
+/// reachable anyway.
+///
+/// The search runs in the world the prober is trying to reach, not in an
+/// arbitrary model: every `AlwaysStd` gate is asserted *false* first, so a
+/// candidate that would switch a std gate back on is dropped before it costs a
+/// compile. totsu_core is why — `std = ["num-traits/std"]` and
+/// `libm = ["num-traits/libm"]` are both "features without which `Float` has no
+/// `sqrt`", and offering `std` as the fix is offering to give up. The bare-metal
+/// requirement is the second guard: a candidate that "fixes" the build only on the
+/// host is not a fix.
+///
+/// Returns the empty vector when the base set already compiles, when no candidate
+/// set does, or when there are no candidates — i.e. this never manufactures a
+/// verdict, it only reports one it compiled.
+pub fn discover_build_enablers<'a>(
+    ctx: &'a Context,
+    manifest: &str,
+    crate_name: &str,
+    hard_constraints: &[Bool<'a>],
+    avoid_gates: &[Bool<'a>],
+) -> Vec<String> {
+    let declared = visitor::declared_features(manifest);
+    if declared.is_empty() {
+        return Vec::new();
+    }
+
+    // The constraints the enabler has to live under: the crate's own, plus each
+    // std gate held off. Gates are added one at a time and skipped when they
+    // conflict — two spans can be gated by mutually exclusive features, and the
+    // prober negates one gate at a time rather than all at once.
+    let mut constraints: Vec<Bool<'a>> = hard_constraints.to_vec();
+    {
+        let probe = z3::Solver::new(ctx);
+        for c in &constraints {
+            probe.assert(c);
+        }
+        if probe.check() != z3::SatResult::Sat {
+            debug!("[enablers] hard constraints are unsatisfiable; skipping discovery");
+            return Vec::new();
+        }
+        for gate in avoid_gates {
+            let negated = gate.not();
+            probe.push();
+            probe.assert(&negated);
+            let ok = probe.check() == z3::SatResult::Sat;
+            probe.pop(1);
+            if ok {
+                probe.assert(&negated);
+                constraints.push(negated);
+            }
+        }
+    }
+
+    // The set the prober would start from. Solved here rather than taken from a
+    // covering run because the covering runs are exactly the ones that failed.
+    let solver = z3::Solver::new(ctx);
+    for c in &constraints {
+        solver.assert(c);
+    }
+    if solver.check() != z3::SatResult::Sat {
+        debug!("[enablers] constraints are unsatisfiable; skipping discovery");
+        return Vec::new();
+    }
+    let base = solver::model_to_features(&solver.get_model()).0;
+    let base_set: HashSet<&String> = base.iter().collect();
+
+    let mut candidates: Vec<String> = declared
+        .iter()
+        .filter(|f| !base_set.contains(f))
+        .filter(|f| {
+            // A candidate the constraints cannot hold together with is not a
+            // configuration the rest of the analysis could ever emit — and with
+            // the gates negated above, that is exactly where `std` (and anything
+            // implying it) drops out.
+            let s = z3::Solver::new(ctx);
+            for c in &constraints {
+                s.assert(c);
+            }
+            s.assert(&Bool::new_const(ctx, f.as_str()));
+            s.check() == z3::SatResult::Sat
+        })
+        .cloned()
+        .collect();
+    candidates.sort();
+
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    debug!(
+        "[enablers] no bare-metal target has compiled; base {:?}, trying {} candidate feature(s): {:?}",
+        base, candidates.len(), candidates
+    );
+
+    let budget = std::cell::Cell::new(MAX_ENABLER_PROBES);
+    let compiles = |extra: &[String]| -> bool {
+        if budget.get() == 0 {
+            return false;
+        }
+        budget.set(budget.get() - 1);
+        let mut feats = base.clone();
+        feats.extend(extra.iter().cloned());
+        let ok = matches!(
+            run_rustc_plugin_pass_with(manifest, crate_name, &feats, None, false),
+            PassOutcome::Success { .. }
+        );
+        debug!(
+            "[enablers] {} with extra {:?}",
+            if ok { "compiles" } else { "fails" },
+            extra
+        );
+        ok
+    };
+
+    // All-on first: one compile that answers "is any of this the problem?", and
+    // when it succeeds the shrink below is a descent rather than a search.
+    let mut keep = if compiles(&candidates) {
+        candidates
+    } else {
+        // All-on can fail for a reason unrelated to the enabler — two candidates
+        // that cannot be on together, or one that breaks the build by itself. Fall
+        // back to trying each alone; the shrink then has nothing left to do.
+        debug!("[enablers] every candidate on does not compile; trying them one at a time");
+        let single = candidates
+            .iter()
+            .find(|c| compiles(std::slice::from_ref(*c)))
+            .cloned();
+        match single {
+            Some(c) => vec![c],
+            None => {
+                debug!("[enablers] no candidate makes the crate build for a bare-metal target");
+                return Vec::new();
+            }
+        }
+    };
+
+    // Halving pass: cheap way down from a large candidate list when a single
+    // feature is responsible, which is the usual shape (`libm`, `alloc`).
+    while keep.len() > 1 && budget.get() > 0 {
+        let mid = keep.len() / 2;
+        let left: Vec<String> = keep[..mid].to_vec();
+        let right: Vec<String> = keep[mid..].to_vec();
+        if compiles(&left) {
+            keep = left;
+        } else if compiles(&right) {
+            keep = right;
+        } else {
+            // The enabler set straddles the split; the removal pass finishes it.
+            break;
+        }
+    }
+
+    // Removal pass: drop anything the build does not actually need, including —
+    // when `keep` is down to one element — that last one, which is how a base set
+    // that compiles on its own returns the empty answer.
+    for cand in keep.clone() {
+        if budget.get() == 0 {
+            break;
+        }
+        let trial: Vec<String> = keep.iter().filter(|f| **f != cand).cloned().collect();
+        if compiles(&trial) {
+            keep = trial;
+        }
+    }
+
+    if keep.is_empty() {
+        debug!("[enablers] base set compiles on its own; nothing to pin");
+    } else {
+        debug!("[enablers] crate does not build for any bare-metal target without {keep:?}");
+    }
+    keep
+}
+
 /// The last element is the *unproven* spans — std spans that are std in every
 /// covering run and whose probe never compiled. They are not in `all_hard`,
 /// which means proven-unavoidable std, but a crate holding any of them has not
@@ -1996,7 +2208,7 @@ pub fn analyze_crate<'a>(
     HashSet<CrossCrateRef>,
     Vec<ReadableSpan>,
 ) {
-    let (root, mut covering_runs, hard_constraints, compile_error_constraints) =
+    let (root, mut covering_runs, mut hard_constraints, compile_error_constraints) =
         find_feature_combs_for_all_code(ctx, manifest, crate_name, telemetry);
 
     // A routeless bare std use (e.g. a `HashMap` brought in by a glob re-export of
@@ -2055,6 +2267,53 @@ pub fn analyze_crate<'a>(
         .into_iter()
         .cloned()
         .collect();
+
+    // `LAST_GOOD_TARGET` is still unset only when not one covering run compiled
+    // for a bare-metal target — every record above came from the host fallback.
+    // Probing from here is doomed: each probe compiles the same way and comes back
+    // `CompileFailed`, so look for the feature the crate needs to build at all
+    // before spending them. Gated on there being an `AlwaysStd` span to probe,
+    // because those are the only ones a failed probe turns into `unproven` — a
+    // crate with nothing to prove has nothing to gain from the search.
+    //
+    // Skipped outright for a crate that already has a good target, which is the
+    // overwhelming majority. When it does run and fails, the cost is one probe's
+    // worth of builds; when it succeeds it also fixes `LAST_GOOD_TARGET`, so every
+    // probe after it stops sweeping all 26 targets.
+    // Local, not read back off `telemetry`: one `Telemetry` is shared by the main
+    // crate and every dependency analysed after it, so recovering the list from
+    // there hands the main crate's `libm` to each dep's solve — and a dep that has
+    // no such feature emits it as `<dep>/libm` in `custom_no_std_feature_enabled`,
+    // which cargo rejects outright (observed on totsu_core → `log/libm`).
+    let mut build_enablers: Vec<String> = Vec::new();
+    if LAST_GOOD_TARGET.lock().unwrap().is_none()
+        && !(always_std_imports.is_empty() && always_std_others.is_empty())
+    {
+        // The gates the prober is about to negate. Passed in so the search never
+        // proposes a feature that satisfies one of them — `std` is otherwise a
+        // perfectly good answer to "what makes this crate compile".
+        let avoid_gates: Vec<Bool> = always_std_imports
+            .iter()
+            .map(|a| &a.exemplar)
+            .chain(always_std_others.iter().map(|a| &a.exemplar))
+            .filter_map(|ex| {
+                ancestors_for_record(&root, ex)
+                    .or_else(|| macro_body_cfgs_to_ancestors(ctx, &ex.macro_body_cfgs, &known_features))
+            })
+            .flatten()
+            .collect();
+        build_enablers =
+            discover_build_enablers(ctx, manifest, crate_name, &hard_constraints, &avoid_gates);
+        for f in &build_enablers {
+            println!(
+                "Enabling feature '{f}' — {crate_name} does not build for any bare-metal target without it"
+            );
+            hard_constraints.push(Bool::new_const(ctx, f.as_str()));
+        }
+        telemetry
+            .build_enabler_features
+            .extend(build_enablers.iter().cloned());
+    }
 
     let probe_candidates_imports = always_std_imports
         .into_iter()
@@ -2121,12 +2380,22 @@ pub fn analyze_crate<'a>(
         &all_constraints,
     );
 
+    // The discovered build enablers ride out with the probe conditions rather
+    // than staying local to the probing: `final_condition` is what `main.rs`
+    // solves the emitted feature list from *and* what `hard_constraint_features`
+    // protects from `minimize`. A probe that only compiled because `libm` was on
+    // proves nothing if the config shipped afterwards leaves it off.
     let final_condition = hard_imports
         .iter()
         .chain(hard_usages.iter())
         .chain(conditional_results.iter())
         .filter(|a| matches!(a.decision, ProbeDecision::NonStd { .. }))
         .filter_map(|a| a.condition.clone())
+        .chain(
+            build_enablers
+                .iter()
+                .map(|f| Bool::new_const(ctx, f.as_str())),
+        )
         .fold(None, |acc: Option<Bool>, c| {
             Some(match acc {
                 Some(a) => Bool::and(ctx, &[&a, &c]),

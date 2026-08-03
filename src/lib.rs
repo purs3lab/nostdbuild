@@ -402,6 +402,13 @@ pub struct Telemetry {
     /// reported no std usage at all, and none of those 55 produced a config that
     /// built — so the separation costs no crate that currently works.
     pub unproven_std_spans: usize,
+    /// Features `driver::discover_build_enablers` proved the crate cannot build
+    /// for any bare-metal target without (bevy_input's `libm`).
+    ///
+    /// Non-empty only for a crate where no covering run compiled off the host, so
+    /// it doubles as the marker for "this run went down the T2 recovery path".
+    /// They are pinned true for the probes and folded into the emitted config.
+    pub build_enabler_features: Vec<String>,
     /// Maximum length of constraint string while solving features
     pub max_contraint_length: Vec<(String, usize)>,
     /// Maximum depth of constraint string while solving features

@@ -1,0 +1,28 @@
+[package]
+name = "build_enabler_libm"
+description = "A crate that needs a feature to build at all without std — the feature gates none of its own code"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "build_enabler_libm"
+
+# `mathshim` stands in for num-traits / glam: it only has a `sqrt` when one of
+# its two backends is selected, and nothing but the parent's feature table can
+# select one.
+[dependencies.mathshim]
+path = "mathshim"
+default-features = false
+
+# `libm` appears in no `#[cfg]` of this crate, so it is never a variable any
+# covering-set or probe solve has an opinion about — every model leaves it off.
+[features]
+default = ["std"]
+std = ["mathshim/std"]
+libm = ["mathshim/libm"]
+
+# `exclude` keeps the shim out of the workspace so `find_entrypoints` does not
+# analyse its lib as a second entrypoint.
+[workspace]
+exclude = ["mathshim"]

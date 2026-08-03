@@ -322,11 +322,19 @@ where
                         features
                     );
                     match run_rustc_plugin_pass(manifest, crate_name, &features, context_filter) {
-                        PassOutcome::CompileFailed { .. } => {
+                        PassOutcome::CompileFailed { stderr, .. } => {
                             // CEGAR: block this exact assignment and retry the same gate.
+                            // The first error line is the only record of *why* a probe
+                            // never compiled — without it a `CompileFailed` verdict is
+                            // untriageable from the log (bucket T2).
                             debug!(
-                                "CEGAR: compile failed for {:?}; blocking and retrying",
-                                features
+                                "CEGAR: compile failed for {:?} ({}); blocking and retrying",
+                                features,
+                                stderr
+                                    .lines()
+                                    .find(|l| l.starts_with("error"))
+                                    .unwrap_or_else(|| stderr.lines().next().unwrap_or(""))
+                                    .trim()
                             );
                             let block =
                                 solver::build_forbidden_constraint(ctx, &features, &disabled_feats);

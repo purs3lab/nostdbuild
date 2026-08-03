@@ -346,6 +346,40 @@ fn main() -> anyhow::Result<()> {
         &mut exchange.telemetry,
     );
 
+    // A build enabler is load-bearing only through what it forwards. totsu_core's
+    // `libm = ["num-traits/libm"]` is what gives `Float` a `sqrt`; num-traits
+    // solves fine without its own `libm`, so `move_unnecessary_dep_feats` sees a
+    // dep feature nobody asked for and moves it to `dep_unnecessary_features` —
+    // leaving `libm` an empty feature and the emitted config back where it
+    // started. Pin the forwarded values, transitively, the same way
+    // `finalize_dep_crate` pins a dep feature the main crate uses items from.
+    //
+    // Read off telemetry here and not later: dependency analyses share this
+    // `Telemetry` and append their own enablers to the same list.
+    let build_enablers: HashSet<String> =
+        exchange.telemetry.build_enabler_features.iter().cloned().collect();
+    if !build_enablers.is_empty() {
+        let closed = parser::close_over_local_features(&build_enablers, &exchange.crate_info.features);
+        for (feat_name, values) in &exchange.crate_info.features {
+            if !closed.contains(feat_name) {
+                continue;
+            }
+            for (dep, sub) in values {
+                // Only genuine `<dep>/<sub>` entries; `read_local_features` renders
+                // a bare `foo` as `("foo", "foo")` and `dep:foo` as `("foo", "dep:")`.
+                if sub != "dep:" && sub != dep {
+                    exchange
+                        .protected_dep_features
+                        .insert((dep.replace('-', "_"), sub.clone()));
+                }
+            }
+        }
+        debug!(
+            "Build enablers {:?} pin dep features {:?}",
+            build_enablers, exchange.protected_dep_features
+        );
+    }
+
     // Build valid cross-crate item set while main ctx (and its Z3 Bools) is live.
     exchange.valid_cross_crate_items = driver::compute_valid_cross_crate_items(
         &main_root,

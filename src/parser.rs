@@ -1623,6 +1623,7 @@ pub fn move_unnecessary_dep_feats(
     // a custom feature list later. Note that we only drop it if there is atleast
     // one feature that has to be disabled.
     let mut needed_dropped: HashSet<String> = HashSet::new();
+    let dep_norm = dep_name_only.replace('-', "_");
     flexible_main_args.retain(|feature| {
         // A feature with no `[features]` array is Cargo's implicit per-optional-dep
         // feature (`hashbrown = ["dep:hashbrown"]`, synthesised, never written down).
@@ -1640,7 +1641,15 @@ pub fn move_unnecessary_dep_feats(
                 let key = extract_key(f);
                 if deps_args.contains(&key.to_string()) {
                     local_needed_dropped.insert(f.to_string());
-                } else {
+                } else if !protected_dep_features.contains(&(dep_norm.clone(), key.to_string())) {
+                    // A protected value is one the *main* crate needs even though
+                    // the dep's own solve did not ask for it — totsu_core needs
+                    // `libm = ["num-traits/libm"]` to have a `sqrt` at all, while
+                    // num-traits alone is happy without it. Counting that as a
+                    // mismatch drops `libm` from the args, and the loop below then
+                    // empties the feature's array, so the emitted config has
+                    // neither. The removal loops below already honour this set;
+                    // this one did not.
                     has_mismatch = true;
                 }
             }
@@ -1651,7 +1660,6 @@ pub fn move_unnecessary_dep_feats(
         !has_mismatch
     });
 
-    let dep_norm = dep_name_only.replace('-', "_");
     let mut removed = HashSet::new();
     for feature in fixed_main_args.iter() {
         if let Some(arr) = main_features
