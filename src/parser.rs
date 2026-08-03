@@ -591,6 +591,23 @@ pub fn process_crate(
         }
     }
 
+    // The pin set (`driver::deps_pinned_by_active_use`) cannot exist yet for the main
+    // crate: it needs the active feature set, which needs `final_feature_list_main`,
+    // which needs the `enable` this function is still computing. Passing an empty set
+    // here read as "nothing is pinned" and let the surgical branch unlink a dependency
+    // the crate still imports, before `bin/main.rs` ever got to arm the check — the T1
+    // signature, resurfaced (KI-14). `None` says *unknown*, so this pass leaves the
+    // entries alone and the armed call in `bin/main.rs` decides.
+    // Dependency crates keep the empty set: their own active feature set is equally
+    // unknown here, but no later pass revisits their manifest, so deferring would mean
+    // never minimizing them at all.
+    let empty_pins = HashSet::new();
+    let deps_to_keep = if is_main { None } else { Some(&empty_pins) };
+    let call_site = if is_main {
+        "process_crate:main"
+    } else {
+        "process_crate:dep"
+    };
     minimize(
         crate_info,
         optional_dep_feats,
@@ -600,9 +617,8 @@ pub fn process_crate(
         name_with_version,
         main_name,
         None,
-        // Dependency crates: no module tree is resolved here, so nothing pins a
-        // dep of this dep. The main crate's own minimize is where the check runs.
-        &HashSet::new(),
+        call_site,
+        deps_to_keep,
     );
 
     Ok((enable, disable))
@@ -946,9 +962,13 @@ fn remove_dep_from_toml_feature(
 /// * `crate_name` - The name-with-version of the crate whose Cargo.toml to modify
 /// * `main_name` - When minimizing a dep crate, the name-with-version of the main
 ///   crate (needed to locate the dep's manifest); `None` when minimizing the main crate
+/// * `call_site` - Which of the four call sites this is; logged so a manifest edit
+///   can be traced back to the pass that made it
 /// * `deps_to_keep` - Optional dependencies that must stay linked because the crate
 ///   imports from them under a cfg that survives the unlink
-///   (`driver::deps_pinned_by_active_use`)
+///   (`driver::deps_pinned_by_active_use`). `None` means the set is not computable
+///   yet: unlinking a dep cannot be shown safe, so this pass leaves the entries
+///   alone and a later, armed pass decides.
 pub fn minimize(
     crate_info: &CrateInfo,
     optional_dep_feats: &mut TupleVec,
@@ -958,7 +978,8 @@ pub fn minimize(
     crate_name: &str,
     main_name: Option<&str>,
     enabled_optional_deps: Option<&HashSet<String>>,
-    deps_to_keep: &HashSet<String>,
+    call_site: &str,
+    deps_to_keep: Option<&HashSet<String>>,
 ) {
     debug!(
         "Non-minimalizable features for crate '{}': {:?}",
@@ -995,7 +1016,7 @@ pub fn minimize(
 
     for feat_name in &to_analyze {
         println!(
-            "\n[minimize] Analyzing feature '{}' for potential removal from enable list...",
+            "\n[minimize/{call_site}] Analyzing feature '{}' for potential removal from enable list...",
             feat_name
         );
         // Collect optional deps that this feature (transitively) enables.
@@ -1031,7 +1052,7 @@ pub fn minimize(
                 );
 
             println!(
-                "[minimize] Checking if feature '{}' can be dropped for dep '{}': is_direct={}, leaf='{}', leaf_only_dep_values={}, can_drop={}, subtree_deps_only={}, non_minimalizable={}",
+                "[minimize/{call_site}] Checking if feature '{}' can be dropped for dep '{}': is_direct={}, leaf='{}', leaf_only_dep_values={}, can_drop={}, subtree_deps_only={}, non_minimalizable={}",
                 feat_name,
                 dep_name,
                 is_direct,
@@ -1045,7 +1066,7 @@ pub fn minimize(
             if subtree_deps_only {
                 // Every branch of feat_name's subtree only enables optional deps — drop it.
                 println!(
-                    "[minimize] DROP feature '{}': entire subtree only enables optional deps (dep='{}')",
+                    "[minimize/{call_site}] DROP feature '{}': entire subtree only enables optional deps (dep='{}')",
                     feat_name, dep_name
                 );
                 to_drop.insert(feat_name.clone());
@@ -1057,17 +1078,19 @@ pub fn minimize(
                     optional_dep_feats,
                     &mut handled,
                 );
-            } else if deps_to_keep.contains(dep_name.as_str()) {
+            } else if deps_to_keep.is_none_or(|keep| keep.contains(dep_name.as_str())) {
                 // The crate imports items from this dep under a cfg that stays true
                 // once the dep is unlinked — stripping the entry below would leave
                 // those imports resolving against a crate cargo never links
                 // (a7105-0.1.0: `default = ["async"]`, `async = ["embedded-hal-async"]`,
                 // `#[cfg(feature = "async")] use embedded_hal_async::…` → E0433).
-                // The dep stays.
-                println!(
-                    "[minimize] KEEP dep '{}' in feature '{}': the crate imports it under a cfg that survives unlinking",
-                    dep_name, leaf
-                );
+                // The dep stays. `None` lands here too: with no pin set there is no
+                // evidence the unlink is safe, so the entry is left for the armed pass.
+                let why = match deps_to_keep {
+                    Some(_) => "the crate imports it under a cfg that survives unlinking",
+                    None => "pin set not computable here — deferring to the armed pass",
+                };
+                println!("[minimize/{call_site}] KEEP dep '{dep_name}' in feature '{leaf}': {why}");
             } else if is_direct
                 && leaf_only_dep_values
                 && non_minimalizable_features.contains(leaf.as_str())
@@ -1076,7 +1099,7 @@ pub fn minimize(
                 // stay enabled. Stripping dep:D from the feature would make it hollow while still
                 // being required. Leave both the feature and the dep alone.
                 debug!(
-                    "[minimize] KEEP dep '{}' in feature '{}': feature is non-minimalizable and only exists to enable this dep — dep is also required",
+                    "[minimize/{call_site}] KEEP dep '{}' in feature '{}': feature is non-minimalizable and only exists to enable this dep — dep is also required",
                     dep_name, leaf
                 );
             } else if let Some(entry) = dep_entry {
@@ -1094,7 +1117,7 @@ pub fn minimize(
                 };
                 if remove_dep_from_toml_feature(&mut main_toml, &leaf, &entry) {
                     debug!(
-                        "[minimize] MOVE entry '{}' from feature '{}' to custom-disabled (dep='{}', feat='{}', reason: {})",
+                        "[minimize/{call_site}] MOVE entry '{}' from feature '{}' to custom-disabled (dep='{}', feat='{}', reason: {})",
                         entry, leaf, dep_name, feat_name, reason
                     );
                     custom_disabled.push(entry);
@@ -1111,7 +1134,7 @@ pub fn minimize(
                 }
             } else {
                 debug!(
-                    "[minimize] SKIP dep '{}' via feat '{}' (leaf='{}'): is_direct={}, can_drop={}, dep_entry=None",
+                    "[minimize/{call_site}] SKIP dep '{}' via feat '{}' (leaf='{}'): is_direct={}, can_drop={}, dep_entry=None",
                     dep_name, feat_name, leaf, is_direct, can_drop
                 );
             }
@@ -1143,7 +1166,7 @@ pub fn minimize(
         .collect();
     if !stale_implicit.is_empty() {
         debug!(
-            "[minimize] Evicting stale implicit optional-dep features: {:?}",
+            "[minimize/{call_site}] Evicting stale implicit optional-dep features: {:?}",
             stale_implicit
         );
     }
@@ -1168,7 +1191,7 @@ pub fn minimize(
                 &mut HashSet::new(),
             ) {
                 println!(
-                    "[minimize] DROP feature '{}': subtree only enables dep/feat for non-enabled optional deps",
+                    "[minimize/{call_site}] DROP feature '{}': subtree only enables dep/feat for non-enabled optional deps",
                     feat_name
                 );
                 to_drop.insert(feat_name.clone());
@@ -1178,13 +1201,13 @@ pub fn minimize(
 
     if !to_drop.is_empty() {
         debug!(
-            "[minimize] Dropping features from enable list: {:?}",
+            "[minimize/{call_site}] Dropping features from enable list: {:?}",
             to_drop
         );
     }
     if !custom_disabled.is_empty() {
         debug!(
-            "[minimize] Entries moved to custom-disabled in Cargo.toml: {:?}",
+            "[minimize/{call_site}] Entries moved to custom-disabled in Cargo.toml: {:?}",
             custom_disabled
         );
     }

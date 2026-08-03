@@ -1141,6 +1141,16 @@ pub fn optional_dep_link_constraints<'a>(
     (constraints, names)
 }
 
+/// Whether the manifest's `[features]` table declares `name` itself. Distinguishes
+/// an explicit feature that merely shares a name with an optional dependency from
+/// cargo's synthesised `D = ["dep:D"]`, which exists only in `cargo metadata`.
+fn manifest_declares_feature(manifest_toml: &toml::Value, name: &str) -> bool {
+    manifest_toml
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|feats| feats.contains_key(name))
+}
+
 /// The optional dependencies `minimize` must not unlink: ones the crate imports
 /// from under a cfg that stays **true** once the dependency is gone.
 ///
@@ -1173,9 +1183,14 @@ pub fn optional_dep_link_constraints<'a>(
 /// item for yields the same "no condition" answer as a genuinely ungated one, which
 /// pinned watchface's `chrono` and cost it its build.)
 ///
-/// The `dep:D` spelling needs no special case and gets the right answer for free:
-/// it suppresses the implicit feature entirely, so nothing in the manifest can turn
-/// an import's gate off and every such dependency comes back pinned.
+/// Only cargo's *synthesised* `D = ["dep:D"]` is pinned false: it is the one feature
+/// the edit can switch off. A feature the manifest declares itself survives the edit
+/// even when it shares the dependency's name (bevy_input's `smol_str = ["dep:smol_str",
+/// "bevy_reflect/smol_str"]`), so it is pinned to its value in `active_features` like
+/// any other — otherwise a live gate reads as dead and the import is left dangling.
+/// The `dep:D` spelling suppresses the implicit feature entirely, so absent an explicit
+/// entry nothing in the manifest can turn such an import's gate off and the dependency
+/// comes back pinned.
 pub fn deps_pinned_by_active_use<'a>(
     ctx: &'a Context,
     manifest_toml: &toml::Value,
@@ -1210,10 +1225,19 @@ pub fn deps_pinned_by_active_use<'a>(
             continue;
         }
 
+        // Deleting the entry only turns `feature = "<dep>"` off when that feature is
+        // the one cargo synthesises. An explicitly declared feature of the same name
+        // survives the edit — bevy_input's `smol_str = ["dep:smol_str",
+        // "bevy_reflect/smol_str"]` keeps its other value, stays on the command line,
+        // and `#[cfg(feature = "smol_str")] use smol_str::SmolStr` keeps compiling
+        // against a crate cargo no longer links. Pinning it false regardless was
+        // reading the gate as dead when it is live.
+        let dep_feature_is_implicit = !manifest_declares_feature(manifest_toml, &dep);
         let solver = z3::Solver::new(ctx);
         for feat in known_features {
             let var = Bool::new_const(ctx, feat.as_str());
-            if *feat != dep && active_features.contains(feat) {
+            let forced_off = *feat == dep && dep_feature_is_implicit;
+            if !forced_off && active_features.contains(feat) {
                 solver.assert(&var);
             } else {
                 solver.assert(&var.not());

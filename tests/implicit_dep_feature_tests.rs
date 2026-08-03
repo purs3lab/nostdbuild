@@ -115,6 +115,25 @@ impl Fixture {
         non_minimalizable: &HashSet<String>,
         disable_default: bool,
     ) -> TupleVec {
+        self.run_minimize_with_pins(
+            crate_info,
+            enable,
+            non_minimalizable,
+            disable_default,
+            Some(&HashSet::new()),
+        )
+    }
+
+    /// `pins` is `minimize`'s `deps_to_keep`: `Some` is an armed pass, `None` a pass
+    /// that cannot know yet (`process_crate` for the main crate).
+    fn run_minimize_with_pins(
+        &self,
+        crate_info: &CrateInfo,
+        enable: &mut Vec<String>,
+        non_minimalizable: &HashSet<String>,
+        disable_default: bool,
+        pins: Option<&HashSet<String>>,
+    ) -> TupleVec {
         let mut optional_dep_feats: TupleVec = features_for_optional_deps(crate_info);
         minimize(
             crate_info,
@@ -125,9 +144,30 @@ impl Fixture {
             &self.name_with_version,
             None,
             None,
-            &HashSet::new(),
+            "test",
+            pins,
         );
         optional_dep_feats
+    }
+
+    fn manifest_text(&self) -> String {
+        fs::read_to_string(self.dir.join("Cargo.toml")).expect("fixture manifest")
+    }
+
+    /// The values of one `[features]` entry as the manifest holds them after the
+    /// pass — reading the raw text instead would match `dep:D` in the orphan
+    /// `custom_default_features` list and call a strip a keep.
+    fn feature_values(&self, feat: &str) -> Vec<String> {
+        let toml: toml::Value = self.manifest_text().parse().expect("fixture manifest");
+        toml.get("features")
+            .and_then(|f| f.get(feat))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -409,5 +449,113 @@ fn constraint_forbids_feat_on_dep_off() {
         solver2.check(),
         z3::SatResult::Sat,
         "plain-link constraints alone must NOT forbid std&!block-padding (the 3c gap)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// KI-14: the unarmed `minimize` inside `process_crate`
+// ---------------------------------------------------------------------------
+
+/// bevy_input-0.16.0's shape: `smol_str` is an optional dep AND an explicitly
+/// declared feature carrying a second value, so the feature stays enabled after
+/// `dep:smol_str` is deleted out of it and `#[cfg(feature = "smol_str")] use
+/// smol_str::SmolStr` keeps compiling against a crate cargo never links (E0432).
+fn bevy_input_like() -> CrateInfo {
+    CrateInfo {
+        name: "fixture".to_string(),
+        version: "0.0.0".to_string(),
+        deps_and_features: vec![dep("smol_str")],
+        features: vec![(
+            "smol_str".to_string(),
+            vec![
+                ("smol_str".to_string(), "dep:".to_string()),
+                ("bevy_reflect".to_string(), "smol_str".to_string()),
+            ],
+        )],
+        ..Default::default()
+    }
+}
+
+const BEVY_INPUT_MANIFEST: &str = "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n\n\
+     [dependencies.smol_str]\nversion = \"0.2\"\noptional = true\n\n\
+     [features]\nsmol_str = [\"dep:smol_str\", \"bevy_reflect/smol_str\"]\n";
+
+/// `process_crate` runs for the main crate too, and it runs before `bin/main.rs`
+/// can compute the pin set — so it used to hand `minimize` an empty one, which
+/// reads as "nothing is pinned" and unlinks the dep before the armed pass ever
+/// sees it. `None` must leave the entry alone instead.
+#[test]
+fn unknown_pin_set_defers_the_unlink() {
+    let crate_info = bevy_input_like();
+    let fixture = Fixture::with_manifest("ki14-pins-unknown", BEVY_INPUT_MANIFEST);
+    let mut enable = vec!["smol_str".to_string()];
+
+    fixture.run_minimize_with_pins(&crate_info, &mut enable, &HashSet::new(), true, None);
+
+    assert!(
+        fixture
+            .feature_values("smol_str")
+            .contains(&"dep:smol_str".to_string()),
+        "with the pin set unknown the dep entry must survive for the armed pass, got:\n{}",
+        fixture.manifest_text()
+    );
+    assert!(
+        !fixture
+            .manifest_text()
+            .contains(consts::CUSTOM_FEATURES_DISABLED),
+        "nothing may be orphaned into the custom-disabled list by an unarmed pass, got:\n{}",
+        fixture.manifest_text()
+    );
+}
+
+/// Control: an armed pass that was told nothing is pinned still strips, so the
+/// test above is about the `None`/empty distinction and not about `minimize`
+/// having stopped doing surgical removal.
+#[test]
+fn armed_pin_set_still_strips() {
+    let crate_info = bevy_input_like();
+    let fixture = Fixture::with_manifest("ki14-pins-armed", BEVY_INPUT_MANIFEST);
+    let mut enable = vec!["smol_str".to_string()];
+
+    fixture.run_minimize_with_pins(
+        &crate_info,
+        &mut enable,
+        &HashSet::new(),
+        true,
+        Some(&HashSet::new()),
+    );
+
+    assert!(
+        !fixture
+            .feature_values("smol_str")
+            .contains(&"dep:smol_str".to_string()),
+        "an armed pass with an empty pin set must still unlink, got:\n{}",
+        fixture.manifest_text()
+    );
+    assert!(
+        fixture
+            .feature_values(consts::CUSTOM_FEATURES_DISABLED)
+            .contains(&"dep:smol_str".to_string()),
+        "the unlinked entry must land in the custom-disabled list, got:\n{}",
+        fixture.manifest_text()
+    );
+}
+
+/// And when the armed pass is told the dep is pinned, the entry stays.
+#[test]
+fn armed_pin_set_keeps_a_pinned_dep() {
+    let crate_info = bevy_input_like();
+    let fixture = Fixture::with_manifest("ki14-pins-kept", BEVY_INPUT_MANIFEST);
+    let mut enable = vec!["smol_str".to_string()];
+    let pins: HashSet<String> = HashSet::from(["smol_str".to_string()]);
+
+    fixture.run_minimize_with_pins(&crate_info, &mut enable, &HashSet::new(), true, Some(&pins));
+
+    assert!(
+        fixture
+            .feature_values("smol_str")
+            .contains(&"dep:smol_str".to_string()),
+        "a pinned dep must keep its entry, got:\n{}",
+        fixture.manifest_text()
     );
 }

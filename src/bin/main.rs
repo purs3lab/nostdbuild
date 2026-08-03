@@ -176,7 +176,8 @@ fn process_dep_crate_wrapper(
         &exchange.name_with_version,
         None,
         None,
-        deps_to_keep,
+        "dep_wrapper",
+        Some(deps_to_keep),
     );
 
     parser::move_unnecessary_dep_feats(
@@ -608,7 +609,8 @@ fn main() -> anyhow::Result<()> {
         &exchange.name_with_version,
         None,
         None,
-        &deps_to_keep,
+        "main:pre_deps",
+        Some(&deps_to_keep),
     );
 
     // `minimize` rewrites the crate's `[features]` table on disk, but
@@ -742,7 +744,8 @@ fn main() -> anyhow::Result<()> {
         &exchange.name_with_version,
         None,
         Some(&enabled_optional_deps),
-        &deps_to_keep,
+        "main:post_deps",
+        Some(&deps_to_keep),
     );
 
     deps_args.extend(dep_args_skipped);
