@@ -862,21 +862,27 @@ pub fn run_rustc_plugin_pass(
     enable: &[String],
     context_filter: Option<PathContext>,
 ) -> PassOutcome {
-    run_rustc_plugin_pass_with(manifest, crate_name, enable, context_filter, true)
+    run_rustc_plugin_pass_with(manifest, crate_name, enable, context_filter, true, None)
 }
 
-/// As [`run_rustc_plugin_pass`], but with the host fallback under caller control.
+/// As [`run_rustc_plugin_pass`], but with the target sweep under caller control.
 ///
 /// `allow_host_fallback = false` asks the strictly stronger question *does this
 /// feature set compile for a bare-metal target*, which is what
 /// [`discover_build_enablers`] needs: a set that only builds on the host proves
 /// nothing about no_std and would make every candidate look like a fix.
+///
+/// `pin_target = Some(t)` tries only `t`. This is the cost control for a search
+/// that expects to fail: with `LAST_GOOD_TARGET` unset, *every* failing call
+/// otherwise grinds through all 26 triples, so a handful of rejected candidates
+/// costs more than the probes the search exists to save.
 pub fn run_rustc_plugin_pass_with(
     manifest: &str,
     crate_name: &str,
     enable: &[String],
     context_filter: Option<PathContext>,
     allow_host_fallback: bool,
+    pin_target: Option<&'static str>,
 ) -> PassOutcome {
     if !is_cargo_hir_installed() {
         return PassOutcome::CompileFailed {
@@ -934,7 +940,9 @@ pub fn run_rustc_plugin_pass_with(
     let explicit = *EXPLICIT_TARGET.lock().unwrap();
     let cached = *LAST_GOOD_TARGET.lock().unwrap();
     let mut targets: Vec<Option<&'static str>> = Vec::with_capacity(consts::TARGET_LIST.len() + 1);
-    if let Some(t) = explicit {
+    if let Some(t) = pin_target {
+        targets.push(Some(t));
+    } else if let Some(t) = explicit {
         targets.push(Some(t));
     } else if let Some(t) = cached {
         targets.push(Some(t));
@@ -1997,10 +2005,11 @@ fn macro_body_cfgs_to_ancestors<'a>(
 }
 
 /// Upper bound on the compiles [`discover_build_enablers`] will spend. The first
-/// is the all-candidates trial; the rest go to shrinking it. Reached only by a
-/// crate with many features whose minimal enabler set is large, which is also the
-/// case where the answer is least likely to be useful.
-const MAX_ENABLER_PROBES: usize = 24;
+/// is the all-candidates trial; the rest go to shrinking it, or — when that trial
+/// fails — to trying candidates alone. Only the first sweeps `TARGET_LIST`; the
+/// rest are pinned to one triple, so the worst case is ~26 + 15 builds against
+/// the ~160 the probes it replaces were spending before aborting.
+const MAX_ENABLER_PROBES: usize = 16;
 
 /// Features the crate cannot compile *at all* without on a bare-metal target.
 ///
@@ -2112,15 +2121,30 @@ pub fn discover_build_enablers<'a>(
     );
 
     let budget = std::cell::Cell::new(MAX_ENABLER_PROBES);
+    // Only the first trial is allowed to sweep `TARGET_LIST` looking for a triple
+    // that works; after that every trial is pinned to one. A trial that succeeds
+    // sets `LAST_GOOD_TARGET` and pins itself; a trial that fails leaves the cache
+    // empty, and without this each subsequent failure would cost another 26
+    // builds. `TARGET_LIST[0]` is the arbitrary-but-fixed stand-in for that case —
+    // a crate that builds bare-metal at all almost always builds for most triples,
+    // and if this one is wrong the search just reports nothing, which is where it
+    // would have been anyway.
+    let pinned = std::cell::Cell::new(false);
     let compiles = |extra: &[String]| -> bool {
         if budget.get() == 0 {
             return false;
         }
         budget.set(budget.get() - 1);
+        let pin = match (pinned.get(), *LAST_GOOD_TARGET.lock().unwrap()) {
+            (false, _) => None,
+            (true, Some(t)) => Some(t),
+            (true, None) => Some(consts::TARGET_LIST[0]),
+        };
+        pinned.set(true);
         let mut feats = base.clone();
         feats.extend(extra.iter().cloned());
         let ok = matches!(
-            run_rustc_plugin_pass_with(manifest, crate_name, &feats, None, false),
+            run_rustc_plugin_pass_with(manifest, crate_name, &feats, None, false, pin),
             PassOutcome::Success { .. }
         );
         debug!(
