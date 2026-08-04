@@ -102,12 +102,16 @@ fn process_dep_crate_wrapper(
                 dep.crate_name
             );
             let (enable, disable) = (db_entry.features.0.clone(), db_entry.features.1.clone());
-            // DB hit — no dep_root available; pass empty map (no protection check for this dep).
+            // DB hit — no dep_root available; pass empty map (no protection check for
+            // this dep). `None` for the entailed-false set for the same reason: the DB
+            // stores the (enable, disable) pair only, so removals fall back to
+            // `disable` and this path behaves exactly as it did before.
             parser::finalize_dep_crate(
                 exchange,
                 dep,
                 enable,
                 disable,
+                None,
                 std::collections::HashMap::new(),
             )?
         } else {
@@ -477,7 +481,11 @@ fn main() -> anyhow::Result<()> {
         None => HashSet::new(),
     };
 
-    let (mut enable, mut disable) = parser::process_crate(
+    // The main crate's own entailed-false set is dropped: nothing on the main path
+    // removes a feature from a manifest the way `finalize_dep_crate` does, and
+    // `final_feature_list_main` / `minimize` are deliberately left reading the full
+    // `disable` list.
+    let (mut enable, mut disable, _) = parser::process_crate(
         &mut exchange,
         &ctx,
         &mut main_attributes,

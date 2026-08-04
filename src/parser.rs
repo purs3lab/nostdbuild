@@ -262,7 +262,7 @@ pub fn process_crate(
     is_main: bool,
     optional_dep_feats: &mut TupleVec,
     hard_constraints: Option<Bool>,
-) -> anyhow::Result<DoubleTupleVecString> {
+) -> anyhow::Result<TripleTupleVecString> {
     let (mut enable, mut disable): DoubleTupleVecString = (Vec::new(), Vec::new());
 
     let name_with_version = name_with_version.unwrap_or(&exchange.name_with_version);
@@ -293,7 +293,7 @@ pub fn process_crate(
     if !attrs.unconditional_no_std {
         if !no_std {
             debug!("No no_std found for the crate");
-            return Ok((Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new()));
         }
     } else {
         if is_main {
@@ -323,7 +323,7 @@ pub fn process_crate(
         // This case implies that the crate is no_std without any feature requirements.
         if items.itemexterncrates.is_empty() {
             debug!("No extern crates found for the crate");
-            return Ok((Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new()));
         }
         let std_attrs = get_item_extern_std(&items);
         if !std_attrs.is_empty() {
@@ -391,7 +391,7 @@ pub fn process_crate(
                     }
                     Err(e) => {
                         debug!("Failed to parse extern crates: {}", e);
-                        return Ok((Vec::new(), Vec::new()));
+                        return Ok((Vec::new(), Vec::new(), Vec::new()));
                     }
                 }
             }
@@ -451,7 +451,7 @@ pub fn process_crate(
                     .hard_unsat_deps
                     .push((name_with_version.to_string(), hard.to_string()));
             }
-            return Ok((Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new()));
         }
     } else {
         vec![]
@@ -536,16 +536,17 @@ pub fn process_crate(
                     .hard_with_main_unsat_deps
                     .push((name_with_version.to_string(), cond));
             }
-            return Ok((Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new()));
         }
     }
 
     let now = Instant::now();
     // Finally, we solve the equations
-    let (model, len, depth) = solver::solve(ctx, &equation, &filtered, &hard_constraint_vec);
+    let (model, len, depth, entailed_false) =
+        solver::solve(ctx, &equation, &filtered, &hard_constraint_vec);
     debug!(
-        "Solver result for crate {}: model={:?}, len={}, depth={}",
-        name_with_version, model, len, depth
+        "Solver result for crate {}: model={:?}, len={}, depth={}, entailed false={:?}",
+        name_with_version, model, len, depth, entailed_false
     );
     exchange
         .telemetry
@@ -621,7 +622,7 @@ pub fn process_crate(
         deps_to_keep,
     );
 
-    Ok((enable, disable))
+    Ok((enable, disable, entailed_false))
 }
 
 /// Returns the Cargo.toml string representation of how `dep_name` is enabled
@@ -1229,16 +1230,26 @@ pub fn minimize(
 /// whether from the DB or computed via `process_crate`. Calls `final_feature_list_dep`,
 /// optionally updates the main crate's default feature list, and formats the disable vector
 /// with the dep name prefix.
+/// `entailed_false` is the subset of `disable` the dependency's solve proved cannot be
+/// on — `solver::solve`'s fourth value. It is consulted *only* where a feature is about
+/// to be taken away from the emitted manifest, never for the feature-selection passes,
+/// which keep reading the full `disable`. `None` means the caller has no such set (the
+/// DB-cache path, which stores only the pair), and every removal falls back to
+/// `disable` exactly as before.
 pub fn finalize_dep_crate(
     exchange: &mut DataExchange,
     dep: &Attributes,
     enable: Vec<String>,
     disable: Vec<String>,
+    entailed_false: Option<Vec<String>>,
     feature_to_items: HashMap<String, HashSet<String>>,
 ) -> Result<TripleTupleVecString, anyhow::Error> {
+    // The list the removal sites use: the proven-false subset when the caller has one,
+    // the whole disable list when it does not.
+    let removable: Vec<String> = entailed_false.unwrap_or_else(|| disable.clone());
     debug!(
-        "Dependency {}: enable: {:?}, disable: {:?}",
-        dep.crate_name, enable, disable
+        "Dependency {}: enable: {:?}, disable: {:?}, removable: {:?}",
+        dep.crate_name, enable, disable, removable
     );
 
     let dep_original_name = dep.crate_name.split(":").next().unwrap_or("").to_string();
@@ -1362,12 +1373,18 @@ pub fn finalize_dep_crate(
         .filter(|f| !protected.contains(*f))
         .cloned()
         .collect();
+    let filtered_removable: Vec<String> = removable
+        .iter()
+        .filter(|f| !protected.contains(*f))
+        .cloned()
+        .collect();
 
     let (args, update_default_config) = solver::final_feature_list_dep(
         &exchange.crate_info,
         &dep_original_name,
         &enable,
         &filtered_disable,
+        &filtered_removable,
         &exchange.crate_name_rename,
         &mut exchange.telemetry,
     );
@@ -1382,6 +1399,7 @@ pub fn finalize_dep_crate(
             &exchange.name_with_version,
             &dep.crate_name,
             &exchange.crate_name_rename,
+            &removable,
         );
         exchange
             .telemetry
@@ -1480,7 +1498,7 @@ pub fn process_dep_crate(
         Some(&exchange.name_with_version),
         &mut exchange.telemetry,
     );
-    let (enable, disable) = process_crate(
+    let (enable, disable, entailed_false) = process_crate(
         exchange,
         &ctx,
         dep,
@@ -1558,7 +1576,14 @@ pub fn process_dep_crate(
         );
     }
 
-    finalize_dep_crate(exchange, dep, enable, disable, feature_to_items)
+    finalize_dep_crate(
+        exchange,
+        dep,
+        enable,
+        disable,
+        Some(entailed_false),
+        feature_to_items,
+    )
 }
 
 /// Sometimes main might enable a feature that enables a dependency feature
@@ -2388,9 +2413,17 @@ pub fn features_reference_dep_explicitly(manifest_toml: &toml::Value, dep_key: &
 /// * `main` - The name of the main crate
 /// * `dep` - The name of the dependency to add to the main crate's default features
 /// * `crate_name_rename` - A list of names and their renames of crate names
+/// * `entailed_false` - The dependency's features that provably cannot be on if it is
+///   to be no_std (`solver::solve`'s fourth return value). Only these are parked; the
+///   dependency's other defaults are re-declared on the edge.
 /// # Returns
 /// None
-fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(String, String)]) {
+fn update_main_crate_default_list(
+    main: &str,
+    dep: &str,
+    crate_name_rename: &[(String, String)],
+    entailed_false: &[String],
+) {
     let main_manifest = determine_manifest_file(main, None);
     let dep_manifest = determine_manifest_file(dep, Some(main));
     let dep_name_original = dep.split(':').next().unwrap().to_string();
@@ -2407,7 +2440,7 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
 
     let mut main_toml: toml::Value =
         toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
-    let mut dep_toml: toml::Value =
+    let dep_toml: toml::Value =
         toml::from_str(&fs::read_to_string(&dep_manifest).unwrap()).unwrap();
 
     let main_dependencies = main_toml
@@ -2430,8 +2463,8 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
     }
 
     let dep_features = dep_toml
-        .get_mut("features")
-        .and_then(|v| v.as_table_mut())
+        .get("features")
+        .and_then(|v| v.as_table())
         .expect("Failed to get features table from dependency Cargo.toml");
 
     let dep_defaults: Vec<String> = dep_features
@@ -2453,18 +2486,59 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
     // `binator_nom`, `ryml`, `odem-rs`, …). A transitive feature cannot be named from
     // the main manifest at all, so when any entry is out of reach fall back to the one
     // value that means exactly "whatever this dependency's defaults are".
-    let dep_default_features: Vec<String> = if dep_defaults.iter().any(|f| !is_own_feature_name(f)) {
+    // Of the defaults that *are* nameable, only the ones the dependency's own solve
+    // entailed false have any business being turned off here. Parking the rest is a
+    // deletion, not a move: `custom_default_features` is on no path from `default`.
+    // `afe4404` lost uom's whole `default = ["autoconvert", "f32", "f64", "si",
+    // "std"]` that way and left uom with no storage type at all, tripping its own
+    // `compile_error!` (bucket T4) — where only `std` was ever the problem. The rest
+    // are re-declared on the edge, so the dependency keeps behaving as its author's
+    // defaults said it would while `default-features = false` still takes std out.
+    let has_unreachable_default = dep_defaults.iter().any(|f| !is_own_feature_name(f));
+    let (to_park, keep_on_edge): (Vec<String>, Vec<String>) = if has_unreachable_default {
+        (Vec::new(), Vec::new())
+    } else {
+        dep_defaults
+            .iter()
+            .cloned()
+            .partition(|f| entailed_false.contains(f))
+    };
+
+    let dep_default_features: Vec<String> = if has_unreachable_default {
         debug!(
             "Dependency {} has non-local entries in its default list ({:?}); parking it as {}/default",
             dep_name, dep_defaults, dep_name
         );
         vec![format!("{}/default", dep_name)]
     } else {
-        dep_defaults
+        to_park
             .iter()
             .map(|f| format!("{}/{}", dep_name, f))
             .collect()
     };
+
+    if !keep_on_edge.is_empty() {
+        debug!(
+            "Dependency {}: keeping defaults {:?} the solve did not forbid on the edge, parking {:?}",
+            dep_name, keep_on_edge, to_park
+        );
+        if let Some(toml::Value::Table(table)) = main_toml
+            .get_mut("dependencies")
+            .and_then(|v| v.as_table_mut())
+            .and_then(|deps| deps.get_mut(dep_name))
+        {
+            let edge_feats = table
+                .entry("features".to_string())
+                .or_insert_with(|| toml::Value::Array(Vec::new()));
+            if let Some(arr) = edge_feats.as_array_mut() {
+                for f in &keep_on_edge {
+                    if !arr.iter().any(|v| v.as_str() == Some(f.as_str())) {
+                        arr.push(toml::Value::String(f.clone()));
+                    }
+                }
+            }
+        }
+    }
 
     add_feats_to_custom_feature(
         &mut main_toml,
@@ -3361,7 +3435,7 @@ pub fn recursive_dep_requirement_check(
                     &all_hard,
                     None,
                 );
-                let (enable, disable) = process_crate(
+                let (enable, disable, _) = process_crate(
                     exchange,
                     &ctx,
                     &mut crate_attrs,

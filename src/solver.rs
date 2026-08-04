@@ -9,21 +9,28 @@ use z3::{self, ast::Bool};
 use crate::types::*;
 use crate::{CrateInfo, Telemetry, consts::CUSTOM_FEATURES_ENABLED, parser};
 
-/// Given a context, a main equation and a list of
-/// filtered equations, solve for the main equation
+/// Given a context, a main equation and a list of filtered equations, solve for the
+/// main equation — and report which of the model's `false` features it had no choice
+/// about.
 /// # Arguments
 /// * `ctx` - The Z3 context
 /// * `main_equation` - The main equation to solve for
 /// * `filtered` - The list of filtered equations
 /// # Returns
-/// * `Option<z3::Model>` - The model if the equation is satisfiable
-/// * `None` - If the equation is not satisfiable
+/// * `Option<z3::Model>` - The model if the equation is satisfiable, `None` if not
+/// * `usize`, `usize` - The longest and deepest constraint that went into it
+/// * `Vec<String>` - The entailed-false set: every feature `f` for which
+///   `assertions ∧ f` is UNSAT, i.e. the features that genuinely cannot be on if the
+///   crate is to be no_std. The model's *other* `false` entries are don't-cares — Z3
+///   had no reason to set them either way and picked false. Telling the two apart is
+///   what stops later passes from deleting a feature the crate's author asked for;
+///   see `parser::finalize_dep_crate`.
 pub fn solve<'a>(
     ctx: &'a z3::Context,
     main_equation: &Option<Bool>,
     filtered: &Vec<Bool>,
     hard_constraints: &[Bool<'a>],
-) -> (Option<z3::Model<'a>>, usize, usize) {
+) -> (Option<z3::Model<'a>>, usize, usize, Vec<String>) {
     let solver = z3::Solver::new(ctx);
     let possible = find_possible_equations(ctx, main_equation, filtered, hard_constraints);
     let (mut len, mut depth) = (0, 0);
@@ -51,7 +58,29 @@ pub fn solve<'a>(
         _ => None,
     };
     assert_eq!(result, z3::SatResult::Sat);
-    (model, len, depth)
+
+    // `solver` still holds exactly the assertions the model satisfies, so re-checking
+    // it with one feature forced on asks precisely "could this crate be no_std with
+    // the feature enabled?". Only the model's `false` entries are candidates: anything
+    // the model set true is satisfiable true by construction.
+    let entailed_false: Vec<String> = model
+        .as_ref()
+        .map(|m| {
+            model_to_disabled_features(m)
+                .into_iter()
+                .filter(|name| {
+                    let var = Bool::new_const(ctx, name.as_str());
+                    solver.push();
+                    solver.assert(&var);
+                    let forced = solver.check() == z3::SatResult::Unsat;
+                    solver.pop(1);
+                    forced
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    (model, len, depth, entailed_false)
 }
 
 pub fn eqs_to_features(ctx: &z3::Context, eqs: &[Bool]) -> (Vec<String>, Vec<String>) {
@@ -177,7 +206,11 @@ pub fn model_to_features(model: &Option<z3::Model>) -> DoubleTupleVecString {
 /// * `crate_info` - The crate info
 /// * `name` - The name of the dependency
 /// * `enable` - The list of features to enable
-/// * `disable` - The list of features to disable
+/// * `disable` - The list of features to disable. Drives feature *selection*: whether
+///   the dependency's defaults have to come off, and which of its features to ask for.
+/// * `removable` - The subset of `disable` the dependency's solve proved cannot be on.
+///   Drives feature *removal* — the only list allowed to take a feature back off the
+///   dependency's edge in the emitted manifest. See `parser::finalize_dep_crate`.
 /// # Returns
 /// * `(Vec<String>, bool)` - The final feature list for the
 ///
@@ -188,6 +221,7 @@ pub fn final_feature_list_dep(
     name: &str,
     enable: &[String],
     disable: &[String],
+    removable: &[String],
     crate_name_rename: &[(String, String)],
     telemetry: &mut Telemetry,
 ) -> (Vec<String>, bool) {
@@ -225,7 +259,15 @@ pub fn final_feature_list_dep(
         }
     }
 
-    let dep_feats_to_remove: Vec<String> = disable
+    // Removal from the edge reads `removable`, not `disable`. `disable` is every
+    // feature the model left false, which includes the ones Z3 had no reason to set
+    // either way; deleting those takes away a choice the crate's author made and parks
+    // it in `custom_default_features`, where nothing enables it. `bmp390` wrote
+    // `[dependencies.uom] features = ["f32", "si", "autoconvert"]` and got
+    // `["si", "autoconvert"]` back, leaving uom with no storage type and tripping its
+    // own `compile_error!`. `removable` is the subset the dependency's solve proved
+    // cannot be on, so `features = ["std"]` still goes.
+    let dep_feats_to_remove: Vec<String> = removable
         .iter()
         .filter(|feat| dep_already_enabled.contains(feat))
         .cloned()
