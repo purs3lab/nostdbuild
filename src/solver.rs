@@ -323,17 +323,18 @@ pub fn final_feature_list_main(
             .unwrap_or_default();
     }
 
-    let kept = new_feats_to_add(crate_info, &enable_from_default, enable);
-
-    debug!("Main crate does not have features: {:?}", kept);
     let main_name = format!("{}-{}", crate_info.name, crate_info.version);
     let main_manifest = parser::determine_manifest_file(&main_name, None);
     let mut main_toml: toml::Value =
         toml::from_str(&fs::read_to_string(&main_manifest).unwrap()).unwrap();
+
+    let kept = new_feats_to_add(crate_info, &main_toml, &enable_from_default, enable);
+
+    debug!("Main crate does not have features: {:?}", kept);
     telemetry.new_feats_added_to_main = !kept.is_empty();
-    for to_add in kept {
+    for (to_add, value) in kept {
         telemetry.new_feats_added_to_main_list.push(to_add.clone());
-        parser::add_feats_to_custom_feature(&mut main_toml, &to_add, &[]);
+        parser::add_feats_to_custom_feature(&mut main_toml, &to_add, &value);
     }
     fs::write(
         &main_manifest,
@@ -346,27 +347,42 @@ pub fn final_feature_list_main(
     (disable_default, enable_from_default, disable_from_default)
 }
 
-/// This returns the list of features that need to be added to the main crate's
-/// manifest file. It also removes features that are implicitly added by cargo
-/// for optional dependencies.
+/// This returns the features that need to be declared in the main crate's manifest,
+/// paired with the value each should get. It also removes features that are implicitly
+/// added by cargo for optional dependencies.
+///
+/// A feature named after an optional dependency is cargo's implicit
+/// `<dep> = ["dep:<dep>"]` and must not be redeclared as `<dep> = []`: an explicit
+/// declaration *replaces* the implicit one, so the dependency ends up enabled by
+/// nothing and cargo rejects the manifest with "optional dependency `<dep>` is not
+/// included in any feature". The optional set is read off the manifest rather than
+/// `crate_info` because `crate_info` stores package names and skips target-gated and
+/// build dependencies — see `parser::optional_dep_keys`.
+///
+/// The one case where such a feature *does* need declaring is when the manifest already
+/// spells `dep:<dep>` somewhere, which suppresses the implicit feature. Then the value
+/// has to be `["dep:<dep>"]` — writing `[]` there detaches the dependency just the same.
 /// # Arguments
 /// * `crate_info` - The crate info
+/// * `main_toml` - The main crate's Cargo.toml as it currently stands
 /// * `enable_from_default` - The list of features to enable from default list that are not disabled
 ///   explicitly by the disable list.
 /// * `enable` - The list of features to enable
 /// # Returns
-/// * `Vec<String>` - The list of features to add to the main crate's manifest file
+/// * `Vec<(String, Vec<String>)>` - The features to declare, each with its value
 pub fn new_feats_to_add(
     crate_info: &CrateInfo,
+    main_toml: &toml::Value,
     enable_from_default: &[String],
     enable: &[String],
-) -> Vec<String> {
-    let optional_deps: Vec<String> = crate_info
+) -> Vec<(String, Vec<String>)> {
+    let mut optional_deps: HashSet<String> = crate_info
         .deps_and_features
         .iter()
         .filter(|(dep, _)| dep.optional)
         .map(|(dep, _)| dep.name.clone())
         .collect();
+    optional_deps.extend(parser::optional_dep_keys(main_toml));
 
     let main_available_features = &crate_info.features;
     let mut not_found = Vec::new();
@@ -382,13 +398,28 @@ pub fn new_feats_to_add(
             }
         });
 
-    // We don't want to add features that are implicitly added by cargo for
-    // optional dependencies.
-    let (_removed, kept): DoubleTupleVecString = not_found
-        .into_iter()
-        .partition(|feat| optional_deps.iter().any(|dep| feat == dep));
+    let mut to_declare: Vec<(String, Vec<String>)> = Vec::new();
+    for feat in not_found {
+        if !optional_deps.contains(&feat) {
+            to_declare.push((feat, Vec::new()));
+            continue;
+        }
+        if parser::features_reference_dep_explicitly(main_toml, &feat) {
+            debug!(
+                "Declaring {} explicitly: a `dep:{}` elsewhere in the table suppresses cargo's implicit feature for that optional dependency",
+                feat, feat
+            );
+            let value = vec![format!("dep:{}", feat)];
+            to_declare.push((feat, value));
+        } else {
+            debug!(
+                "Not declaring {}: it is cargo's implicit feature for the optional dependency of that name",
+                feat
+            );
+        }
+    }
 
-    kept
+    to_declare
 }
 
 fn get_features_not_disabled(crate_info: &CrateInfo, disable: &[String]) -> Vec<String> {

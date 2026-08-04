@@ -2307,6 +2307,73 @@ pub fn is_proc_macro(crate_name: &str, main_name: Option<&str>) -> bool {
     false
 }
 
+/// Every optional dependency declared anywhere in `manifest_toml`, named the way the
+/// manifest names it.
+///
+/// Two things this does that reading `CrateInfo::deps_and_features` does not:
+///
+/// * it returns the **manifest key**, not the package name. `simd = { package =
+///   "ppv-lite86", optional = true }` is the feature `simd`, never `ppv-lite86`;
+///   `deps_and_features` stores only the package, so every renamed optional dep looks
+///   like a name nobody declared.
+/// * it covers `[build-dependencies]` and `[target.<cfg>.dependencies]`, which
+///   `gather_crate_info` never walks. `mfio-rt`'s `mio` and `io-uring` are optional and
+///   target-gated, so they were invisible.
+///
+/// Both gaps end the same way: the tool declares `<dep> = []` for what was already
+/// cargo's implicit feature, which *replaces* that implicit feature with an empty one
+/// and leaves the dependency enabled by nothing — "optional dependency `simd` is not
+/// included in any feature", manifest rejected (bucket T3, 8 crates).
+///
+/// `dev-dependencies` are excluded: cargo does not allow them to be optional.
+pub fn optional_dep_keys(manifest_toml: &toml::Value) -> HashSet<String> {
+    fn collect(table: Option<&toml::Value>, out: &mut HashSet<String>) {
+        let Some(table) = table.and_then(|t| t.as_table()) else {
+            return;
+        };
+        for (key, value) in table {
+            if value
+                .get("optional")
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(false)
+            {
+                out.insert(key.clone());
+            }
+        }
+    }
+
+    let mut keys = HashSet::new();
+    collect(manifest_toml.get("dependencies"), &mut keys);
+    collect(manifest_toml.get("build-dependencies"), &mut keys);
+
+    if let Some(targets) = manifest_toml.get("target").and_then(toml::Value::as_table) {
+        for (_cfg, target_table) in targets {
+            collect(target_table.get("dependencies"), &mut keys);
+            collect(target_table.get("build-dependencies"), &mut keys);
+        }
+    }
+
+    keys
+}
+
+/// Whether any value in `manifest_toml`'s `[features]` table spells `dep:<dep_key>`.
+///
+/// That spelling is what suppresses cargo's implicit `<dep_key> = ["dep:<dep_key>"]`
+/// feature. Absent it the implicit feature exists and must not be redeclared; present
+/// it, a reference to `<dep_key>` only resolves if the manifest declares the feature
+/// itself.
+pub fn features_reference_dep_explicitly(manifest_toml: &toml::Value, dep_key: &str) -> bool {
+    let Some(features) = manifest_toml.get("features").and_then(toml::Value::as_table) else {
+        return false;
+    };
+    let spelling = format!("dep:{}", dep_key);
+    features.values().any(|values| {
+        values
+            .as_array()
+            .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(spelling.as_str())))
+    })
+}
+
 /// Update the main crate's default features list
 /// by adding the default features of the given dependency.
 /// This function will also set the dependency to not have
@@ -2367,15 +2434,37 @@ fn update_main_crate_default_list(main: &str, dep: &str, crate_name_rename: &[(S
         .and_then(|v| v.as_table_mut())
         .expect("Failed to get features table from dependency Cargo.toml");
 
-    let dep_default_features: Vec<String> = dep_features
+    let dep_defaults: Vec<String> = dep_features
         .get("default")
         .and_then(|v| v.as_array())
         .map(|v| {
             v.iter()
-                .filter_map(|f| f.as_str().map(|s| format!("{}/{}", dep_name, s)))
+                .filter_map(|f| f.as_str().map(str::to_string))
                 .collect()
         })
         .unwrap_or_default();
+
+    // A dependency's own `default` list does not only name its own features: it can
+    // name a feature of *its* dependencies (`regex`'s default carries
+    // `regex-syntax/default`) or turn on an optional dep (`dep:foo`). Prefixing those
+    // yields `regex/regex-syntax/default`, which cargo refuses outright — "multiple
+    // slashes in feature ... are not allowed" — and it refuses the whole manifest with
+    // it, so the analysis never gets tested (bucket T3, 7 crates: `matchable`,
+    // `binator_nom`, `ryml`, `odem-rs`, …). A transitive feature cannot be named from
+    // the main manifest at all, so when any entry is out of reach fall back to the one
+    // value that means exactly "whatever this dependency's defaults are".
+    let dep_default_features: Vec<String> = if dep_defaults.iter().any(|f| !is_own_feature_name(f)) {
+        debug!(
+            "Dependency {} has non-local entries in its default list ({:?}); parking it as {}/default",
+            dep_name, dep_defaults, dep_name
+        );
+        vec![format!("{}/default", dep_name)]
+    } else {
+        dep_defaults
+            .iter()
+            .map(|f| format!("{}/{}", dep_name, f))
+            .collect()
+    };
 
     add_feats_to_custom_feature(
         &mut main_toml,
@@ -2637,11 +2726,42 @@ pub fn get_actual_dir(name_with_version: &str, main_name: Option<&str>) -> PathB
     dir.join(name_with_version.replace(':', "-"))
 }
 
+/// Whether `value` names a feature of the crate whose `[features]` table it appears
+/// in, as opposed to something belonging to one of that crate's dependencies —
+/// `otherdep/feat`, `otherdep?/feat`, `dep:otherdep`.
+///
+/// Used when a value is about to be re-prefixed with a dependency name: only a
+/// crate's *own* feature names survive that.
+fn is_own_feature_name(value: &str) -> bool {
+    !value.contains('/') && !value.starts_with("dep:")
+}
+
+/// Whether cargo will accept `value` as an entry of a `[features]` array.
+///
+/// Cargo's grammar for a feature value is `feat`, `dep/feat`, `dep?/feat` or
+/// `dep:name` — at most one slash, and no `dep:` on the right of one. A value that
+/// breaks this is not a wrong-but-buildable choice: cargo rejects the manifest before
+/// resolving anything, so the emitted configuration is never even tried.
+fn is_valid_feature_value(value: &str) -> bool {
+    match value.split_once('/') {
+        None => true,
+        Some((dep, feat)) => {
+            !feat.contains('/') && !feat.is_empty() && !feat.starts_with("dep:") && !dep.is_empty()
+        }
+    }
+}
+
 /// Given a toml::Value representing the main Cargo.toml,
 /// a feature name, and a list of features to add,
 /// this function adds the features to the specified feature.
 /// If the feature does not exist, it creates it.
 /// If the feature already exists, it appends the new features to it.
+///
+/// Values cargo would refuse are dropped here rather than written out. This is the
+/// single funnel for every custom-feature write, and one bad value costs the whole
+/// manifest, so the trade is deliberate: a lossy parking list still builds, a rejected
+/// manifest builds nothing. Anything dropped here is a producer bug — it is logged as
+/// such, not silently swallowed.
 /// # Arguments
 /// * `main_toml` - The main Cargo.toml as a toml::Value
 /// * `custom_feat` - The name of the custom feature to add to
@@ -2653,6 +2773,23 @@ pub fn add_feats_to_custom_feature(
     custom_feat: &str,
     feats_to_add: &[String],
 ) {
+    let feats_to_add: Vec<String> = feats_to_add
+        .iter()
+        .filter(|f| {
+            if is_valid_feature_value(f) {
+                return true;
+            }
+            log::warn!(
+                "Refusing to write feature value {:?} into `{}`: cargo would reject the manifest",
+                f,
+                custom_feat
+            );
+            false
+        })
+        .cloned()
+        .collect();
+    let feats_to_add = feats_to_add.as_slice();
+
     let main_features = main_toml
         .as_table_mut()
         .expect("Failed to get main Cargo.toml as table")
