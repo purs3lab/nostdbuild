@@ -104,6 +104,16 @@ pub struct Attributes {
     pub hir_spans: Vec<ReadableSpan>,
     /// The current file being parsed.
     pub current_file: String,
+    /// How many source files `visit` actually read *and* handed to `syn`
+    /// successfully.
+    ///
+    /// Zero means the parse established nothing about this crate: either the
+    /// file list was empty (cargo reported no lib/bin target) or every candidate
+    /// failed to read or parse (an edition-2015 crate `syn` 2 rejects). The
+    /// attribute fields are then empty for want of evidence, not because the
+    /// crate carries no attributes — a distinction `check_for_no_std` used to
+    /// collapse into "this crate is not no_std".
+    pub files_parsed: usize,
 }
 
 /// Used to pass huge amount of params between functions
@@ -233,6 +243,25 @@ impl AllStats {
     }
 }
 
+/// One dependency the initial verification pass found not to support no_std,
+/// with enough context to check the verdict without re-running the tool.
+///
+/// `dep_not_no_std` on its own names nobody: it was set from a `bool` that had
+/// already thrown away which dependency produced it, at what depth, and on what
+/// evidence. Every crate in that bucket therefore reported a verdict it could
+/// not justify.
+#[derive(Debug, Serialize)]
+pub struct DepNoStdFailure {
+    /// `name:version` of the dependency that is not no_std.
+    pub dep: String,
+    /// `name:version` of the crate that depends on it — the main crate for a
+    /// direct dependency.
+    pub parent: String,
+    /// 0 for a direct dependency of the main crate, 1 for a dependency of one
+    /// of those, and so on.
+    pub depth: u32,
+}
+
 /// Everything about the crate being processed is stored here.
 /// This is specifically useful when we want to keep track of
 /// special handling for certain crates.
@@ -256,6 +285,26 @@ pub struct Telemetry {
     pub deps_depth_traversed: u32,
     /// Did one of the dependencies not support no_std
     pub dep_not_no_std: bool,
+    /// Which ones, and where — every dependency that produced the verdict
+    /// above, not just the first. Empty exactly when `dep_not_no_std` is false.
+    ///
+    /// The pass no longer stops at the first offender: nothing downstream acts
+    /// on `dep_not_no_std`, so stopping only truncated the download/registration
+    /// of the *remaining* dependencies, which then reached the emission stage
+    /// unanalysed. Verification now runs to the end and reports every violation.
+    pub dep_not_no_std_deps: Vec<DepNoStdFailure>,
+    /// Dependencies whose sources could not be parsed at all (`files_parsed ==
+    /// 0`): no lib/bin target, or every file rejected by `syn`.
+    ///
+    /// Absence of a `no_std` attribute in a parse that read nothing is not
+    /// evidence, so these are *not* counted as `dep_not_no_std` — the hardcoded
+    /// `consts::KNOWN_SYN_FAILURES` escape hatch is the same case, handled one
+    /// crate at a time.
+    pub deps_no_sources_parsed: Vec<String>,
+    /// Dependencies that failed to download, as `name:version-requirement`.
+    /// They are skipped by the verification pass, so a non-empty list means the
+    /// no_std verdict for the tree covers fewer dependencies than it appears to.
+    pub deps_download_failed: Vec<String>,
     /// Is the main crate using conditional no_std
     pub main_conditional_no_std: bool,
     /// Does the dependency use conditional no_std

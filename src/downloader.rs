@@ -128,7 +128,19 @@ pub fn clone_from_crates(
 /// # Arguments
 /// * `worklist` - The initial worklist containing the dependencies of the crate
 /// # Returns
-/// * `Result` - An empty `Result` if successful, an `Error` otherwise
+/// * `Result` - Whether every dependency reached supports no_std, an `Error`
+///   otherwise
+///
+/// `false` ends the run in `bin/main.rs`: a non-optional dependency with no
+/// no_std support cannot be fixed from the root manifest. Every offender is
+/// recorded in `telemetry.dep_not_no_std_deps` first, so the verdict names the
+/// dependency, its parent and its depth.
+///
+/// The scan of the crate's *own* dependency list runs to the end even once the
+/// verdict is decided — that is one manifest's worth of crates, and the full
+/// list of std-only direct deps is what makes the result readable. The
+/// transitive walk below is skipped instead: it is unbounded, and nothing it
+/// could find changes an answer already reached.
 pub fn download_all_dependencies(
     main_name: &str,
     worklist: &mut TupleVec,
@@ -140,6 +152,7 @@ pub fn download_all_dependencies(
     debug!("Initial worklist length: {}", worklist.len());
     let mut initlist = Vec::new();
     let mut opt_initlist = Vec::new();
+    let mut all_deps_no_std = true;
     while !worklist.is_empty() {
         debug!("Worklist length: {}", worklist.len());
         let (name, version) = worklist.pop().unwrap();
@@ -149,6 +162,9 @@ pub fn download_all_dependencies(
                 Ok(name_with_version) => name_with_version,
                 Err(e) => {
                     debug!("Failed to download crate: {}", e);
+                    telemetry
+                        .deps_download_failed
+                        .push(format!("{}:{}", name, version));
                     continue;
                 }
             };
@@ -179,16 +195,41 @@ pub fn download_all_dependencies(
 
         let cfg = z3::Config::new();
         let ctx = z3::Context::new(&cfg);
-        let found = parser::check_for_no_std(&name_with_version, &ctx, None, Some(main_name));
+        let evidence = parser::no_std_evidence(&name_with_version, &ctx, None, Some(main_name));
         if !parser::is_dep_optional(crate_info, &name) {
-            if !found {
-                debug!(
-                    "ERROR: Dependency {} does not support no_std build",
-                    name_with_version
-                );
-                return Ok(false);
+            match evidence {
+                parser::NoStdEvidence::Absent => {
+                    debug!(
+                        "ERROR: Dependency {} does not support no_std build",
+                        name_with_version
+                    );
+                    telemetry.dep_not_no_std_deps.push(crate::DepNoStdFailure {
+                        dep: name_with_version.clone(),
+                        parent: main_name.to_string(),
+                        depth: 0,
+                    });
+                    all_deps_no_std = false;
+                }
+                parser::NoStdEvidence::NoSources => {
+                    // Nothing was parsed, so nothing is known. Treated as
+                    // unknown rather than std: its own dependencies are still
+                    // worth verifying, and the crate still needs downloading
+                    // and analysing like any other.
+                    debug!(
+                        "Dependency {} could not be parsed — no_std support unknown",
+                        name_with_version
+                    );
+                    telemetry
+                        .deps_no_sources_parsed
+                        .push(name_with_version.clone());
+                }
+                parser::NoStdEvidence::Supported => {}
             }
-            initlist.push((name.clone(), new_version.to_string()));
+            // A dep already known to be std-only contributes no sub-tree: the
+            // walk below exists to find the first offender, and this one is it.
+            if evidence != parser::NoStdEvidence::Absent {
+                initlist.push((name.clone(), new_version.to_string()));
+            }
         } else {
             // Optional dep: download its transitive sub-deps so recursive_dep_requirement_check
             // can inspect them, but don't fail if they lack no_std support.
@@ -205,12 +246,22 @@ pub fn download_all_dependencies(
         let dep_names = read_dep_names_and_versions(&name, &new_version, false, main_name)?;
         traverse_and_add_dep_names(&name, &new_version, crate_info, &dep_names)?;
     }
+    // Decided by the crate's own dependency list — the transitive walk cannot
+    // change it, and it is the expensive half.
+    if !all_deps_no_std {
+        debug!(
+            "Skipping the transitive no_std walk: {} direct dependencies already fail it",
+            telemetry.dep_not_no_std_deps.len()
+        );
+        return Ok(false);
+    }
+
     let mut visited = HashSet::new();
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
     let now = Instant::now();
     debug!("Finished downloading dependencies. Now verifying if they support no_std build");
-    let (no_std, depth_traversed) = parser::determine_n_depth_dep_no_std(
+    let (deep_no_std, depth_traversed) = parser::determine_n_depth_dep_no_std(
         initlist,
         depth,
         0,
@@ -218,6 +269,7 @@ pub fn download_all_dependencies(
         &ctx,
         main_name,
         true,
+        telemetry,
     );
     // Download transitive sub-deps of optional top-level deps so recursive_dep_requirement_check
     // can inspect them. Re-use `visited` to avoid re-downloading crates already fetched above.
@@ -229,10 +281,11 @@ pub fn download_all_dependencies(
         &ctx,
         main_name,
         false,
+        telemetry,
     );
     telemetry.initial_dep_verification_time_ms = now.elapsed().as_millis();
     telemetry.deps_depth_traversed = depth_traversed;
-    Ok(no_std)
+    Ok(deep_no_std)
 }
 
 /// Read the dependencies and their versions from the Cargo.toml file

@@ -15,8 +15,8 @@ use z3::{self, ast::Bool};
 use strsim::levenshtein;
 
 use crate::{
-    Attributes, CrateInfo, DBData, DEPENDENCIES, DataExchange, Telemetry, consts, db, downloader,
-    driver,
+    Attributes, CrateInfo, DBData, DEPENDENCIES, DataExchange, DepNoStdFailure, Telemetry, consts,
+    db, downloader, driver,
     solver::{self, model_to_features},
     visitor::{GetItemExternCrate, ItemExternCrates, ItemExternCratesAll, ParsedAttr},
 };
@@ -145,14 +145,40 @@ pub fn parse_crate(
         ..Default::default()
     };
 
-    if let Err(err) = visit(&mut attributes, crate_name, recurse, false, main_name, files) {
-        debug!(
-            "Failed to parse crate {} with error:{}. Will continue...",
-            crate_name, err
-        );
+    match visit(
+        &mut attributes,
+        crate_name,
+        recurse,
+        false,
+        main_name,
+        files,
+    ) {
+        Ok(parsed) => attributes.files_parsed = parsed,
+        Err(err) => {
+            debug!(
+                "Failed to parse crate {} with error:{}. Will continue...",
+                crate_name, err
+            );
+        }
     }
     attributes.crate_name = crate_name.to_string();
     attributes
+}
+
+/// What a crate-root parse established about a crate's no_std support.
+///
+/// The three cases used to be two: anything that was not `Supported` came back
+/// as `false`, so "we read this crate and it declares no `no_std`" and "we read
+/// nothing at all" were the same answer. Only the first is a verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoStdEvidence {
+    /// A crate-root `#![no_std]` or `#![cfg_attr(…, no_std)]` was found.
+    Supported,
+    /// The crate root was parsed and carries no `no_std` attribute.
+    Absent,
+    /// Nothing was parsed — cargo reported no lib/bin target, or every
+    /// candidate file failed to read or failed `syn`. Says nothing either way.
+    NoSources,
 }
 
 /// Check if the crate has a no_std attribute.
@@ -160,17 +186,29 @@ pub fn parse_crate(
 /// * `name` - The name of the crate
 /// * `ctx` - The Z3 context
 /// # Returns
-/// A boolean indicating whether the crate has a no_std attribute.
+/// A boolean indicating whether the crate has a no_std attribute. Callers that
+/// act on a *negative* answer should use [`no_std_evidence`] instead, so a crate
+/// whose sources were never parsed is not reported as std-only.
 pub fn check_for_no_std(
     name: &str,
     ctx: &z3::Context,
     telemetry: Option<&mut Telemetry>,
     main_name: Option<&str>,
 ) -> bool {
+    no_std_evidence(name, ctx, telemetry, main_name) == NoStdEvidence::Supported
+}
+
+/// [`check_for_no_std`], keeping the reason for a negative answer.
+pub fn no_std_evidence(
+    name: &str,
+    ctx: &z3::Context,
+    telemetry: Option<&mut Telemetry>,
+    main_name: Option<&str>,
+) -> NoStdEvidence {
     // This is the list of known syn failure crates which are no_std
     if consts::KNOWN_SYN_FAILURES.contains(&name) {
         debug!("Skipping known syn failure crate: {}", name);
-        return true;
+        return NoStdEvidence::Supported;
     }
 
     // We need to re-parse this instead of using already existing attributes
@@ -196,10 +234,21 @@ pub fn check_for_no_std(
     }
 
     if !parse_main_attributes(&base_attrs, ctx).0 && !base_attrs.unconditional_no_std {
+        // No attribute found — but an empty attribute list from a parse that
+        // read no files is not the same statement as one from a parse that read
+        // the crate root. `nb:0.1.3` is in `KNOWN_SYN_FAILURES` for exactly this
+        // reason; report the case instead of needing a name per crate.
+        if base_attrs.files_parsed == 0 {
+            debug!(
+                "No source parsed for the crate {} — no_std support is unknown, not absent",
+                name
+            );
+            return NoStdEvidence::NoSources;
+        }
         debug!("No no_std found for the crate {}", name);
-        return false;
+        return NoStdEvidence::Absent;
     }
-    true
+    NoStdEvidence::Supported
 }
 
 /// Parse the dependencies of the main crate
@@ -1802,10 +1851,19 @@ pub fn move_unnecessary_dep_feats(
 /// * `current_depth` - The current depth in the recursion
 /// * `visited` - A set to keep track of visited dependencies
 /// * `ctx` - The Z3 context
+/// * `telemetry` - Where each violation is recorded; only written when
+///   `fail_on_nostd` is set, since the optional-dependency sweep is a download
+///   pass and its verdicts are not the tree's.
 /// # Returns
-/// The maximum depth tested for no_std support. This can be less than
-/// the requested depth if there are no more dependencies to check or
-/// if a dependency does not support no_std.
+/// Whether every dependency reached supports no_std, and the maximum depth
+/// tested. The depth can be less than the requested one when there are no more
+/// dependencies to check.
+///
+/// The first dependency that is not no_std ends the traversal, as it always
+/// did — the verdict is decided at that point and the caller exits the run on
+/// it. What is new is that the offender is recorded (`telemetry
+/// .dep_not_no_std_deps`) before returning, so the verdict names the crate,
+/// its parent and the depth instead of being an anonymous `false`.
 pub fn determine_n_depth_dep_no_std(
     initlist: TupleVec,
     depth: u32,
@@ -1814,6 +1872,7 @@ pub fn determine_n_depth_dep_no_std(
     ctx: &z3::Context,
     main_name: &str,
     fail_on_nostd: bool,
+    telemetry: &mut Telemetry,
 ) -> (bool, u32) {
     let mut local_initlist = Vec::new();
     if current_depth >= depth || initlist.is_empty() {
@@ -1824,6 +1883,9 @@ pub fn determine_n_depth_dep_no_std(
             debug!("Already visited dependency {}:{}", name, version);
             continue;
         }
+        // Bound before the loop: `version` is shadowed inside it by the
+        // dependency's own version.
+        let parent = format!("{}:{}", name, version);
         let names_and_versions =
             downloader::read_dep_names_and_versions(&name, &version, true, main_name)
                 .expect("Failed to read dependency names and versions");
@@ -1836,11 +1898,16 @@ pub fn determine_n_depth_dep_no_std(
                 &dep_name,
                 Some(&dep_version),
                 Some(main_name),
-                Some(&format!("{}:{}", &name, &version)),
+                Some(&parent),
             ) {
                 Ok(name_with_version) => name_with_version,
                 Err(e) => {
                     debug!("Failed to download crate: {}", e);
+                    if fail_on_nostd {
+                        telemetry
+                            .deps_download_failed
+                            .push(format!("{}:{}", dep_name, dep_version));
+                    }
                     continue;
                 }
             };
@@ -1854,12 +1921,36 @@ pub fn determine_n_depth_dep_no_std(
                 .split_once(':')
                 .unwrap_or((&name_with_version, ""));
 
-            if fail_on_nostd && !check_for_no_std(&name_with_version, ctx, None, Some(main_name)) {
-                debug!(
-                    "ERROR: Dependency {} of dependency {} does not support no_std build at depth {}",
-                    name_with_version, name, current_depth
-                );
-                return (false, current_depth);
+            if fail_on_nostd {
+                match no_std_evidence(&name_with_version, ctx, None, Some(main_name)) {
+                    NoStdEvidence::Absent => {
+                        debug!(
+                            "ERROR: Dependency {} of dependency {} does not support no_std build at depth {}",
+                            name_with_version, name, current_depth
+                        );
+                        telemetry.dep_not_no_std_deps.push(DepNoStdFailure {
+                            dep: name_with_version.clone(),
+                            parent: parent.clone(),
+                            depth: current_depth + 1,
+                        });
+                        // Decided: no root-manifest edit makes this tree
+                        // no_std, and the caller ends the run here. Walking
+                        // the rest of a transitive tree only to report more
+                        // offenders is not worth what it downloads.
+                        return (false, current_depth);
+                    }
+                    NoStdEvidence::NoSources => {
+                        debug!(
+                            "Dependency {} of dependency {} could not be parsed at depth {}",
+                            name_with_version, name, current_depth
+                        );
+                        telemetry
+                            .deps_no_sources_parsed
+                            .push(name_with_version.clone());
+                        // Unknown, not std: keep walking its subtree.
+                    }
+                    NoStdEvidence::Supported => {}
+                }
             }
 
             local_initlist.push((name_inner.to_string(), version.to_string()));
@@ -1874,6 +1965,7 @@ pub fn determine_n_depth_dep_no_std(
         ctx,
         main_name,
         fail_on_nostd,
+        telemetry,
     )
 }
 
@@ -3128,14 +3220,24 @@ pub fn should_skip_dep(
     if !features_for_dependency.is_empty() {
         let cfg = z3::Config::new();
         let ctx = z3::Context::new(&cfg);
-        let found = check_for_no_std(name, &ctx, None, Some(&exchange.name_with_version));
+        // Severing is a manifest edit made *because* the answer is negative, so
+        // it needs the strong form of the answer: a crate whose sources never
+        // parsed has not been shown to be std-only, and cutting the features
+        // that link it would remove a dependency the crate still imports.
+        let evidence = no_std_evidence(name, &ctx, None, Some(&exchange.name_with_version));
+        if evidence == NoStdEvidence::NoSources {
+            exchange
+                .telemetry
+                .deps_no_sources_parsed
+                .push(name.to_string());
+        }
 
         debug!(
             "Dependency: {} is enabled by features: {:?} and currently enabled list enabled {:?} from that list",
             dep_name, feats_of_dep, features_for_dependency
         );
 
-        if !found {
+        if evidence == NoStdEvidence::Absent {
             debug!(
                 "Dependency {} does not support no_std. Creating a new feature and adding the conflicting features to it",
                 dep_name
@@ -3165,7 +3267,7 @@ pub fn should_skip_dep(
             }
             return true;
         } else {
-            debug!("Dependency {} supports no_std", dep_name);
+            debug!("Dependency {} is kept: {:?}", dep_name, evidence);
             if second_round {
                 exchange
                     .telemetry
@@ -3878,6 +3980,11 @@ fn get_files_in_attributes<'a>(
 /// reachable from the crate's entrypoint. When it is `None` the list falls back
 /// to `get_all_rs_files`, whose directory sweep is naive; see that function's
 /// comment for what it gets wrong.
+///
+/// Returns the number of files that were read *and* parsed. A file that cannot
+/// be read or that `syn` rejects is skipped, so a zero return means the visitor
+/// saw no source at all and whatever it did not collect says nothing about the
+/// crate.
 fn visit<T>(
     visiter_type: &mut T,
     crate_name: &str,
@@ -3885,7 +3992,7 @@ fn visit<T>(
     direct_file: bool,
     main_name: Option<&str>,
     files: Option<&[PathBuf]>,
-) -> anyhow::Result<()>
+) -> anyhow::Result<usize>
 where
     T: for<'a> Visit<'a> + GetItemExternCrate,
 {
@@ -3900,6 +4007,7 @@ where
         None => get_all_rs_files(&dir, recurse, main_name),
     };
 
+    let mut parsed_count = 0usize;
     for filename in files {
         debug!("Parsing file: {:?}", filename);
         let content = match fs::read_to_string(&filename) {
@@ -3926,6 +4034,7 @@ where
         } else {
             filename
         };
+        parsed_count += 1;
         visiter_type.visit_file(&file);
         if let Some(spans) = visiter_type.get_spans() {
             // Newly added spans will have None as filename.
@@ -3937,7 +4046,7 @@ where
             }
         }
     }
-    Ok(())
+    Ok(parsed_count)
 }
 
 fn is_any_logic(logic: &str) -> Option<Logic> {

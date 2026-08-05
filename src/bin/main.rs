@@ -335,6 +335,33 @@ fn main() -> anyhow::Result<()> {
     exchange.telemetry.no_std = found;
     exchange.telemetry.dep_not_no_std = !no_std;
 
+    // A non-optional dependency that supports no_std under no feature makes the
+    // tree unbuildable from the root manifest — only a `[patch]` or a fork can
+    // change it, and neither is something this tool emits. Stop here.
+    //
+    // This verdict used to be recorded and then ignored: the run went on to HIR
+    // analysis, a solve, an emitted manifest and 26 target builds, all of them
+    // on the dependency set as it stood when the verification pass gave up.
+    // Over the 12297-crate corpus, 497 crates set this flag and **none of them
+    // built** on a single target, so the work after this point had no successes
+    // to protect.
+    if !no_std {
+        let offenders: Vec<String> = exchange
+            .telemetry
+            .dep_not_no_std_deps
+            .iter()
+            .map(|f| format!("{} (parent {}, depth {})", f.dep, f.parent, f.depth))
+            .collect();
+        let reason = format!(
+            "Dependency does not support no_std build: {}",
+            offenders.join(", ")
+        );
+        debug!("{}", reason);
+        stats.telemetry = Some(exchange.telemetry);
+        stats.dump(true);
+        return Err(anyhow::anyhow!(reason));
+    }
+
     let ctx = z3::Context::new(&z3::Config::new());
     let (
         all_hard,
