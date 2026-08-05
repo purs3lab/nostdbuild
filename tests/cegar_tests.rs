@@ -76,7 +76,7 @@ fn test_cegar_pairing_recovery() {
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
 
-    let (_root, covering_runs, _hard, _) =
+    let (_root, covering_runs, _hard, _, _) =
         find_feature_combs_for_all_code(&ctx, &manifest, "test_cegar_ordering", &mut telemetry);
 
     // After CEGAR re-pairing, there must be a successful covering run with feat_a enabled.

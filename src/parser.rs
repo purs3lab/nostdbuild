@@ -1295,6 +1295,13 @@ pub fn finalize_dep_crate(
 ) -> Result<TripleTupleVecString, anyhow::Error> {
     // The list the removal sites use: the proven-false subset when the caller has one,
     // the whole disable list when it does not.
+    //
+    // `entailed_known` keeps the two apart where the *difference* is what carries
+    // the meaning. Overriding protection below is sound only for a feature the
+    // solve proved cannot be on; on the DB-cache path `removable` is a copy of
+    // `disable`, and reading that as proof would switch protection off for every
+    // cached dependency.
+    let entailed_known = entailed_false.is_some();
     let removable: Vec<String> = entailed_false.unwrap_or_else(|| disable.clone());
     debug!(
         "Dependency {}: enable: {:?}, disable: {:?}, removable: {:?}",
@@ -1338,6 +1345,26 @@ pub fn finalize_dep_crate(
     let protected: HashSet<String> = disable
         .iter()
         .filter(|feat| {
+            // Protection guards the *don't-cares* — the features the model left
+            // false with no reason either way, which is where a removal takes
+            // away a choice the author made (KI-8's `chrono/clock`). It cannot
+            // guard a feature in `removable`: that one the dependency's own
+            // solve proved cannot be on if the crate is to be no_std, so keeping
+            // it emits a configuration the analysis has already refuted.
+            //
+            // uom is where the difference shows. Its `std` gates
+            // `#[cfg(feature = "std")] pub use std::*` — a glob, which the items
+            // check below reads as "gates everything" and protects on sight,
+            // although `main uses []`. `afe4404` then never got
+            // `default-features = false` on its uom edge and pulled in
+            // `uom/std`. The glob it tripped over *is* the std re-export.
+            if entailed_known && removable.contains(*feat) {
+                println!(
+                    "[finalize]   => ALLOW REMOVAL of '{}' (entailed false: the dep cannot be no_std with it on)",
+                    feat
+                );
+                return false;
+            }
             // Check 1: items usage
             if let Some(gated_items) = feature_to_items.get(*feat) {
                 let has_glob = gated_items.contains("*");

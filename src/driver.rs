@@ -1312,15 +1312,28 @@ fn covering_set_modes<'a>(
 
 /// Finds the combinations of features that when used will cover all the code
 /// in the crate.
+///
+/// The last element is the crate's own `#![cfg_attr(<cond>, no_std)]` condition
+/// per entrypoint — the author's statement of which features decide whether this
+/// crate is no_std. It also goes into the returned hard constraints, but only
+/// mixed in with everything else there; `probe_conditional_spans`'s caller needs
+/// it on its own to tell a declared std switch from any other feature.
 pub fn find_feature_combs_for_all_code<'a>(
     ctx: &'a Context,
     manifest: &str,
     crate_name: &str,
     telemetry: &mut Telemetry,
-) -> (ModNode<'a>, Vec<CoveringRun>, Vec<Bool<'a>>, Vec<Bool<'a>>) {
+) -> (
+    ModNode<'a>,
+    Vec<CoveringRun>,
+    Vec<Bool<'a>>,
+    Vec<Bool<'a>>,
+    Vec<Bool<'a>>,
+) {
     let mut entrypoints: Vec<std::path::PathBuf> = Vec::new();
     let mut covering_runs: Vec<CoveringRun> = Vec::new();
     let mut previously_ran_feats: HashSet<Vec<String>> = HashSet::new();
+    let mut no_std_conditions: Vec<Bool<'a>> = Vec::new();
 
     let crate_root = visitor::find_entrypoints(manifest, &mut entrypoints);
     debug!("Crate root: {}", crate_root.display());
@@ -1809,6 +1822,7 @@ pub fn find_feature_combs_for_all_code<'a>(
         // causing probes to classify spans as NonStd based on std-mode runs.
         if let Some(ref cond) = no_std_cond {
             all_hard.push(cond.clone());
+            no_std_conditions.push(cond.clone());
         }
 
         // Now that runs have revealed OUT_DIR, splice any build-script-generated
@@ -1834,6 +1848,7 @@ pub fn find_feature_combs_for_all_code<'a>(
             covering_runs,
             all_hard.clone(),
             compile_error_constraints,
+            no_std_conditions,
         );
     }
     unreachable!("No entrypoints found for crate {}", crate_name);
@@ -1995,6 +2010,24 @@ pub fn compute_valid_cross_crate_items<'a>(
     }
 
     result
+}
+
+/// The declared features a Z3 condition mentions.
+///
+/// Reads them off the s-expression `Bool` prints, the same way
+/// `solver::length_and_depth` measures one: every feature is a Bool constant
+/// whose name is the feature, so a whitespace/paren split and a membership test
+/// against the declared set is exact. Intersecting with `known_features` is what
+/// keeps the operators (`and`, `not`, `or`) and any non-feature atom out — the
+/// same rule `parse_main_attributes_direct_with` applies when it builds the
+/// condition in the first place.
+fn feature_atoms(cond: &Bool<'_>, known_features: &HashSet<String>) -> HashSet<String> {
+    cond.to_string()
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ')')
+        .filter(|t| !t.is_empty())
+        .filter(|t| known_features.contains(*t))
+        .map(str::to_string)
+        .collect()
 }
 
 /// Converts the raw `#[cfg(…)]` strings stored in `PathRecord::macro_body_cfgs`
@@ -2256,7 +2289,7 @@ pub fn analyze_crate<'a>(
     HashSet<CrossCrateRef>,
     Vec<ReadableSpan>,
 ) {
-    let (root, mut covering_runs, mut hard_constraints, compile_error_constraints) =
+    let (root, mut covering_runs, mut hard_constraints, compile_error_constraints, no_std_conds) =
         find_feature_combs_for_all_code(ctx, manifest, crate_name, telemetry);
 
     // A routeless bare std use (e.g. a `HashMap` brought in by a glob re-export of
@@ -2408,7 +2441,7 @@ pub fn analyze_crate<'a>(
         &all_constraints,
     );
 
-    let conditional_targets = get_conditional_spans(&analyses)
+    let conditional_candidates = get_conditional_spans(&analyses)
         .into_iter()
         .filter(|a| !is_local_reexport(&a.exemplar))
         .map(|a| ProbeTarget {
@@ -2419,7 +2452,69 @@ pub fn analyze_crate<'a>(
         })
         .collect::<Vec<_>>();
 
-    let conditional_results = probe_conditional_spans(
+    // The features the crate's own `#![cfg_attr(<cond>, no_std)]` names: the
+    // author's statement of what decides this crate's no_std-ness. Only these
+    // are eligible for the run-derived attribution below.
+    //
+    // Run evidence alone is not enough to name a cause. wg 0.9.2 has four
+    // covering runs in which `triomphe` is on in exactly the runs where
+    // `parking_lot` is off, so `triomphe` satisfies
+    // `phases::feature_explaining_std` perfectly while the std-ness is really
+    // `parking_lot`'s — and blaming it cost wg its whole feature list. Requiring
+    // the candidate to be a *declared* no_std switch is what separates that from
+    // uom, whose `#![cfg_attr(not(feature = "std"), no_std)]` says outright that
+    // `std` is the feature in question.
+    let no_std_switch: HashSet<String> = no_std_conds
+        .iter()
+        .flat_map(|c| feature_atoms(c, &known_features))
+        .collect();
+    debug!("Declared no_std switch features: {:?}", no_std_switch);
+
+    // A conditional span whose covering runs already name the feature its
+    // std-ness rides on needs no probe: the answer is stronger than one the
+    // probe can give (see `phases::feature_explaining_std`) and it costs no
+    // compile. Everything else keeps going through the ancestor probe.
+    //
+    // Only the population the probe would otherwise *mis-blame* is diverted —
+    // the gated, feature-axis spans. A span with no gate ancestors, or one
+    // guarded by a cfg naming no feature, is answered by
+    // `initial_ungated_results` with no condition at all, and run evidence is no
+    // reason to start constraining it: that would take features away from crates
+    // that build today.
+    let explains = |t: &ProbeTarget<'a>| -> Option<String> {
+        feature_explaining_std(&t.analysis).filter(|f| no_std_switch.contains(f))
+    };
+
+    let (explained, conditional_targets): (Vec<_>, Vec<_>) =
+        conditional_candidates.into_iter().partition(|t| {
+            !t.externally_gated && t.ancestors.is_some() && explains(t).is_some()
+        });
+
+    let explained_results: Vec<ProbeResult> = explained
+        .into_iter()
+        .map(|target| {
+            let feature = explains(&target).expect("partitioned on this being Some");
+            debug!(
+                "Conditional span {:?} is std only when '{}' is on (every std run has it, at least one non-std run does not) — condition ¬{}, no probe",
+                target.analysis.span, feature, feature
+            );
+            let condition = Bool::new_const(ctx, feature.as_str()).not();
+            ProbeResult {
+                target,
+                decision: ProbeDecision::NonStd {
+                    reason: format!(
+                        "the covering runs resolve this span to std only with '{}' enabled",
+                        feature
+                    ),
+                    alternate_crate: "unknown".to_string(),
+                },
+                history: Vec::new(),
+                condition: Some(condition),
+            }
+        })
+        .collect();
+
+    let mut conditional_results = probe_conditional_spans(
         ctx,
         crate_name,
         manifest,
@@ -2427,6 +2522,30 @@ pub fn analyze_crate<'a>(
         &hard_constraints,
         &all_constraints,
     );
+    // A gate negation that merely deleted the code reads as "not std" to the
+    // prober. Where the runs hold a witness that says otherwise — the span
+    // present and non-std with that gate satisfied — the condition is dropped
+    // and the span contributes none. It keeps its `NonStd` verdict: the witness
+    // is exactly the evidence that this span does not stop the crate being
+    // no_std, so there is nothing left to constrain.
+    for result in &mut conditional_results {
+        if matches!(result.decision, ProbeDecision::NonStd { .. })
+            && let Some(cond) = result.condition.clone()
+            && condition_contradicted_by_runs(ctx, &result.target.analysis, &cond, &known_features)
+        {
+            debug!(
+                "Dropping condition {} for span {:?}: a covering run has it false with the span present and non-std",
+                cond, result.target.analysis.span
+            );
+            telemetry.conditions_contradicted_by_runs += 1;
+            result.condition = None;
+        }
+    }
+
+    // Joined here so every consumer below — `final_condition`, the
+    // externally-gated and compile-failed counters — sees one conditional
+    // population, as it did before the split.
+    conditional_results.extend(explained_results);
 
     // The discovered build enablers ride out with the probe conditions rather
     // than staying local to the probing: `final_condition` is what `main.rs`

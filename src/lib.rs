@@ -405,6 +405,12 @@ pub struct Telemetry {
     /// weaker result than one that clears on a real feature condition, so the
     /// count is recorded to keep the two separable in the eval.
     pub externally_gated_spans: usize,
+    /// How many probe conditions were dropped because a covering run already
+    /// showed the span present and non-std with that condition false — i.e. the
+    /// prober blamed a feature that only *contains* the code. See
+    /// `phases::condition_contradicted_by_runs`; uom 0.36's storage features are
+    /// the case it was written for.
+    pub conditions_contradicted_by_runs: usize,
     /// How many std spans share a source position with records from another
     /// crate *and* resolve to std in every covering run.
     ///

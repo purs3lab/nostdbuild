@@ -1,4 +1,5 @@
 use log::debug;
+use std::collections::HashSet;
 use z3::Context;
 use z3::SatResult;
 use z3::Solver;
@@ -177,6 +178,110 @@ pub fn get_conditional_spans(analyses: &[SpanAnalysis]) -> Vec<&SpanAnalysis> {
         .iter()
         .filter(|a| matches!(a.verdict, SpanVerdict::Conditional { .. }))
         .collect()
+}
+
+/// Is this condition already contradicted by a run the tool performed?
+///
+/// A conditional span with a non-empty `non_std_configs` has a **witness**: a
+/// successful compile in which the span was present and resolved to something
+/// other than std. A condition that is *false* in that witness cannot be what
+/// makes the span non-std — the witness is non-std without it — so imposing it
+/// only takes features away.
+///
+/// That is what a gate negation which merely deletes the code always produces.
+/// uom's `si/angle.rs` spans sit inside `#[cfg(feature = "f32")]` storage
+/// modules, so negating `f32` removes them from the run and the prober reads
+/// that as "not std"; the witness run has `f32` **on** and the span resolving to
+/// `core`, which says plainly that `f32` is not the culprit. Vetoing here rather
+/// than inside the prober keeps the check independent of which gate the walk
+/// happened to reach first, and of how the covering sets came out on the day —
+/// `lps28dfw` built or failed run to run on exactly that nondeterminism.
+///
+/// Spans whose other runs merely *lacked* the span (`non_std_configs` empty)
+/// have no witness and are left alone: for those, deleting the code really is
+/// the only demonstrated route to no_std.
+pub fn condition_contradicted_by_runs<'a>(
+    ctx: &'a Context,
+    a: &SpanAnalysis,
+    condition: &Bool<'a>,
+    known_features: &HashSet<String>,
+) -> bool {
+    a.non_std_configs.iter().any(|cfg| {
+        let assignment: Vec<Bool<'a>> = known_features
+            .iter()
+            .map(|f| {
+                let var = Bool::new_const(ctx, f.as_str());
+                if cfg.contains(f) { var } else { var.not() }
+            })
+            .collect();
+        let solver = Solver::new(ctx);
+        for lit in &assignment {
+            solver.assert(lit);
+        }
+        solver.assert(condition);
+        solver.check() == SatResult::Unsat
+    })
+}
+
+/// The feature a conditional span's std-ness actually turns on, read off the
+/// covering runs that have already been performed.
+///
+/// `probe_conditional_spans` answers the same question by negating the span's
+/// syntactic ancestor gates one at a time and taking the first negation after
+/// which the span is no longer std. That accepts **the code disappeared** as
+/// proof **the code is not std**: negating any feature that merely *contains*
+/// the span deletes it, so a span inside a `#[cfg(feature = "f32")]` module
+/// yields `¬f32` — a true statement about that compile and a wrong statement
+/// about no_std. uom 0.36 loses `f32`, `f64` and `si` exactly that way, and the
+/// crates depending on it then fail uom's own `compile_error!` for having no
+/// storage type left (ALL_TARGET_FAILURES T4a).
+///
+/// The runs already separate the two kinds of feature, but only under a
+/// **biconditional** reading: the answer is a feature that is on in every run
+/// where the span was std *and* off in every run where it was present and not
+/// std. "On in every std run" alone is mere correlation — the covering sets are
+/// chosen to cover items, not to vary one feature at a time, so an unrelated
+/// feature is easily on in all of them. wg 0.9.2 is the case that catches it:
+/// `src/sync.rs`'s `Mutex` is std exactly when `parking_lot` is *off*, and
+/// `triomphe` happened to be on in each of those runs. Requiring the other half
+/// rejects it, because a run with `parking_lot` on and `triomphe` on resolves
+/// the span to `parking_lot`.
+///
+/// A feature that merely contains the span fails the same half: the span cannot
+/// be observed with it off, so it is on in the non-std runs too. That is what
+/// leaves `std` as uom's answer and rules out `f32`, `si` and `f64`.
+///
+/// Returns `None` unless exactly one feature qualifies: with two, the runs do
+/// not say which one carries the std-ness, and the probe — which compiles — is
+/// the better answer. `None` therefore means "unchanged behaviour".
+///
+/// The condition is always `¬feature`, so only a feature whose *presence*
+/// brings std is reportable. wg's `parking_lot` — std when it is **off** — is
+/// deliberately not expressible here and stays with the probe, which already
+/// gets it right by enabling the feature.
+pub fn feature_explaining_std(a: &SpanAnalysis) -> Option<String> {
+    if a.std_configs.is_empty() || a.non_std_configs.is_empty() {
+        return None;
+    }
+
+    // On in *every* config the span resolved to std under, so `std ⟹ feature`
+    // at this span and `¬feature` rules the std resolution out.
+    let mut necessary: Vec<&String> = a.std_configs[0].iter().collect();
+    for cfg in &a.std_configs[1..] {
+        necessary.retain(|f| cfg.contains(*f));
+    }
+
+    // ...and off in *every* config where the span was present and not std, so
+    // `feature ⟹ std` too. Both halves together are what separate the feature
+    // the resolution turns on from one that is only correlated with it.
+    let mut candidates = necessary
+        .into_iter()
+        .filter(|f| a.non_std_configs.iter().all(|cfg| !cfg.contains(*f)));
+
+    match (candidates.next(), candidates.next()) {
+        (Some(only), None) => Some(only.clone()),
+        _ => None,
+    }
 }
 
 pub fn probe_conditional_spans<'a>(
