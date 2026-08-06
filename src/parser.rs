@@ -6,7 +6,6 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    time::Instant,
 };
 use syn::{Attribute, ItemExternCrate, Meta, visit::Visit};
 use walkdir::WalkDir;
@@ -589,18 +588,16 @@ pub fn process_crate(
         }
     }
 
-    let now = Instant::now();
     // Finally, we solve the equations
-    let (model, len, depth, entailed_false) =
-        solver::solve(ctx, &equation, &filtered, &hard_constraint_vec);
+    let (model, len, depth, entailed_false) = {
+        let t = crate::timing::scope("feature_solve", name_with_version);
+        t.meta("constraint_len", filtered.len().to_string());
+        solver::solve(ctx, &equation, &filtered, &hard_constraint_vec)
+    };
     debug!(
         "Solver result for crate {}: model={:?}, len={}, depth={}, entailed false={:?}",
         name_with_version, model, len, depth, entailed_false
     );
-    exchange
-        .telemetry
-        .constraint_solving_time_ms
-        .push((name_with_version.to_string(), now.elapsed().as_millis()));
     exchange
         .telemetry
         .max_contraint_length
@@ -3368,6 +3365,7 @@ pub fn recursive_dep_requirement_check(
     enabled_optional_deps: &std::collections::HashSet<String>,
 ) -> bool {
     exchange.telemetry.recursive_requirement_check_done = true;
+    let _t = crate::timing::scope("recursive_req_check", &exchange.name_with_version);
     println!("Starting recursive dependency requirement check...");
     // Throwaway telemetry for the re-run analyze_crate_wrapper/process_crate calls below —
     // we don't want to duplicate their per-call stats into the main run's telemetry.
@@ -3397,7 +3395,6 @@ pub fn recursive_dep_requirement_check(
 
     let mut violations: Vec<String> = Vec::new();
     let mut first_failed_dep: Option<String> = None;
-    let instant = std::time::Instant::now();
 
     while let Some((name, version, item_depth)) = worklist.pop() {
         // Optional top-level deps that were never enabled don't need checking —
@@ -3668,7 +3665,6 @@ pub fn recursive_dep_requirement_check(
             }
         }
     }
-    exchange.telemetry.recursive_requirement_check_time_ms = instant.elapsed().as_millis();
     exchange.telemetry.recursive_requirement_check_violations = violations;
     if let Some(failed_dep) = first_failed_dep {
         exchange.telemetry.recursive_requirement_check_failed = true;

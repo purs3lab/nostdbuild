@@ -18,7 +18,7 @@ use crate::visitor::{self, ModCollector, ModNode};
 use crate::{
     ReadableSpan, Telemetry,
     consts::{self, PLUGIN_OUTPUT_ENV},
-    downloader, parser, solver,
+    downloader, parser, solver, timing,
 };
 
 /// The first bare-metal `--target` that successfully compiled a no_std plugin
@@ -725,6 +725,7 @@ pub fn resolve_import_to_use_gateways(out: &mut FeatureRunOutput, root: &ModNode
 /// Runs the plugin with the crate's default features (no --no-default-features, no extra flags).
 /// Used to produce a baseline for coverage comparison — simulating what a default-only tool sees.
 pub fn run_default_features_pass(manifest: &str, crate_name: &str) -> PassOutcome {
+    let _t = timing::scope("default_features_pass", crate_name);
     if !is_cargo_hir_installed() {
         return PassOutcome::CompileFailed {
             stderr: "cargo-hir is not installed or not found in PATH".to_string(),
@@ -750,6 +751,8 @@ pub fn run_default_features_pass(manifest: &str, crate_name: &str) -> PassOutcom
         crate_name, output_path
     );
 
+    let attempt = timing::scope("cargo_hir", "host");
+    attempt.meta("features", "<default>");
     let output = match Command::new("cargo")
         .args(args)
         .env(PLUGIN_OUTPUT_ENV, &output_path)
@@ -757,12 +760,15 @@ pub fn run_default_features_pass(manifest: &str, crate_name: &str) -> PassOutcom
     {
         Ok(o) => o,
         Err(e) => {
+            attempt.meta("success", "false");
             return PassOutcome::CompileFailed {
                 stderr: format!("failed to spawn cargo: {}", e),
                 exit_code: None,
             };
         }
     };
+    attempt.meta("success", output.status.success().to_string());
+    drop(attempt);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -884,6 +890,11 @@ pub fn run_rustc_plugin_pass_with(
     allow_host_fallback: bool,
     pin_target: Option<&'static str>,
 ) -> PassOutcome {
+    // Wraps the target sweep *and* the post-processing of the plugin's JSON
+    // (`load_plugin_output`, facade resolution, candidate extraction), so the gap
+    // between this scope and its `cargo_hir` children is the record-handling cost
+    // — the part that grows with output size rather than with build time.
+    let _pass = timing::scope("plugin_pass", crate_name);
     if !is_cargo_hir_installed() {
         return PassOutcome::CompileFailed {
             stderr: "cargo-hir is not installed or not found in PATH".to_string(),
@@ -1000,6 +1011,11 @@ pub fn run_rustc_plugin_pass_with(
             output_path
         );
 
+        // Timed per *attempt*, not per pass: this loop is where a pass with no
+        // cached target burns through the whole triple list, and only a per-attempt
+        // event shows that the pass cost N failed builds plus one that linked.
+        let attempt = timing::scope("cargo_hir", target.unwrap_or("host"));
+        attempt.meta("features", &feats);
         let output = match Command::new("cargo")
             .args(&args)
             .env(PLUGIN_OUTPUT_ENV, &output_path)
@@ -1007,12 +1023,16 @@ pub fn run_rustc_plugin_pass_with(
         {
             Ok(o) => o,
             Err(e) => {
+                attempt.meta("success", "false");
+                attempt.meta("outcome", "spawn_failed");
                 return PassOutcome::CompileFailed {
                     stderr: format!("failed to spawn cargo: {}", e),
                     exit_code: None,
                 };
             }
         };
+        attempt.meta("success", output.status.success().to_string());
+        drop(attempt);
 
         if output.status.success() {
             if output_path.exists() {
@@ -1330,6 +1350,8 @@ pub fn find_feature_combs_for_all_code<'a>(
     Vec<Bool<'a>>,
     Vec<Bool<'a>>,
 ) {
+    let _cov = timing::scope("coverage", crate_name);
+
     let mut entrypoints: Vec<std::path::PathBuf> = Vec::new();
     let mut covering_runs: Vec<CoveringRun> = Vec::new();
     let mut previously_ran_feats: HashSet<Vec<String>> = HashSet::new();
@@ -1411,6 +1433,8 @@ pub fn find_feature_combs_for_all_code<'a>(
         {
             compile_error_constraints.push(cond.clone());
             debug!("Baseline no_std run: features = {:?}", baseline_feats);
+            let run = timing::scope("coverage_run", baseline_feats.join(","));
+            run.meta("kind", "baseline");
             match run_rustc_plugin_pass(manifest, crate_name, &baseline_feats, None) {
                 PassOutcome::Success {
                     macro_modules,
@@ -1421,6 +1445,8 @@ pub fn find_feature_combs_for_all_code<'a>(
                         "Baseline no_std run succeeded with {} records",
                         full_output.records.len()
                     );
+                    run.meta("outcome", "success");
+                    run.meta("records", full_output.records.len().to_string());
                     covering_runs.push(CoveringRun {
                         features: baseline_feats,
                         output: full_output,
@@ -1434,12 +1460,14 @@ pub fn find_feature_combs_for_all_code<'a>(
                     }));
                 }
                 PassOutcome::CompileFailed { stderr, exit_code } => {
+                    run.meta("outcome", "compile_failed");
                     warn!(
                         "Baseline no_std run failed (exit {:?}): {}",
                         exit_code, stderr
                     );
                 }
                 PassOutcome::PluginMissingOutput { expected_path } => {
+                    run.meta("outcome", "plugin_missing_output");
                     warn!(
                         "Baseline no_std run: plugin produced no output at {:?}",
                         expected_path
@@ -1464,12 +1492,16 @@ pub fn find_feature_combs_for_all_code<'a>(
             let modes = covering_set_modes(ctx, &all_hard, &no_std_cond);
             for enable in modes {
                 if previously_ran_feats.insert(enable.clone()) {
+                    let run = timing::scope("coverage_run", enable.join(","));
+                    run.meta("kind", "empty_items_fallback");
                     match run_rustc_plugin_pass(manifest, crate_name, &enable, None) {
                         PassOutcome::Success {
                             macro_modules,
                             std_spans: _,
                             full_output,
                         } => {
+                            run.meta("outcome", "success");
+                            run.meta("records", full_output.records.len().to_string());
                             covering_runs.push(CoveringRun {
                                 features: enable.clone(),
                                 output: full_output,
@@ -1489,12 +1521,14 @@ pub fn find_feature_combs_for_all_code<'a>(
                             ));
                         }
                         PassOutcome::CompileFailed { stderr, exit_code } => {
+                            run.meta("outcome", "compile_failed");
                             debug!(
                                 "Empty-items fallback run {:?} failed (exit {:?}): {}",
                                 enable, exit_code, stderr
                             );
                         }
                         PassOutcome::PluginMissingOutput { expected_path } => {
+                            run.meta("outcome", "plugin_missing_output");
                             debug!(
                                 "Empty-items fallback: plugin produced no output at {:?}",
                                 expected_path
@@ -1520,8 +1554,10 @@ pub fn find_feature_combs_for_all_code<'a>(
                 break;
             }
 
-            let eqs_with_soft =
-                solver::get_solved_sets(ctx, crate_name, pool, &all_hard, &forbidden, telemetry);
+            let eqs_with_soft = {
+                let _s = timing::scope("coverage_solve", format!("cegar iter {cegar_iter}"));
+                solver::get_solved_sets(ctx, crate_name, pool, &all_hard, &forbidden, telemetry)
+            };
 
             if eqs_with_soft.is_empty() {
                 break;
@@ -1564,6 +1600,8 @@ pub fn find_feature_combs_for_all_code<'a>(
                         "[cegar iter {cegar_iter}] set {set_num}/{set_total}: running features {enable:?}"
                     );
 
+                    let run = timing::scope("coverage_run", enable.join(","));
+                    run.meta("kind", format!("cegar iter {cegar_iter} set {set_num}/{set_total}"));
                     match run_rustc_plugin_pass(manifest, crate_name, &enable, None) {
                         PassOutcome::Success {
                             macro_modules,
@@ -1575,6 +1613,8 @@ pub fn find_feature_combs_for_all_code<'a>(
                                 full_output.records.len(),
                                 macro_modules.len(),
                             );
+                            run.meta("outcome", "success");
+                            run.meta("records", full_output.records.len().to_string());
                             // Move items covered by this set from uncovered → covered.
                             for item in soft_items.iter() {
                                 if let Some(pos) = uncovered_items.iter().position(|u| u == item) {
@@ -1601,6 +1641,7 @@ pub fn find_feature_combs_for_all_code<'a>(
                             ));
                         }
                         PassOutcome::CompileFailed { stderr, exit_code } => {
+                            run.meta("outcome", "compile_failed");
                             let first_line = stderr.lines().next().unwrap_or("").trim();
                             debug!(
                                 "[cegar iter {cegar_iter}] set {set_num}/{set_total}: FAILED (exit {exit_code:?}): {first_line}"
@@ -1614,6 +1655,7 @@ pub fn find_feature_combs_for_all_code<'a>(
                             forbidden.push(solver::build_forbidden_constraint(ctx, &en, &dis));
                         }
                         PassOutcome::PluginMissingOutput { expected_path } => {
+                            run.meta("outcome", "plugin_missing_output");
                             debug!(
                                 "[cegar iter {cegar_iter}] set {set_num}/{set_total}: missing plugin output at {expected_path:?}"
                             );
@@ -1697,9 +1739,15 @@ pub fn find_feature_combs_for_all_code<'a>(
                         break;
                     }
 
-                    let new_eqs = solver::get_solved_sets(
-                        ctx, crate_name, pool, &all_hard, &forbidden, telemetry,
-                    );
+                    let new_eqs = {
+                        let _s = timing::scope(
+                            "coverage_solve",
+                            format!("fixpoint mod '{modname}' iter {fp_iter}"),
+                        );
+                        solver::get_solved_sets(
+                            ctx, crate_name, pool, &all_hard, &forbidden, telemetry,
+                        )
+                    };
 
                     let sets_to_run: Vec<_> = new_eqs
                         .iter()
@@ -1737,6 +1785,13 @@ pub fn find_feature_combs_for_all_code<'a>(
                                 "[fixpoint mod '{modname}', iter {fp_iter}] set {set_num}/{set_total}: running features {enable:?}"
                             );
 
+                            let run = timing::scope("coverage_run", enable.join(","));
+                            run.meta(
+                                "kind",
+                                format!(
+                                    "fixpoint mod '{modname}' iter {fp_iter} set {set_num}/{set_total}"
+                                ),
+                            );
                             match run_rustc_plugin_pass(manifest, crate_name, &enable, None) {
                                 PassOutcome::Success {
                                     macro_modules,
@@ -1748,6 +1803,8 @@ pub fn find_feature_combs_for_all_code<'a>(
                                         full_output.records.len(),
                                         macro_modules.len(),
                                     );
+                                    run.meta("outcome", "success");
+                                    run.meta("records", full_output.records.len().to_string());
                                     for item in soft_items.iter() {
                                         if let Some(pos) =
                                             uncovered_new.iter().position(|u| u == item)
@@ -1775,6 +1832,7 @@ pub fn find_feature_combs_for_all_code<'a>(
                                     ));
                                 }
                                 PassOutcome::CompileFailed { stderr, exit_code } => {
+                                    run.meta("outcome", "compile_failed");
                                     let first_line = stderr.lines().next().unwrap_or("").trim();
                                     debug!(
                                         "[fixpoint mod '{modname}', iter {fp_iter}] set {set_num}/{set_total}: FAILED (exit {exit_code:?}): {first_line}"
@@ -1787,6 +1845,7 @@ pub fn find_feature_combs_for_all_code<'a>(
                                         .push(solver::build_forbidden_constraint(ctx, &en, &dis));
                                 }
                                 PassOutcome::PluginMissingOutput { expected_path } => {
+                                    run.meta("outcome", "plugin_missing_output");
                                     debug!(
                                         "[fixpoint mod '{modname}', iter {fp_iter}] set {set_num}/{set_total}: missing plugin output at {expected_path:?}"
                                     );
@@ -1868,6 +1927,10 @@ pub fn analyze_crate_wrapper<'a>(
     HashSet<CrossCrateRef>,
     Vec<ReadableSpan>,
 ) {
+    // The one place that names *whose* analysis follows. Dependencies run the
+    // same coverage/probe code as the main crate, so without an ambient crate on
+    // the timing stack their cost is indistinguishable from the main crate's.
+    let _t = timing::crate_scope("analyze", crate_name);
     let manifest = parser::determine_manifest_file(crate_name, main_name);
     analyze_crate(ctx, &manifest, crate_name, telemetry)
 }
@@ -2200,10 +2263,13 @@ pub fn discover_build_enablers<'a>(
         pinned.set(true);
         let mut feats = base.clone();
         feats.extend(extra.iter().cloned());
+        let trial = timing::scope("enabler_trial", extra.join(","));
         let ok = matches!(
             run_rustc_plugin_pass_with(manifest, crate_name, &feats, None, false, pin),
             PassOutcome::Success { .. }
         );
+        trial.meta("compiles", ok.to_string());
+        drop(trial);
         debug!(
             "[enablers] {} with extra {:?}",
             if ok { "compiles" } else { "fails" },
@@ -2327,7 +2393,11 @@ pub fn analyze_crate<'a>(
 
     let all_constraints = visitor::collect_all_items(&root, ctx);
 
-    let analyses = classify_spans(&covering_runs);
+    let analyses = {
+        let t = timing::scope("classify", crate_name);
+        t.meta("runs", covering_runs.len().to_string());
+        classify_spans(&covering_runs)
+    };
 
     // Spans where a derive-style collision and unavoidable std-ness coincide —
     // see `Telemetry::collided_std_spans`. Recorded before any probing so the
@@ -2383,8 +2453,10 @@ pub fn analyze_crate<'a>(
             })
             .flatten()
             .collect();
-        build_enablers =
-            discover_build_enablers(ctx, manifest, crate_name, &hard_constraints, &avoid_gates);
+        build_enablers = {
+            let _t = timing::scope("build_enablers", crate_name);
+            discover_build_enablers(ctx, manifest, crate_name, &hard_constraints, &avoid_gates)
+        };
         for f in &build_enablers {
             println!(
                 "Enabling feature '{f}' — {crate_name} does not build for any bare-metal target without it"

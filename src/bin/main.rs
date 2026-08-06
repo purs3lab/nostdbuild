@@ -6,7 +6,7 @@ use anyhow::Ok;
 use clap::Parser;
 use log::debug;
 
-use nostd::{Attributes, compiler, consts, db, downloader, driver, parser, solver};
+use nostd::{Attributes, compiler, consts, db, downloader, driver, parser, solver, timing};
 
 #[derive(Parser, Debug)]
 #[command(author, about)]
@@ -93,6 +93,7 @@ fn process_dep_crate_wrapper(
     non_minimalizable: &HashSet<String>,
     deps_to_keep: &HashSet<String>,
 ) -> anyhow::Result<()> {
+    let _t = timing::crate_scope("dep_analysis", &dep.crate_name);
     // Check the DB first: if we already have a result for this dep, skip the expensive
     // gather_crate_info + analyze_crate_wrapper + process_crate path entirely.
     let (local_dep_args, dep_disable, dep_enable) =
@@ -200,6 +201,10 @@ fn process_dep_crate_wrapper(
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     env_logger::init();
+    // Starts the clock every later scope is measured against. `AllStats::dump`
+    // reads it back out, and every exit path — including the early bails below —
+    // goes through `dump`.
+    timing::init();
 
     let mut name = match cli.name {
         Some(name) => name,
@@ -238,16 +243,19 @@ fn main() -> anyhow::Result<()> {
     let db_data = db::read_db_file()?;
     let mut telemetry = nostd::Telemetry::default();
 
-    if let Some(url) = cli.url {
-        debug!("URL provided: {}", url);
-        if downloader::clone_repo(&url, &name).is_err() {
-            return Err(anyhow::anyhow!("Failed to clone repo"));
+    {
+        let _t = timing::scope("download_main", &name);
+        if let Some(url) = cli.url {
+            debug!("URL provided: {}", url);
+            if downloader::clone_repo(&url, &name).is_err() {
+                return Err(anyhow::anyhow!("Failed to clone repo"));
+            }
+        } else {
+            debug!("Downloading from crates.io");
+            let version = cli.version.map(|version| format!("={}", version));
+            name = downloader::clone_from_crates(&name, version.as_ref(), None, None)?;
+            debug!("Downloaded crate: {}", name);
         }
-    } else {
-        debug!("Downloading from crates.io");
-        let version = cli.version.map(|version| format!("={}", version));
-        name = downloader::clone_from_crates(&name, version.as_ref(), None, None)?;
-        debug!("Downloaded crate: {}", name);
     }
 
     let mut stats = nostd::AllStats::new(name.clone());
@@ -270,15 +278,20 @@ fn main() -> anyhow::Result<()> {
     // reads the manifest without needing it rewritten. Gathering read-only keeps the
     // shared download dir untouched (no `Cargo.toml.bak` dance), so a dry run can be
     // run concurrently with a full evaluation over the same download cache.
-    let (mut worklist, crate_name_rename, mut crate_info) =
-        downloader::gather_crate_info(&name, cli.dry_run, None)?;
+    let (mut worklist, crate_name_rename, mut crate_info) = {
+        let _t = timing::scope("gather_crate_info", &name);
+        downloader::gather_crate_info(&name, cli.dry_run, None)?
+    };
     telemetry.num_deps = crate_info.deps_and_features.len();
 
     debug!("Dependencies: {:?}", crate_info);
 
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
-    let found = parser::check_for_no_std(&name, &ctx, Some(&mut telemetry), None);
+    let found = {
+        let _t = timing::scope("nostd_parse", &name);
+        parser::check_for_no_std(&name, &ctx, Some(&mut telemetry), None)
+    };
 
     if !found || telemetry.wrong_unconditional_setup {
         stats.telemetry = Some(telemetry);
@@ -311,14 +324,19 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut top_level_deps: Vec<(String, String)> = Vec::new();
-    let no_std = downloader::download_all_dependencies(
-        &name,
-        &mut worklist,
-        &mut crate_info,
-        depth,
-        &mut telemetry,
-        &mut top_level_deps,
-    )?;
+    // Covers the download of the whole dependency graph; the transitive no_std
+    // walk it ends with opens its own `dep_verify` scope inside.
+    let no_std = {
+        let _t = timing::scope("download_deps", &name);
+        downloader::download_all_dependencies(
+            &name,
+            &mut worklist,
+            &mut crate_info,
+            depth,
+            &mut telemetry,
+            &mut top_level_deps,
+        )?
+    };
 
     let mut exchange = nostd::DataExchange {
         name_with_version: name,
@@ -799,6 +817,8 @@ fn main() -> anyhow::Result<()> {
     println!("Final args: {:?}", final_args);
     let before_build = compiler::mark_build_records(&stats, &exchange.telemetry);
     let mut one_succeeded = if no_std {
+        let t = timing::scope("verify_build", &exchange.name_with_version);
+        t.meta("attempt", "initial");
         compiler::try_compile(
             &exchange.name_with_version,
             &target,
@@ -842,13 +862,17 @@ fn main() -> anyhow::Result<()> {
                 droppable, retry_args
             );
             let before_retry = compiler::mark_build_records(&stats, &exchange.telemetry);
-            let retry_succeeded = compiler::try_compile(
-                &exchange.name_with_version,
-                &target,
-                &retry_args,
-                &mut stats,
-                &mut exchange.telemetry,
-            )?;
+            let retry_succeeded = {
+                let t = timing::scope("verify_build", &exchange.name_with_version);
+                t.meta("attempt", "retry_without_optional_dep_feats");
+                compiler::try_compile(
+                    &exchange.name_with_version,
+                    &target,
+                    &retry_args,
+                    &mut stats,
+                    &mut exchange.telemetry,
+                )?
+            };
             if retry_succeeded {
                 // The retry is the emitted config now, so the failed attempt's rows
                 // are dropped — one feature set per target in the results.

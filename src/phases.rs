@@ -9,6 +9,7 @@ use crate::types::*;
 
 use crate::driver::run_rustc_plugin_pass;
 use crate::solver;
+use crate::timing;
 
 pub fn solve_with_negation<'a>(
     ctx: &'a Context,
@@ -354,13 +355,18 @@ pub fn probe_conditional_spans<'a>(
     hard_constraints: &[Bool<'a>],
     all_constraints: &[Bool<'a>],
 ) -> Vec<ProbeResult<'a>> {
-    probe_usages(
+    // Same body as `probe_usages`, but entered under its own timing phase:
+    // conditional spans and always-std spans cost very different amounts and
+    // reusing the caller's phase would merge them into one number.
+    probe_usages_with(
         ctx,
         crate_name,
         manifest,
         probe_targets,
         hard_constraints,
         all_constraints,
+        "probe_conditional_phase",
+        "conditional",
     )
 }
 
@@ -437,6 +443,8 @@ where
         let gate = ancestors[index].not();
         current_condition = Some(gate.clone());
         debug!("Negating gate: {}", gate);
+        let gate_scope = timing::scope("probe_gate", format!("{}", gate));
+        gate_scope.meta("gate_index", index.to_string());
 
         let mut blocking: Vec<Bool<'a>> = vec![];
 
@@ -459,7 +467,14 @@ where
                 .cloned()
                 .collect();
 
-            match solve_with_negation(ctx, &extended, &gate, all_constraints) {
+            // Timed apart from the compile below so a probe that is slow because
+            // Z3 is grinding is not mistaken for one that is slow because cargo is.
+            let solved = {
+                let s = timing::scope("probe_solve", format!("{}", gate));
+                s.meta("cegar_retry", blocking.len().to_string());
+                solve_with_negation(ctx, &extended, &gate, all_constraints)
+            };
+            match solved {
                 SolveResult::Unsat => {
                     if blocking.is_empty() {
                         // Gate is genuinely unsatisfiable — can't negate it.
@@ -549,6 +564,34 @@ pub fn probe_usages<'a>(
     hard_constraints: &[Bool<'a>],
     all_constraints: &[Bool<'a>],
 ) -> Vec<ProbeResult<'a>> {
+    probe_usages_with(
+        ctx,
+        crate_name,
+        manifest,
+        probe_targets,
+        hard_constraints,
+        all_constraints,
+        "probe_usages_phase",
+        "usages",
+    )
+}
+
+/// Body of [`probe_usages`], parameterised by the timing phase it reports under.
+///
+/// `phase` is the scope wrapping the whole sweep; `kind` labels each individual
+/// probe so a span's cost can be traced back to which sweep paid for it.
+#[allow(clippy::too_many_arguments)]
+fn probe_usages_with<'a>(
+    ctx: &'a z3::Context,
+    crate_name: &str,
+    manifest: &str,
+    probe_targets: Vec<ProbeTarget<'a>>,
+    hard_constraints: &[Bool<'a>],
+    all_constraints: &[Bool<'a>],
+    phase: &'static str,
+    kind: &'static str,
+) -> Vec<ProbeResult<'a>> {
+    let _phase = timing::scope(phase, crate_name);
     let mut results = initial_ungated_results(&probe_targets);
 
     // Group gated targets by gate fingerprint so each unique gate sequence is
@@ -570,6 +613,13 @@ pub fn probe_usages<'a>(
         let rep = group[0].clone();
         let ancestors = rep.ancestors.clone().unwrap();
         debug!("Current target: {:?}", rep.analysis.span);
+        // One event per *group*, not per span: the grouping above probes a single
+        // representative and copies its verdict to the rest, so a group is the
+        // smallest thing that has a measurable cost. `group_size` is what lets the
+        // report amortise it back over the spans it covers.
+        let probe = timing::scope("probe_span", rep.analysis.span.key());
+        probe.meta("kind", kind);
+        probe.meta("group_size", group.len().to_string());
         let (history, last_decision, condition) = probe_one_target(
             ctx,
             crate_name,
@@ -593,6 +643,8 @@ pub fn probe_usages<'a>(
                 },
             },
         );
+        probe.meta("decision", decision_name(&last_decision));
+        drop(probe);
         results.push(ProbeResult {
             target: rep,
             decision: last_decision.clone(),
@@ -611,6 +663,16 @@ pub fn probe_usages<'a>(
     results
 }
 
+/// Short tag for a decision, for the timing record.
+fn decision_name(d: &ProbeDecision) -> &'static str {
+    match d {
+        ProbeDecision::NonStd { .. } => "NonStd",
+        ProbeDecision::StillStd { .. } => "StillStd",
+        ProbeDecision::CompileFailed => "CompileFailed",
+        ProbeDecision::ExternallyGated { .. } => "ExternallyGated",
+    }
+}
+
 pub fn probe_candidates<'a>(
     ctx: &'a z3::Context,
     crate_name: &str,
@@ -620,6 +682,7 @@ pub fn probe_candidates<'a>(
     hard_constraints: &[Bool<'a>],
     all_constraints: &[Bool<'a>],
 ) -> Vec<ProbeResult<'a>> {
+    let _phase = timing::scope("probe_imports_phase", crate_name);
     let mut results = initial_ungated_results(&probe_targets);
 
     // Group gated targets by gate fingerprint — one compile per unique gate sequence.
@@ -638,6 +701,9 @@ pub fn probe_candidates<'a>(
     for (_, group) in groups {
         let rep = group[0].clone();
         let ancestors = rep.ancestors.clone().unwrap();
+        let probe = timing::scope("probe_span", rep.analysis.span.key());
+        probe.meta("kind", "imports");
+        probe.meta("group_size", group.len().to_string());
         // TODO: Do we need to get the other groups as well here to do a full run?
         let (history, last_decision, condition) = probe_one_target(
             ctx,
@@ -673,6 +739,8 @@ pub fn probe_candidates<'a>(
                 }
             },
         );
+        probe.meta("decision", decision_name(&last_decision));
+        drop(probe);
         results.push(ProbeResult {
             target: rep,
             decision: last_decision.clone(),

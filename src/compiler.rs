@@ -1,7 +1,7 @@
 use anyhow::Context;
 use log::debug;
 
-use crate::{AllStats, Results, Status, Telemetry, consts, parser};
+use crate::{AllStats, Results, Status, Telemetry, consts, parser, timing};
 
 /// Position of the build bookkeeping before a `try_compile` call, so a
 /// speculative attempt can be taken back out again.
@@ -119,10 +119,13 @@ fn try_compile_for_target(
     }
 
     debug!("Running cargo with args: {}", args.join(" "));
+    let build = timing::scope("verify_target", target);
     let output = std::process::Command::new("cargo")
         .args(&args)
         .output()
         .context("Failed to run cargo")?;
+    build.meta("success", output.status.success().to_string());
+    drop(build);
 
     let (name, version) = name_with_version.split_once(':').unwrap_or(("", ""));
     let result = Results {
@@ -153,6 +156,9 @@ fn try_compile_for_target(
     };
     debug!("Cargo build {:?} for target: {}", &result.status, target);
     stats.compilation_res.push(result);
+    // Timed too: one `clean` per target is a real part of the verification cost,
+    // and it is invisible in the build numbers it sits between.
+    let _clean = timing::scope("cargo_clean", target);
     std::process::Command::new("cargo")
         .arg("+nightly")
         .arg("clean")

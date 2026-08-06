@@ -16,6 +16,7 @@ pub mod driver;
 pub mod parser;
 pub mod phases;
 pub mod solver;
+pub mod timing;
 pub mod types;
 pub mod visitor;
 
@@ -240,6 +241,13 @@ impl AllStats {
             let cov_data = serde_json::to_string_pretty(cov).unwrap();
             std::fs::write(stats_dir.join("coverage_comparison.json"), cov_data).unwrap();
         }
+        // Written here rather than at the end of `main` because every exit path
+        // — proc-macro bail, not-no_std bail, dep-not-no_std bail, success —
+        // funnels through `dump`. A run that dies early is exactly the one whose
+        // time budget is worth knowing.
+        let timing = timing::report(&self.name);
+        let timing_data = serde_json::to_string_pretty(&timing).unwrap();
+        std::fs::write(stats_dir.join("timing.json"), timing_data).unwrap();
     }
 }
 
@@ -474,17 +482,13 @@ pub struct Telemetry {
     pub max_contraint_length: Vec<(String, usize)>,
     /// Maximum depth of constraint string while solving features
     pub max_constrait_depth: Vec<(String, usize)>,
-    /// Time taken for hir driver analysis in milliseconds
-    pub hir_driver_time_ms: u128,
-    /// Time taken for constraint solving in milliseconds
-    /// This includes the time taken to filter out possible equations
-    pub constraint_solving_time_ms: Vec<(String, u128)>,
-    /// Time taken for initial recrusive visit to verify dependencies are no_std in milliseconds
-    pub initial_dep_verification_time_ms: u128,
+    // All wall-clock accounting now lives in `timing.json` (see `crate::timing`).
+    // The `*_time_ms` scalars that used to sit here measured three isolated calls
+    // and nothing else — in particular `hir_driver_time_ms` was never assigned at
+    // all, and none of them survived a dependency analysis, whose `Telemetry` is
+    // thrown away by the caller.
     /// Did we do a recursive requirement check for dependencies at the end
     pub recursive_requirement_check_done: bool,
-    /// Time taken for recursive requirement check in milliseconds
-    pub recursive_requirement_check_time_ms: u128,
     /// Did the recursive requirement check fail
     pub recursive_requirement_check_failed: bool,
     /// If the above is true, which dependency caused it to fail

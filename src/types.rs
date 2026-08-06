@@ -310,6 +310,19 @@ impl Hash for ReadableSpan {
 }
 
 impl ReadableSpan {
+    /// Stable one-line identity for logs and timing records:
+    /// `src/lib.rs:12:5-12:40`.
+    ///
+    /// Deliberately excludes `usage_crate`, matching `PartialEq`/`Hash` above —
+    /// two records at one position are the same span even when they resolve to
+    /// different crates, which is exactly the case probing exists to decide.
+    pub fn key(&self) -> String {
+        format!(
+            "{}:{}:{}-{}:{}",
+            self.file, self.start_line, self.start_col, self.end_line, self.end_col
+        )
+    }
+
     pub fn contains(&self, other: &ReadableSpan) -> bool {
         if self.file != other.file {
             return false;

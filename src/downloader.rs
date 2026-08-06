@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     sync::LazyLock,
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tar::Archive;
 use toml::{self, Value, map::Map};
@@ -259,7 +259,7 @@ pub fn download_all_dependencies(
     let mut visited = HashSet::new();
     let cfg = z3::Config::new();
     let ctx = z3::Context::new(&cfg);
-    let now = Instant::now();
+    let _t = crate::timing::scope("dep_verify", main_name);
     debug!("Finished downloading dependencies. Now verifying if they support no_std build");
     let (deep_no_std, depth_traversed) = parser::determine_n_depth_dep_no_std(
         initlist,
@@ -283,7 +283,6 @@ pub fn download_all_dependencies(
         false,
         telemetry,
     );
-    telemetry.initial_dep_verification_time_ms = now.elapsed().as_millis();
     telemetry.deps_depth_traversed = depth_traversed;
     Ok(deep_no_std)
 }
