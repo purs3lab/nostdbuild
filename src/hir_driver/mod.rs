@@ -11,8 +11,10 @@ use rustc_ast::token::{Delimiter, TokenKind};
 use rustc_ast::tokenstream::TokenTree;
 use rustc_ast::visit::{self, Visitor as AstVisitor};
 use rustc_driver::Compilation;
+use rustc_hir::def_id::DefId;
+use rustc_hir::intravisit::{self, Visitor as HirVisitor};
 use rustc_interface::interface;
-use rustc_middle::ty::{ResolverAstLowering, TyCtxt};
+use rustc_middle::ty::{ResolverAstLowering, TyCtxt, TypeckResults};
 use rustc_span::hygiene::ExpnKind;
 use rustc_span::source_map::SourceMap;
 use rustc_span::{FileNameDisplayPreference, Span, Symbol};
@@ -236,27 +238,7 @@ impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
     }
 
     fn visit_path(&mut self, path: &'a rustc_ast::Path) -> Self::Result {
-        // If the path is from a macro expansion, trace back to the original call
-        // site. Also look up any #[cfg(…)] guards from that macro's body.
-        let (effective_span, macro_body_cfgs) = if path.span.from_expansion() {
-            let last_expn = path.span.macro_backtrace().last();
-            let span = last_expn
-                .as_ref()
-                .map(|bt| bt.call_site)
-                .unwrap_or(path.span);
-            let cfgs = last_expn
-                .and_then(|expn| {
-                    if let ExpnKind::Macro(_, name) = expn.kind {
-                        self.macro_cfg_map.get(&name).cloned()
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_default();
-            (span, cfgs)
-        } else {
-            (path.span, vec![])
-        };
+        let (effective_span, macro_body_cfgs) = call_site_span(path.span, &self.macro_cfg_map);
 
         let mut deepest_res_def_id = None;
 
@@ -338,6 +320,162 @@ impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
     }
 }
 
+/// Where a span should be *reported*, plus the `#[cfg(…)]` guards of the macro
+/// body it came out of.
+///
+/// A span inside a macro expansion points at code no source file contains, so it
+/// finds no ancestor in the ModNode tree, is classified as unguarded, and becomes
+/// a false positive. Reporting the outermost call site instead is what keeps the
+/// record inside the tree. Shared by the AST path walk and the HIR method walk so
+/// the two cannot drift on this.
+fn call_site_span(
+    span: Span,
+    macro_cfg_map: &HashMap<Symbol, Vec<String>>,
+) -> (Span, Vec<String>) {
+    if !span.from_expansion() {
+        return (span, vec![]);
+    }
+    let last_expn = span.macro_backtrace().last();
+    let call_site = last_expn.as_ref().map(|bt| bt.call_site).unwrap_or(span);
+    let cfgs = last_expn
+        .and_then(|expn| {
+            if let ExpnKind::Macro(_, name) = expn.kind {
+                macro_cfg_map.get(&name).cloned()
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+    (call_site, cfgs)
+}
+
+/// Records the crate each **method call** resolves into.
+///
+/// The AST pass cannot see these. `x.log2()` is an `ExprKind::MethodCall` whose
+/// segment has no entry in `partial_res_map` — method resolution is part of type
+/// checking, and the answer only exists as `type_dependent_def_id`. So every
+/// dot-syntax call is invisible to `visit_path`: `f32::log2` and `f32::round`,
+/// which live in `library/std/src/f32.rs` and have no `core` counterpart, read as
+/// no std usage at all. afe4404 0.2.4 is the case this was written for — the tool
+/// emitted a manifest for it, and its own `src/clock/mod.rs:35` cannot build
+/// bare-metal.
+///
+/// Local resolutions are recorded too, exactly as `visit_path` records a local
+/// path. They are not noise — they are the **witness** that a span is not std.
+/// zeno 0.3.2 is the case: `lambda.sqrt()` resolves to std's inherent `f32::sqrt`
+/// with `std` on, and to zeno's *own* `F32Ext` trait — a local impl forwarding to
+/// `libm` — with it off. Drop the local half and the libm run leaves no record at
+/// all, so the span looks std-in-the-only-run-that-has-it, the prober blames
+/// whichever gate contains it, and zeno loses the `eval` feature its author had
+/// on by default.
+struct MethodResolver<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
+    typeck: &'tcx TypeckResults<'tcx>,
+    records: Vec<PathRecord>,
+    macro_cfg_map: &'a HashMap<Symbol, Vec<String>>,
+}
+
+impl MethodResolver<'_, '_> {
+    fn record(&mut self, seg: &rustc_hir::PathSegment<'_>, def_id: DefId) {
+        let (effective_span, macro_body_cfgs) = call_site_span(seg.ident.span, self.macro_cfg_map);
+        let krate = self.tcx.crate_name(def_id.krate).to_string();
+
+        // `Owner::method`, where the owner is the receiver type's name for an
+        // inherent method and the trait's name for a trait one — `HashMap::insert`,
+        // `Write::write_all`, `f32::log2`.
+        //
+        // The owner name is what makes the record gateable. A method call is
+        // std because its *receiver type* is, and the type is named by an
+        // import; `resolve_import_to_use_gateways` joins a use to its import on
+        // that bound name, via `use_name`, which reads the first segment. So a
+        // `HashMap::insert` record inherits the gate of the
+        // `#[cfg(not(target_os = "none"))] use std::collections::HashMap` that
+        // brought `HashMap` in, exactly as a bare `HashMap::new()` path does.
+        // Spelling the owner as a full path, or hiding it behind `<…>`, severs
+        // that join and reports a properly gated call as unguarded std.
+        //
+        // `f32::log2` is the case that stays hard, and should: the owner is a
+        // primitive, nothing binds `f32`, so there is no import to inherit and no
+        // configuration in which the call is not std.
+        let parent = self.tcx.parent(def_id);
+        let owner = match self.tcx.def_kind(parent) {
+            rustc_hir::def::DefKind::Impl { .. } => {
+                let self_ty = self.tcx.type_of(parent).instantiate_identity();
+                match self_ty.ty_adt_def() {
+                    Some(adt) => self.tcx.item_name(adt.did()).to_string(),
+                    // Primitives, references, slices — no item name to bind.
+                    None => self_ty.to_string(),
+                }
+            }
+            // Trait methods: the trait is the name an import would bind.
+            _ => self.tcx.item_name(parent).to_string(),
+        };
+        let path_text = format!("{}::{}", owner, self.tcx.item_name(def_id));
+
+        let span = get_readable_span(&self.tcx, effective_span, &krate);
+        self.records.push(PathRecord {
+            path_text,
+            definition_crate: krate,
+            local_route: None,
+            defining_module: None,
+            context: PathContext::Expression,
+            span,
+            macro_body_cfgs,
+            is_extern_crate: false,
+            // Set by the driver's facade-gateway pass, not here.
+            gateway_anchor: None,
+        });
+    }
+}
+
+impl<'tcx> HirVisitor<'tcx> for MethodResolver<'_, 'tcx> {
+    fn visit_expr(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
+        if let rustc_hir::ExprKind::MethodCall(seg, ..) = expr.kind
+            && let Some(def_id) = self.typeck.type_dependent_def_id(expr.hir_id)
+        {
+            self.record(seg, def_id);
+        }
+        intravisit::walk_expr(self, expr);
+    }
+}
+
+/// Walks every body in the crate and collects its method-call resolutions.
+///
+/// Bodies are visited one owner at a time, reading the *root* owner's typeck
+/// results: a closure's method calls are recorded in its enclosing function's
+/// tables, so asking for the closure's own would find nothing. The walk itself
+/// does not descend into nested bodies — `hir_body_owners` already yields each
+/// closure separately, and descending as well would record every call twice.
+fn collect_method_records<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    macro_cfg_map: &HashMap<Symbol, Vec<String>>,
+) -> Vec<PathRecord> {
+    let mut records = Vec::new();
+
+    for owner in tcx.hir_body_owners() {
+        // Analysis may have failed for this body (the pass runs even when it
+        // did), in which case there are no results to read.
+        if !tcx.has_typeck_results(owner) {
+            continue;
+        }
+        let root = tcx.typeck_root_def_id(owner.to_def_id());
+        let Some(root) = root.as_local() else {
+            continue;
+        };
+
+        let mut visitor = MethodResolver {
+            tcx,
+            typeck: tcx.typeck(root),
+            records: Vec::new(),
+            macro_cfg_map,
+        };
+        visitor.visit_body(tcx.hir_body_owned_by(owner));
+        records.extend(visitor.records);
+    }
+
+    records
+}
+
 fn get_readable_span(tcx: &TyCtxt, span: Span, usage_crate: &str) -> ReadableSpan {
     let source_map = tcx.sess.source_map();
     let loc = source_map.lookup_char_pos(span.lo());
@@ -358,7 +496,15 @@ fn get_readable_span(tcx: &TyCtxt, span: Span, usage_crate: &str) -> ReadableSpa
 }
 
 struct MyCompilerCalls {
-    compilation: Compilation,
+    /// A `build_script_build` unit. The script has to be compiled and run for
+    /// the crate to build at all, and nothing it contains is the crate's own
+    /// std usage, so both callbacks stand aside and let it through.
+    build_script: bool,
+    /// The AST pass's records, held for `after_analysis` to extend with the
+    /// method calls only type checking can resolve.
+    ast_records: Vec<PathRecord>,
+    macro_imports: Vec<(String, String)>,
+    macro_cfg_map: HashMap<Symbol, Vec<String>>,
 }
 
 impl rustc_driver::Callbacks for MyCompilerCalls {
@@ -367,8 +513,8 @@ impl rustc_driver::Callbacks for MyCompilerCalls {
         _compiler: &interface::Compiler,
         tcx: TyCtxt<'tcx>,
     ) -> Compilation {
-        if self.compilation == Compilation::Continue {
-            return self.compilation;
+        if self.build_script {
+            return Compilation::Continue;
         }
 
         let (records, macro_imports) = {
@@ -398,27 +544,75 @@ impl rustc_driver::Callbacks for MyCompilerCalls {
             };
 
             visitor.visit_crate(krate);
+            // The cfg map is taken back rather than rebuilt: `after_analysis`
+            // needs it to give a method call inside a macro body the same gates
+            // a path there gets, and the AST it was collected from is gone by
+            // then (HIR lowering steals the resolver).
+            self.macro_cfg_map = visitor.macro_cfg_map;
             (visitor.records, visitor.macro_module_imports)
         };
 
+        // Written here as well as after analysis so an ICE in type checking
+        // leaves the records this pass already has, rather than nothing. The
+        // output is then taken apart again rather than cloned — feature-heavy
+        // crates carry enough records that a spare copy is worth avoiding.
         let output_data = FeatureRunOutput {
             records,
             macro_module_imports: macro_imports,
             out_dir: env::var("OUT_DIR").ok(),
         };
+        write_output(&output_data);
+        self.ast_records = output_data.records;
+        self.macro_imports = output_data.macro_module_imports;
 
-        let filename = env::var(consts::PLUGIN_OUTPUT_ENV).unwrap_or_else(|_| {
-            panic!(
-                "Expected environment variable {} to be set",
-                consts::PLUGIN_OUTPUT_ENV
-            )
-        });
+        Compilation::Continue
+    }
 
-        if let Ok(file) = std::fs::File::create(&filename) {
-            serde_json::to_writer(file, &output_data).unwrap();
+    /// The type-checked pass. Everything the AST could not resolve — method
+    /// calls — is added here, and this is where the run stops.
+    ///
+    /// Reaching this point at all is the other half of the fix: stopping after
+    /// expansion accepted any crate whose *names* resolved, so a call to a
+    /// method that does not exist on a bare-metal target (`f32::log2`, an
+    /// `E0599`) left the run looking successful, `LAST_GOOD_TARGET` pinned to
+    /// bare metal, and the host fallback that would have exposed the std usage
+    /// never ran. A covering set that now fails to type check is handled the way
+    /// a failing set always was: CEGAR forbids the assignment and re-partitions.
+    ///
+    /// `Stop` still lands before codegen, so no metadata is emitted — exactly as
+    /// before, which is why `--lib` is still what keeps bin targets out.
+    fn after_analysis<'tcx>(
+        &mut self,
+        _compiler: &interface::Compiler,
+        tcx: TyCtxt<'tcx>,
+    ) -> Compilation {
+        if self.build_script {
+            return Compilation::Continue;
         }
 
-        self.compilation
+        let mut records = std::mem::take(&mut self.ast_records);
+        records.extend(collect_method_records(tcx, &self.macro_cfg_map));
+
+        write_output(&FeatureRunOutput {
+            records,
+            macro_module_imports: std::mem::take(&mut self.macro_imports),
+            out_dir: env::var("OUT_DIR").ok(),
+        });
+
+        Compilation::Stop
+    }
+}
+
+fn write_output(output_data: &FeatureRunOutput) {
+    let filename = env::var(consts::PLUGIN_OUTPUT_ENV).unwrap_or_else(|_| {
+        panic!(
+            "Expected environment variable {} to be set",
+            consts::PLUGIN_OUTPUT_ENV
+        )
+    });
+
+    if let Ok(file) = std::fs::File::create(&filename) {
+        serde_json::to_writer(file, &output_data).unwrap();
     }
 }
 
@@ -455,13 +649,11 @@ impl RustcPlugin for Plugin {
         compiler_args: Vec<String>,
         _plugin_args: Self::Args,
     ) -> rustc_interface::interface::Result<()> {
-        let mut action = Compilation::Stop;
-        if compiler_args.iter().any(|arg| arg == "build_script_build") {
-            action = Compilation::Continue;
-        }
-
         let mut callbacks = MyCompilerCalls {
-            compilation: action,
+            build_script: compiler_args.iter().any(|arg| arg == "build_script_build"),
+            ast_records: Vec::new(),
+            macro_imports: Vec::new(),
+            macro_cfg_map: HashMap::new(),
         };
         rustc_driver::run_compiler(&compiler_args, &mut callbacks);
         Ok(())

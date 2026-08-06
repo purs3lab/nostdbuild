@@ -1,0 +1,11 @@
+[package]
+name = "test_float_method_std"
+description = "Test that a method call only type checking can resolve (f32::log2, defined in std with no core counterpart) is recorded as std usage"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "test_float_method_std"
+
+[workspace]

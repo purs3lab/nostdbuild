@@ -411,6 +411,12 @@ pub struct Telemetry {
     /// `phases::condition_contradicted_by_runs`; uom 0.36's storage features are
     /// the case it was written for.
     pub conditions_contradicted_by_runs: usize,
+    /// How many probe conditions were dropped because a purpose-built run — one
+    /// that *satisfies* the span's gate under the hard constraints — compiled
+    /// with the span not std. The same veto as above for spans no covering run
+    /// ever witnessed; see `phases::gate_satisfied_std_spans`. zeno 0.3.2's
+    /// `eval` is the feature it exists to keep.
+    pub conditions_refuted_by_gate_run: usize,
     /// How many std spans share a source position with records from another
     /// crate *and* resolve to std in every covering run.
     ///

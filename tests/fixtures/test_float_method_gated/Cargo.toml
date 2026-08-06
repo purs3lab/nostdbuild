@@ -1,0 +1,14 @@
+[package]
+name = "test_float_method_gated"
+description = "Test that a std-resolving method call inherits its #[cfg(feature = ...)] gate like any other record, instead of being reported as unguarded std usage"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+path = "main.rs"
+name = "test_float_method_gated"
+
+[features]
+std = []
+
+[workspace]

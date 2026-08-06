@@ -284,6 +284,68 @@ pub fn feature_explaining_std(a: &SpanAnalysis) -> Option<String> {
     }
 }
 
+/// The std spans of a configuration that **satisfies** the span's own gate,
+/// under the crate's hard constraints. `None` when no such configuration exists
+/// or it does not compile — in both cases the run yields no evidence.
+///
+/// [`condition_contradicted_by_runs`] vetoes a probe condition when a covering
+/// run already holds a witness: the span present, and not std, with the
+/// condition false. Some spans never get one. zeno 0.3.2's covering runs are
+/// `[std, eval]` and `[libm]`, and `src/stroke.rs:723`'s `.sqrt()` sits inside
+/// an `eval`-gated block, so the only run that compiles it also has `std` on.
+/// The probe then negates the one gate it can see, the code disappears, and
+/// `¬eval` is emitted — zeno converts and builds, having quietly lost a feature
+/// its author had on by default.
+///
+/// So compile the witness instead of waiting for one. Asserting the gate rather
+/// than negating it asks the question that actually distinguishes the two cases:
+///
+/// * zeno — `[eval, libm]` compiles and `.sqrt()` resolves to zeno's own
+///   `F32Ext`. The gate is not what makes the span non-std, so the condition
+///   goes and `eval` survives.
+/// * tarfs 0.2.7 — `[builtin_devices]` with `std` off does not compile at all
+///   (`use std::fs::File`, `E0433`). No evidence, condition kept, and
+///   `builtin_devices` is still correctly turned off.
+/// * wg 0.9.2 — satisfying `not(feature = "triomphe")` means `triomphe` off,
+///   which leaves `use std::sync::Arc` under `no_std`. Also fails, so the
+///   requirement that `triomphe` be *on* survives.
+///
+/// This is a refutation, never an attribution: it can only drop a condition the
+/// probe proposed, never name a feature of its own. Both weaker readings of the
+/// run evidence — including one tried and reverted here — got wg or tarfs wrong
+/// precisely by attributing.
+pub fn gate_satisfied_std_spans<'a>(
+    ctx: &'a Context,
+    crate_name: &str,
+    manifest: &str,
+    ancestors: &[Bool<'a>],
+    hard_constraints: &[Bool<'a>],
+    all_constraints: &[Bool<'a>],
+) -> Option<Vec<ReadableSpan>> {
+    let refs: Vec<&Bool<'a>> = ancestors.iter().collect();
+    let satisfied = Bool::and(ctx, &refs);
+
+    match solve_with_negation(ctx, hard_constraints, &satisfied, all_constraints) {
+        SolveResult::Unsat => {
+            debug!("Gate {} cannot be satisfied under the hard constraints", satisfied);
+            None
+        }
+        SolveResult::Sat(features, _) => {
+            debug!("Gate-satisfying configuration for {}: {:?}", satisfied, features);
+            match run_rustc_plugin_pass(manifest, crate_name, &features, None) {
+                PassOutcome::Success { std_spans, .. } => Some(std_spans),
+                // A configuration that keeps the gate and drops std does not
+                // build: the gate really is the way out, so leave the probe's
+                // condition alone.
+                _ => {
+                    debug!("Gate-satisfying configuration {:?} did not compile", features);
+                    None
+                }
+            }
+        }
+    }
+}
+
 pub fn probe_conditional_spans<'a>(
     ctx: &'a z3::Context,
     crate_name: &str,

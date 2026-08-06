@@ -1,5 +1,15 @@
 #![no_std]
+// A `#![no_std]` bin needs no `main` and must supply its own panic handler.
+// Both are checked during analysis, not during expansion — so before the plugin
+// pass ran through type checking, this fixture "compiled" on every target
+// without either of them.
+#![no_main]
 #![allow(dead_code)]
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
 
 // eq_a — depends on b_helper at compile time; must appear first in AST
 // so the greedy seed is eq_a and eq_c_not_b poisons the set before eq_b can join

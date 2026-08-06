@@ -1,6 +1,6 @@
 use log::{debug, warn};
 use proc_macro2::Span;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::{fs, process::Command};
@@ -2538,6 +2538,55 @@ pub fn analyze_crate<'a>(
                 cond, result.target.analysis.span
             );
             telemetry.conditions_contradicted_by_runs += 1;
+            result.condition = None;
+        }
+    }
+
+    // The same veto for spans the covering runs never witnessed at all — the
+    // ones the check above cannot speak for, because no run has the span present
+    // and non-std. Rather than let the probe's "the code disappeared" stand,
+    // compile the witness: a configuration that *satisfies* the gate under the
+    // hard constraints. If the span is not std there, the gate is not what makes
+    // it non-std. See `phases::gate_satisfied_std_spans` for why zeno clears this
+    // and tarfs and wg do not.
+    //
+    // One compile per distinct gate, cached — the population is small (only
+    // witness-less spans whose probe returned NonStd with a condition), and
+    // targets sharing a gate share the answer.
+    let mut gate_runs: HashMap<Vec<String>, Option<Vec<ReadableSpan>>> = HashMap::new();
+    for result in &mut conditional_results {
+        if !matches!(result.decision, ProbeDecision::NonStd { .. })
+            || result.condition.is_none()
+            || !result.target.analysis.non_std_configs.is_empty()
+        {
+            continue;
+        }
+        let Some(ancestors) = result.target.ancestors.clone() else {
+            continue;
+        };
+
+        let key: Vec<String> = ancestors.iter().map(|b| b.to_string()).collect();
+        let std_spans = gate_runs.entry(key).or_insert_with(|| {
+            gate_satisfied_std_spans(
+                ctx,
+                crate_name,
+                manifest,
+                &ancestors,
+                &hard_constraints,
+                &all_constraints,
+            )
+        });
+
+        if let Some(spans) = std_spans
+            && !spans.iter().any(|s| {
+                *s == result.target.analysis.span && s.usage_crate.as_deref() == Some("std")
+            })
+        {
+            debug!(
+                "Dropping condition {:?} for span {:?}: a configuration satisfying the gate compiles with the span not std",
+                result.condition, result.target.analysis.span
+            );
+            telemetry.conditions_refuted_by_gate_run += 1;
             result.condition = None;
         }
     }
