@@ -1,5 +1,5 @@
 use itertools::Itertools;
-use log::debug;
+use log::{debug, warn};
 use proc_macro2::{Delimiter, Group, Punct, Spacing, Span, TokenStream, TokenTree};
 // use quote::ToTokens;
 use syn::{
@@ -12,12 +12,86 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Mutex;
 use z3::ast::Bool;
 
 use crate::types::*;
 use crate::{Attributes, driver, parser};
+
+/// Source files the module walk could not read or parse, main crate and
+/// dependencies alike. Reported through `telemetry.files_syn_failed`.
+static SYN_FAILED_FILES: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// Every file that failed to parse so far, in path order.
+pub fn syn_failed_files() -> Vec<String> {
+    SYN_FAILED_FILES
+        .lock()
+        .map(|s| s.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn note_syn_failure(path: &Path, err: &dyn std::fmt::Display) {
+    warn!(
+        "Skipping {}: {err}. Treating the file as empty.",
+        path.display()
+    );
+    if let Ok(mut s) = SYN_FAILED_FILES.lock() {
+        s.insert(path.display().to_string());
+    }
+}
+
+/// Manifests `cargo metadata` refused, reported through
+/// `telemetry.cargo_metadata_failed`.
+static METADATA_FAILED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// Every manifest `cargo metadata` refused so far, in path order.
+pub fn cargo_metadata_failures() -> Vec<String> {
+    METADATA_FAILED
+        .lock()
+        .map(|s| s.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn note_metadata_failure(manifest: &str, err: &str) {
+    warn!("Failed to execute cargo metadata for {manifest}: {err}");
+    if let Ok(mut s) = METADATA_FAILED.lock() {
+        s.insert(manifest.to_string());
+    }
+}
+
+/// Read and parse a module file, treating a file `syn` (or the filesystem)
+/// rejects as *empty* rather than fatal.
+///
+/// A file that does not parse is a fact about that file, not a reason to abort
+/// the run (KI-19). Some are deliberately invalid — serde_json's
+/// `features_check/error.rs` is a bare string literal behind
+/// `#[cfg(not(any(feature = "std", feature = "alloc")))]`, i.e. it exists to
+/// *be* a compile error — and the rest are edition-2015 shapes syn 2 cannot
+/// represent. Either way the module contributes no items and the crate still
+/// gets an analysis; the miss is recorded in `telemetry.files_syn_failed`.
+fn parse_file_lenient(path: &Path) -> syn::File {
+    let empty = syn::File {
+        shebang: None,
+        attrs: vec![],
+        items: vec![],
+    };
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            note_syn_failure(path, &e);
+            return empty;
+        }
+    };
+    match syn::parse_file(&content) {
+        Ok(f) => f,
+        Err(e) => {
+            note_syn_failure(path, &e);
+            empty
+        }
+    }
+}
 
 #[derive(Default, Clone, Debug)]
 pub struct ParsedAttr {
@@ -2174,10 +2248,7 @@ impl<'a> ModCollector<'a> {
         name: &str,
         inherited: Option<Bool<'a>>,
     ) -> ModNode<'a> {
-        let content = std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
-        let syntax = syn::parse_file(&content)
-            .unwrap_or_else(|e| panic!("Failed to parse {}: {}", path.display(), e));
+        let syntax = parse_file_lenient(path);
 
         let source_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
         // Fold any file-level inner `#![cfg(...)]` gate into the entry condition
@@ -2240,10 +2311,7 @@ impl<'a> ModCollector<'a> {
 
         if let Some(path) = file_path {
             debug!("Visiting child module {} at {}", child.name, path.display());
-            let content = std::fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
-            let syntax = syn::parse_file(&content)
-                .unwrap_or_else(|e| panic!("Failed to parse {}: {}", path.display(), e));
+            let syntax = parse_file_lenient(path);
 
             let source_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
             let is_mod_rs = path.file_name().is_some_and(|n| n == "mod.rs");
@@ -2533,16 +2601,24 @@ fn should_skip(attrs: &[syn::Attribute]) -> bool {
 /// table itself is kept — dropping it entirely would let cargo walk upwards and
 /// attach the crate to an unrelated parent workspace. The original file is
 /// always restored before returning.
-fn run_cargo_metadata(manifest: &str) -> cargo_metadata::Metadata {
+///
+/// `None` when cargo refuses the manifest outright. That is a fact about the
+/// manifest, not a reason to end the run (KI-19): `secp256k1-sys` 0.8–0.10 ships
+/// a published manifest with `no targets specified` (vendored C, `links` only),
+/// which used to panic every dependent. Each caller degrades to what it can
+/// derive without cargo, and the manifest is recorded in
+/// `telemetry.cargo_metadata_failed`.
+fn run_cargo_metadata(manifest: &str) -> Option<cargo_metadata::Metadata> {
     let run = || MetadataCommand::new().manifest_path(manifest).no_deps().exec();
 
     let first_err = match run() {
-        Ok(metadata) => return metadata,
+        Ok(metadata) => return Some(metadata),
         Err(e) => e,
     };
 
     let Some(patched) = strip_workspace_members(manifest) else {
-        panic!("Failed to execute cargo metadata: {first_err:?}");
+        note_metadata_failure(manifest, &format!("{first_err:?}"));
+        return None;
     };
 
     debug!("cargo metadata failed for {manifest}, retrying without workspace members");
@@ -2551,7 +2627,13 @@ fn run_cargo_metadata(manifest: &str) -> cargo_metadata::Metadata {
     let result = run();
     std::fs::write(manifest, &original).expect("Failed to restore manifest");
 
-    result.unwrap_or_else(|e| panic!("Failed to execute cargo metadata: {e:?}"))
+    match result {
+        Ok(metadata) => Some(metadata),
+        Err(e) => {
+            note_metadata_failure(manifest, &format!("{e:?}"));
+            None
+        }
+    }
 }
 
 /// Return `manifest`'s contents with `members`/`default-members`/`exclude`
@@ -2588,11 +2670,17 @@ fn is_lib_kind(k: &TargetKind) -> bool {
 /// Mirrors the `is_lib || (is_bin && !has_lib)` entrypoint rule in
 /// [`find_entrypoints`]: when a lib exists it is the only target we analyse, so
 /// the HIR pass must be restricted to it too.
+///
+/// A manifest cargo refuses reports `false` — the same answer as a manifest with
+/// no targets at all, which is what those manifests are (see
+/// [`run_cargo_metadata`]). The caller then omits `--lib`, exactly as for a
+/// bin-only crate.
 pub fn package_has_lib(manifest: &str) -> bool {
-    run_cargo_metadata(manifest)
-        .workspace_packages()
-        .iter()
-        .any(|p| p.targets.iter().any(|t| t.kind.iter().any(is_lib_kind)))
+    run_cargo_metadata(manifest).is_some_and(|m| {
+        m.workspace_packages()
+            .iter()
+            .any(|p| p.targets.iter().any(|t| t.kind.iter().any(is_lib_kind)))
+    })
 }
 
 /// Every feature Cargo can enable for this package.
@@ -2601,8 +2689,25 @@ pub fn package_has_lib(manifest: &str) -> bool {
 /// because cargo synthesises an implicit feature for each optional dependency
 /// (blst's `serde`) that the table alone does not list. Treating one of those
 /// as undeclared would erase a genuinely controllable feature.
+///
+/// When cargo refuses the manifest the same set is rebuilt from the file itself
+/// — the `[features]` keys plus one per optional dependency, which is what the
+/// synthesis above amounts to. Returning an empty set instead would erase every
+/// `feature = "X"` atom in the crate (see [`with_known_features`]), turning
+/// gated code into unconditional code.
+///
+/// [`with_known_features`]: ModCollector::with_known_features
 pub fn declared_features(manifest: &str) -> HashSet<String> {
-    run_cargo_metadata(manifest)
+    let Some(metadata) = run_cargo_metadata(manifest) else {
+        let toml = driver::read_manifest_toml(manifest);
+        let mut feats: HashSet<String> = crate::downloader::read_local_features(&toml)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        feats.extend(parser::optional_dep_keys(&toml));
+        return feats;
+    };
+    metadata
         .workspace_packages()
         .iter()
         .flat_map(|p| p.features.keys().cloned())
@@ -2641,7 +2746,27 @@ fn collect_source_files_recursive(
 }
 
 pub fn find_entrypoints(manifest: &str, known_modules: &mut Vec<PathBuf>) -> PathBuf {
-    let metadata = run_cargo_metadata(manifest);
+    let crate_dir = PathBuf::from(&manifest).parent().unwrap().to_path_buf();
+
+    // Cargo refused the manifest: fall back to its own auto-discovery rule, the
+    // declared `[lib] path` or the conventional `src/lib.rs` / `src/main.rs`.
+    // A manifest cargo rejects for "no targets specified" has none of those, so
+    // this yields nothing and the crate is analysed as empty — the same state a
+    // target-less package already produced, and not a panicked run (KI-19).
+    let Some(metadata) = run_cargo_metadata(manifest) else {
+        let declared = driver::read_manifest_toml(manifest)
+            .get("lib")
+            .and_then(|l| l.get("path"))
+            .and_then(toml::Value::as_str)
+            .map(|p| crate_dir.join(p));
+        let mut candidates = declared
+            .into_iter()
+            .chain([crate_dir.join("src/lib.rs"), crate_dir.join("src/main.rs")]);
+        if let Some(entry) = candidates.find(|p| p.exists()) {
+            known_modules.push(entry);
+        }
+        return crate_dir;
+    };
 
     for package in metadata.workspace_packages() {
         let targets = &package.targets;
@@ -2657,7 +2782,7 @@ pub fn find_entrypoints(manifest: &str, known_modules: &mut Vec<PathBuf>) -> Pat
         }
     }
 
-    PathBuf::from(&manifest).parent().unwrap().to_path_buf()
+    crate_dir
 }
 
 /// Collect (name, full_condition) pairs for every named item in the tree.

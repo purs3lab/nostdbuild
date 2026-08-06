@@ -32,9 +32,26 @@ pub fn solve_with_negation<'a>(
                     solver.pop(1);
                 }
             }
-            let model = solver.get_model().expect("sat without model");
-            let (enabled, disabled) = crate::solver::model_to_features(&Some(model));
-            SolveResult::Sat(enabled, disabled)
+            // `pop` discards the model the preceding `check` produced, so when
+            // the *last* optional constraint is the one that failed, the solver
+            // is left holding no model at all and `get_model` returns `None`
+            // ("sat without model", agnostic-0.7.2). The surviving assertion set
+            // is satisfiable by construction — every unsatisfiable addition was
+            // popped back off — so re-check to rebuild the model.
+            let model = match solver.check() {
+                SatResult::Sat => solver.get_model(),
+                other => {
+                    debug!("solve_with_negation: re-check after pop returned {other:?}");
+                    None
+                }
+            };
+            match model {
+                Some(model) => {
+                    let (enabled, disabled) = crate::solver::model_to_features(&Some(model));
+                    SolveResult::Sat(enabled, disabled)
+                }
+                None => SolveResult::Unsat,
+            }
         }
         SatResult::Unsat | SatResult::Unknown => SolveResult::Unsat,
     }

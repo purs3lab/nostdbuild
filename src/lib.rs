@@ -223,7 +223,12 @@ impl AllStats {
             let crate_info_data = serde_json::to_string_pretty(crate_info).unwrap();
             std::fs::write(crate_info_file, crate_info_data).unwrap();
         }
-        if let Some(telemetry) = &self.telemetry {
+        if let Some(telemetry) = &mut self.telemetry {
+            // Filled here rather than at the failure sites: the visitor collects
+            // them process-wide (main crate and every dependency), and `dump` is
+            // the one point every exit path funnels through.
+            telemetry.files_syn_failed = visitor::syn_failed_files();
+            telemetry.cargo_metadata_failed = visitor::cargo_metadata_failures();
             let telemetry_data = serde_json::to_string_pretty(telemetry).unwrap();
             std::fs::write(telemetry_file, telemetry_data).unwrap();
         }
@@ -309,6 +314,23 @@ pub struct Telemetry {
     /// `consts::KNOWN_SYN_FAILURES` escape hatch is the same case, handled one
     /// crate at a time.
     pub deps_no_sources_parsed: Vec<String>,
+    /// Files the module walk could not read or hand to `syn`, main crate and
+    /// dependencies alike (`visitor::syn_failed_files`).
+    ///
+    /// Such a file used to end the process — 338 of the 344 panicked runs in the
+    /// run30 corpus died here (KI-19). It is now treated as contributing no
+    /// items, so the crate still gets an analysis; a non-empty list means that
+    /// analysis is missing whatever those files contained. Deliberately-invalid
+    /// files (serde_json's `features_check/error.rs`) show up here as a matter
+    /// of course and are not a defect.
+    pub files_syn_failed: Vec<String>,
+    /// Manifests `cargo metadata` refused (`visitor::cargo_metadata_failures`).
+    ///
+    /// Also once fatal: `secp256k1-sys`'s published manifest specifies no
+    /// targets, which panicked every dependent. Each caller now degrades — no
+    /// entrypoints, no lib target, features read from the file — so a listed
+    /// manifest means that crate contributed nothing to the analysis.
+    pub cargo_metadata_failed: Vec<String>,
     /// Dependencies that failed to download, as `name:version-requirement`.
     /// They are skipped by the verification pass, so a non-empty list means the
     /// no_std verdict for the tree covers fewer dependencies than it appears to.
