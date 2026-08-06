@@ -349,7 +349,8 @@ fn call_site_span(
     (call_site, cfgs)
 }
 
-/// Records the crate each **method call** resolves into.
+/// Records the crate each **type-dependent callee** resolves into: method calls,
+/// and the trait calls behind overloaded operators.
 ///
 /// The AST pass cannot see these. `x.log2()` is an `ExprKind::MethodCall` whose
 /// segment has no entry in `partial_res_map` — method resolution is part of type
@@ -376,8 +377,8 @@ struct MethodResolver<'a, 'tcx> {
 }
 
 impl MethodResolver<'_, '_> {
-    fn record(&mut self, seg: &rustc_hir::PathSegment<'_>, def_id: DefId) {
-        let (effective_span, macro_body_cfgs) = call_site_span(seg.ident.span, self.macro_cfg_map);
+    fn record(&mut self, site: Span, def_id: DefId) {
+        let (effective_span, macro_body_cfgs) = call_site_span(site, self.macro_cfg_map);
         let krate = self.tcx.crate_name(def_id.krate).to_string();
 
         // `Owner::method`, where the owner is the receiver type's name for an
@@ -430,10 +431,27 @@ impl MethodResolver<'_, '_> {
 
 impl<'tcx> HirVisitor<'tcx> for MethodResolver<'_, 'tcx> {
     fn visit_expr(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
-        if let rustc_hir::ExprKind::MethodCall(seg, ..) = expr.kind
+        // Every expression whose callee only type checking knows. Operators are
+        // the same mechanism as a method call: an overloaded `+`, `[]`, `*` or
+        // `+=` is a trait call rustc records in the same table, and one written
+        // on primitives is built in and has no entry at all — so this adds
+        // records exactly where a trait impl was selected, and nothing where the
+        // operation is a machine instruction.
+        //
+        // Reported at the operator itself where there is one, so the span points
+        // at the thing that resolved rather than at the whole expression.
+        let site = match expr.kind {
+            rustc_hir::ExprKind::MethodCall(seg, ..) => Some(seg.ident.span),
+            rustc_hir::ExprKind::Binary(op, ..) => Some(op.span),
+            rustc_hir::ExprKind::AssignOp(op, ..) => Some(op.span),
+            rustc_hir::ExprKind::Unary(..) | rustc_hir::ExprKind::Index(..) => Some(expr.span),
+            _ => None,
+        };
+
+        if let Some(site) = site
             && let Some(def_id) = self.typeck.type_dependent_def_id(expr.hir_id)
         {
-            self.record(seg, def_id);
+            self.record(site, def_id);
         }
         intravisit::walk_expr(self, expr);
     }
