@@ -569,6 +569,22 @@ struct FileVisitor<'a> {
     /// regular covering item so the driver can run each covering set twice
     /// (once with the condition, once with its negation).
     pub no_std_condition: Option<Bool<'a>>,
+    /// Did this file carry a bare inner `#![no_std]`? Such a crate has no
+    /// `cfg_attr` for `finish` to read a no_std condition off, but it can still
+    /// link std through a gated crate-root `extern crate std` — see
+    /// `std_extern_gate`.
+    unconditional_no_std: bool,
+    /// The condition under which a crate-root `extern crate std;` is present,
+    /// OR-combined across every such declaration (std is linked if any of them
+    /// is). Only collected at the top level of the file: an `extern crate` binds
+    /// the name in the module that declares it, and only the crate root's
+    /// binding decides whether the crate as a whole links std.
+    std_extern_gate: Option<Bool<'a>>,
+    /// A crate-root `extern crate std;` whose presence cannot be turned into a
+    /// condition: ungated, or gated by a cfg `negatable_cfg_gate` refuses. It
+    /// vetoes `std_extern_gate` — with std possibly linked for a reason not in
+    /// the OR, negating the OR would not be the no_std condition.
+    std_extern_unnegatable: bool,
     /// If the current module has a path override (from #[path]),
     /// this is the directory to search for its children.
     current_search_dir: PathBuf,
@@ -630,6 +646,9 @@ impl<'a> FileVisitor<'a> {
             hard_constraints: vec![],
             pending_includes: vec![],
             no_std_condition: None,
+            unconditional_no_std: false,
+            std_extern_gate: None,
+            std_extern_unnegatable: false,
             macro_cfg_gates: HashMap::new(),
         }
     }
@@ -734,6 +753,46 @@ impl<'a> FileVisitor<'a> {
                     && matches!(parsed.logic.first(), Some(parser::Logic::Any | parser::Logic::Or));
                 pure || any_mixed
             })
+    }
+
+    /// The item's `#[cfg]` gate, but only when *negating* it is sound.
+    ///
+    /// `parse_cfg_gate` is fine for using a gate as a gate: an erased
+    /// non-feature atom leaves a weaker condition, and guarding an item on less
+    /// than the truth is the safe direction. Negation flips that — `¬C'` where
+    /// `C'` lost an operand is not `¬C`, which is the trap O-1 fell into.
+    ///
+    /// Policy G erases an atom by dropping the operand, i.e. by assuming it
+    /// false under `any()` and true under `all()`. Only the first assumption
+    /// holds here: this is exactly bucket 3C's argument (346f239) — the erased
+    /// atoms of an `any()` are target predicates and `test`, all false in the
+    /// bare-metal builds the tool asks for, so `C'` is `C` and `¬C'` is `¬C`.
+    /// Under `all()` the assumption runs the other way and `¬C'` would forbid
+    /// features the crate never tied to std, so such a gate yields `None` and
+    /// the caller is left with no condition rather than a wrong one. Keyed on
+    /// the *outermost* combinator, as 346f239 is.
+    fn negatable_cfg_gate(&self, attrs: &[syn::Attribute]) -> Option<Bool<'a>> {
+        let cfgs: Vec<_> = attrs.iter().filter(|a| a.path().is_ident("cfg")).collect();
+        if cfgs.is_empty() {
+            return None;
+        }
+        cfgs.into_iter().try_fold(None, |acc, attr| {
+            let (equation, parsed) = parser::parse_main_attributes_direct_with(
+                attr,
+                self.ctx,
+                self.known_features.as_deref(),
+            );
+            let equation = equation?;
+            if !parsed.constants.is_empty()
+                && !matches!(
+                    parsed.logic.first(),
+                    Some(parser::Logic::Any | parser::Logic::Or)
+                )
+            {
+                return None;
+            }
+            Some(Self::and_conditions(self.ctx, acc, Some(equation)))
+        })?
     }
 
     /// Parse all cfg_attr path overrides from a set of attributes.
@@ -1405,6 +1464,30 @@ impl<'a> FileVisitor<'a> {
         Vec<PendingInclude<'a>>,
     ) {
         assert_eq!(self.condition_stack.len(), 1);
+        // A crate that is `#![no_std]` outright has no `#![cfg_attr(<cond>,
+        // no_std)]` for the loop above to read, so `no_std_condition` stays
+        // `None` — and then `covering_set_modes` produces no std/no_std split
+        // and the baseline no_std run never fires (driver.rs). Every covering
+        // run can then have `std` on, `classify_spans` sees std in all of them,
+        // and every std span lands `AlwaysStd`. That is what failed orchard,
+        // whose std-off build compiles fine.
+        //
+        // Such a crate still says when it links std: a gated crate-root `extern
+        // crate std`, without which no `std::` path resolves under `#![no_std]`.
+        // The no_std condition is the negation of that gate. `parser::
+        // process_crate` already derives the same equation the same way for the
+        // feature-selection solve (`attrs.unconditional_no_std` →
+        // `get_item_extern_std` → `eq.not()`); this is the coverage phase
+        // learning it too. An explicit `cfg_attr` always wins — it is the
+        // author's own statement, and this is only the inference for its absence.
+        if self.no_std_condition.is_none()
+            && self.unconditional_no_std
+            && !self.std_extern_unnegatable
+            && let Some(gate) = &self.std_extern_gate
+        {
+            debug!("Unconditional #![no_std]: no_std condition is not({gate})");
+            self.no_std_condition = Some(gate.not());
+        }
         (
             self.items_stack.pop().unwrap(),
             self.children_stack.pop().unwrap(),
@@ -1683,6 +1766,13 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
     }
 
     fn visit_attribute(&mut self, i: &'_ syn::Attribute) {
+        // A bare `#![no_std]`. On its own it says nothing about features, but
+        // paired with a gated crate-root `extern crate std` it names the
+        // condition under which the crate links std — see `finish`.
+        if i.path().is_ident("no_std") && matches!(i.style, syn::AttrStyle::Inner(_)) {
+            self.unconditional_no_std = true;
+        }
+
         if i.path().is_ident("cfg_attr")
             && !self.does_cfg_attr_override_path(std::slice::from_ref(i))
         {
@@ -1970,6 +2060,27 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         }
 
         let externally_gated = self.is_externally_gated(&i.attrs);
+        // `#[cfg(C)] extern crate std;` at the crate root of an unconditionally
+        // `#![no_std]` crate is that crate's statement of when it links std, and
+        // `finish` turns it into the no_std condition. `condition_stack.len() ==
+        // 1` is the top level of the file; a binding inside an inline `mod` is
+        // that module's, not the crate's.
+        if i.ident == "std" && self.condition_stack.len() == 1 {
+            match self.negatable_cfg_gate(&i.attrs) {
+                // Several such declarations link std if *any* of them is present.
+                Some(gate) => {
+                    self.std_extern_gate = Some(match self.std_extern_gate.take() {
+                        Some(prev) => Bool::or(self.ctx, &[&prev, &gate]),
+                        None => gate,
+                    });
+                }
+                // Either no `#[cfg]` at all — std is linked unconditionally, so
+                // there is no condition to find — or one whose negation is not
+                // sound (see `negatable_cfg_gate`). Both mean the same thing
+                // here: say nothing.
+                None => self.std_extern_unnegatable = true,
+            }
+        }
         // `#[cfg(not(feature = "std"))] extern crate core_io;` is the edition-2015
         // spelling of the same statement `use core_io::…` makes: under this cfg the
         // crate must be linked. `use_path` stays None — giving an `extern crate` a
