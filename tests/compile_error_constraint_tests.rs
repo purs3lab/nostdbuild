@@ -16,8 +16,20 @@
 //! `violated_compile_error_constraints` closes the world instead: a feature the
 //! build will not pass to cargo is asserted false.
 
+//!
+//! The second half of this file covers the opposite failure (O-1): a
+//! `compile_error!` whose cfg names a non-feature atom. Policy G erases such an
+//! atom out of its combinator, which reads as *false* inside `any(…)` and *true*
+//! inside `all(…)` — both directions make the cfg more likely to fire. That is
+//! the safe side wherever a cfg gates code, and the wrong side here, because
+//! this position emits the cfg's *negation*. miden-thiserror and
+//! midenc-hir-symbol both ended up with a hard constraint saying "std is
+//! mandatory" for crates that build clean with `--no-default-features`, and
+//! every std-off covering seed was skipped as unsatisfiable.
+
 use std::path::{Path, PathBuf};
 
+use nostd::visitor::ModCollector;
 use nostd::{Attributes, CrateInfo, parser};
 
 fn fixture(name: &str) -> PathBuf {
@@ -209,4 +221,135 @@ fn the_fixture_constraint_is_actually_collected() {
         "expected blst and rust among the compile_error features, got {:?}",
         names
     );
+}
+
+// ---------------------------------------------------------------------------
+// O-1 — a cfg naming an atom policy G erases emits no constraint at all
+// ---------------------------------------------------------------------------
+
+/// The negated attribute as the visitor builds it: `#[cfg(not(<orig tokens>))]`.
+fn negated(src: &str) -> syn::Attribute {
+    let item: syn::ItemStruct = syn::parse_str(&format!("{src} struct S;")).unwrap();
+    let tokens = match &item.attrs[0].meta {
+        syn::Meta::List(l) => l.tokens.clone(),
+        other => panic!("fixture attribute is not a meta list: {other:?}"),
+    };
+    syn::parse_quote!(#[cfg(not(#tokens))])
+}
+
+fn constraint_of(src: &str) -> Option<String> {
+    let ctx = z3::Context::new(&z3::Config::new());
+    parser::compile_error_constraint(&negated(src), &ctx, None).map(|eq| eq.to_string())
+}
+
+/// miden-thiserror: `error_in_core` erased out of the `or` leaves
+/// `(not (not (or std)))` — "std is mandatory" — for a crate that builds clean
+/// on aarch64-unknown-none with no features at all.
+#[test]
+fn erased_atom_inside_any_emits_no_constraint() {
+    assert_eq!(
+        constraint_of(r#"#[cfg(not(any(feature = "std", error_in_core)))]"#),
+        None
+    );
+}
+
+/// midenc-hir-symbol: the `all(…)` mirror. `not(target_family = "wasm")` erases
+/// to true, leaving `(not (and (not std)))` — same verdict, other combinator.
+#[test]
+fn erased_atom_inside_all_emits_no_constraint() {
+    assert_eq!(
+        constraint_of(r#"#[cfg(all(not(feature = "std"), not(target_family = "wasm")))]"#),
+        None
+    );
+}
+
+/// Control: an all-feature cfg has nothing erased and must still constrain.
+/// These are the three real shapes the fix must not touch — parley, vls-core,
+/// bulletproofs-bls. If this passed vacuously the fix would be a no-op wrecker.
+#[test]
+fn all_feature_cfgs_still_emit_their_constraint() {
+    for src in [
+        r#"#[cfg(not(any(feature = "std", feature = "libm")))]"#, // parley
+        r#"#[cfg(not(any(feature = "std", feature = "no-std")))]"#, // vls-core
+        r#"#[cfg(all(not(feature = "rust"), not(feature = "blst")))]"#, // bulletproofs-bls
+        r#"#[cfg(feature = "std")]"#,
+    ] {
+        assert!(
+            constraint_of(src).is_some(),
+            "{src} names only features; its constraint must survive"
+        );
+    }
+}
+
+/// A `feature = "X"` Cargo cannot enable (bucket I) is erased by the same
+/// mechanism, so it must be dropped here too — but only when the caller supplies
+/// the declared set. With `None` every `feature = …` stays a solver variable.
+#[test]
+fn undeclared_feature_is_erased_only_when_the_declared_set_is_supplied() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let attr = negated(r#"#[cfg(not(any(feature = "std", feature = "nightly")))]"#);
+    let known: std::collections::HashSet<String> = ["std".to_string()].into_iter().collect();
+
+    assert!(
+        parser::compile_error_constraint(&attr, &ctx, None).is_some(),
+        "without a declared set both atoms are solver variables"
+    );
+    assert!(
+        parser::compile_error_constraint(&attr, &ctx, Some(&known)).is_none(),
+        "`nightly` is not declared, so it erases and the negation is unsound"
+    );
+}
+
+// --- the wiring: ModCollector is what actually vetoes the covering seeds ---
+
+/// The real entry point. `ModCollector::hard_constraints` is what
+/// `find_feature_combs_for_all_code` feeds to the solver, and a bad constraint
+/// there is what made every `(and (not std))` seed "unsatisfiable with hard
+/// constraints". A direct call to `compile_error_constraint` would not prove
+/// this path uses it.
+#[test]
+fn mod_collector_drops_the_erased_atom_constraint() {
+    for name in ["erased_any_shape.rs", "erased_all_shape.rs"] {
+        let ctx = z3::Context::new(&z3::Config::new());
+        let mut collector = ModCollector::new(&ctx);
+        collector.collect(&fixture(name), "lib");
+        assert!(
+            collector.hard_constraints.is_empty(),
+            "{name}: expected no hard constraint, got {:?}",
+            collector.hard_constraints
+        );
+    }
+}
+
+/// Control for the above: the same walk over an all-feature `compile_error!`
+/// must still produce one. Without this the collector test passes even if
+/// `visit_item_macro` stopped collecting `compile_error!` entirely.
+#[test]
+fn mod_collector_keeps_an_all_feature_constraint() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut collector = ModCollector::new(&ctx);
+    collector.collect(&fixture("bulletproofs_shape.rs"), "lib");
+    assert_eq!(
+        collector.hard_constraints.len(),
+        1,
+        "expected the rust/blst constraint, got {:?}",
+        collector.hard_constraints
+    );
+}
+
+/// The closed-world final check must not report a violation that is an artefact
+/// of the erasure. With no features on, the over-strong `(not (not (or std)))`
+/// is unsatisfiable and would be reported — but miden-thiserror's build with no
+/// features is exactly the one that compiles.
+#[test]
+fn erased_atom_constraint_is_not_reported_as_violated() {
+    let info = crate_info(&[("std", &[])]);
+    for name in ["erased_any_shape.rs", "erased_all_shape.rs"] {
+        let v = violations(name, &info, &[], false);
+        assert!(
+            v.is_empty(),
+            "{name}: the constraint is unsound in this position and must not be checked, got {:?}",
+            v
+        );
+    }
 }

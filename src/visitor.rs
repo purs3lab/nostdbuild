@@ -2068,7 +2068,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                         let negated: Attribute = syn::parse_quote!(
                         #[cfg(not(#tokens))]
                         );
-                        let constraint = parser::parse_main_attributes_direct_with(&negated, self.ctx, self.known_features.as_deref()).0;
+                        let constraint = parser::compile_error_constraint(&negated, self.ctx, self.known_features.as_deref());
                         if let Some(c) = constraint {
                             self.hard_constraints.push(c);
                         }

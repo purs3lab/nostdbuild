@@ -457,9 +457,12 @@ pub fn process_crate(
     // post-solve satisfiability check below.
     let mut excluded_compile_error_eqs: Vec<Bool> = Vec::new();
     for negated_attr in attrs.compile_error_attrs.iter() {
-        let (neg_eq, neg_parsed_attr) = parse_main_attributes_direct(negated_attr, ctx);
+        let (_, neg_parsed_attr) = parse_main_attributes_direct(negated_attr, ctx);
         non_minimalizable_features.extend(neg_parsed_attr.features.iter().cloned());
-        if let Some(neg_eq) = neg_eq {
+        // `None` when the cfg names an atom policy G erases — its negation
+        // cannot be modelled soundly, so it constrains nothing. The features it
+        // named stay non-minimalizable above: that only pins, it asserts nothing.
+        if let Some(neg_eq) = compile_error_constraint(negated_attr, ctx, None) {
             let has_overlap = neg_parsed_attr
                 .features
                 .iter()
@@ -2065,6 +2068,57 @@ pub fn parse_main_attributes_direct_with<'a>(
     parse_meta_for_cfg_attr(&attr.meta, ctx, known_features)
 }
 
+/// The negated cfg of a `#[cfg(C)] compile_error!(…)` as a solver constraint —
+/// or `None` when `C` names an atom that policy G erases.
+///
+/// Erasure drops the operand from its combinator, so an erased atom reads as
+/// **false** inside `any(…)` and **true** inside `all(…)`. Both directions push
+/// `C` toward true, which is the safe side wherever `C` gates code — and the
+/// wrong side here, because the constraint this position emits is `¬C`. A `C`
+/// made more likely makes `¬C` forbid configurations that build perfectly well:
+///
+/// ```text
+/// #[cfg(not(any(feature = "std", error_in_core)))] compile_error!(…)   // miden-thiserror
+///   error_in_core erased out of the or  ⇒  C = not(feature="std")
+///   constraint ¬C = (not (not (or std)))  ⇒  "std is mandatory"
+///
+/// #[cfg(all(not(feature = "std"), not(target_family = "wasm")))] compile_error!(…)  // midenc-hir-symbol
+///   not(target_family="wasm") erased out of the and  ⇒  C = and(not std)
+///   constraint ¬C = (not (and (not std)))  ⇒  "std is mandatory"
+/// ```
+///
+/// Both crates build clean with `--no-default-features` (aarch64-unknown-none
+/// and wasm32v1-none respectively), yet every std-off covering seed was skipped
+/// as "unsatisfiable with hard constraints", so no std-off run ever survived and
+/// `classify_spans` marked every std span `AlwaysStd`.
+///
+/// There is no sound repair by re-assigning the atom: the opposite choice makes
+/// `¬C` unsatisfiable outright. An erased atom is *unknown*, and under a
+/// negation an unknown cannot be given a truth value. Dropping the constraint
+/// costs at most a feature set that fails to compile, which the CEGAR loop
+/// already handles; keeping it costs the crate.
+///
+/// `known_features` is threaded through so a `feature = "X"` Cargo cannot enable
+/// (bucket I) counts as erased here too — it becomes a constant by exactly the
+/// same mechanism.
+pub fn compile_error_constraint<'a>(
+    negated_attr: &Attribute,
+    ctx: &'a z3::Context,
+    known_features: Option<&HashSet<String>>,
+) -> Option<Bool<'a>> {
+    let (eq, parsed) = parse_meta_for_cfg_attr(&negated_attr.meta, ctx, known_features);
+    if !parsed.constants.is_empty() {
+        debug!(
+            "Dropping compile_error constraint {:?}: cfg names erased atom(s) {:?}, \
+             so its negation cannot be modelled soundly",
+            eq.as_ref().map(|e| e.to_string()),
+            parsed.constants
+        );
+        return None;
+    }
+    eq
+}
+
 /// Collect all feature names mentioned across all compile_error attributes.
 /// Used by callers that cannot access the private `compile_error_attrs` field directly.
 pub fn compile_error_feature_names(attrs: &Attributes, ctx: &z3::Context) -> HashSet<String> {
@@ -2158,8 +2212,11 @@ pub fn violated_compile_error_constraints(
 
     let mut violated = Vec::new();
     for attr in attrs.compile_error_attrs.iter() {
-        let (eq, parsed) = parse_main_attributes_direct(attr, ctx);
-        let Some(eq) = eq else {
+        let (_, parsed) = parse_main_attributes_direct(attr, ctx);
+        // Skipped when the cfg names an erased atom: the constraint we would
+        // check against is the over-strong one, so a "violation" here would be
+        // an artefact of the erasure, not of the feature set.
+        let Some(eq) = compile_error_constraint(attr, ctx, None) else {
             continue;
         };
         let solver = z3::Solver::new(ctx);

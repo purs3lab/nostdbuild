@@ -1424,11 +1424,17 @@ pub fn find_feature_combs_for_all_code<'a>(
         // This covers code paths that are active in no_std mode but not gated
         // by any specific feature — paths that would otherwise be missed when
         // every covering set requires std (e.g., all features → std transitively).
-        // The optional-dep edges ride along: the baseline is the run most likely to
-        // drop a dependency the no_std half imports, and it is otherwise solved with
-        // no constraints at all.
+        // Solved against `all_hard`, the same constraint set `covering_set_modes`
+        // uses. It used to see `optdep_constraints` alone, which made the baseline
+        // the one run in the system solved without the crate's own `compile_error!`
+        // and without the feature-implication edges — so it routinely picked a set
+        // the crate itself forbids, died, and left no std-off run at all. parley:
+        // `(std ∨ libm) ∧ ¬std` forces `libm`, but the baseline ran `[]` and hit
+        // "kurbo requires either the `std` or `libm` feature".
+        // `all_hard` is snapshotted above, before `cond` is pushed onto
+        // `compile_error_constraints`, so passing it as `extra` does not double it.
         if let Some(ref cond) = no_std_cond
-            && let Some(baseline_feats) = features_for_mode(ctx, &optdep_constraints, cond)
+            && let Some(baseline_feats) = features_for_mode(ctx, &all_hard, cond)
             && previously_ran_feats.insert(baseline_feats.clone())
         {
             compile_error_constraints.push(cond.clone());
