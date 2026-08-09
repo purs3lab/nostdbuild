@@ -818,6 +818,9 @@ pub fn run_default_features_pass(manifest: &str, crate_name: &str) -> PassOutcom
         macro_modules,
         std_spans,
         full_output,
+        // The default-features pass is a host build of the crate's *default*
+        // configuration — a std run by construction, and never classified.
+        std_inconclusive: false,
     }
 }
 
@@ -978,6 +981,11 @@ pub fn run_rustc_plugin_pass_with(
     let mut last_stderr = String::new();
     let mut last_exit: Option<i32> = None;
     let mut succeeded_on: Option<Option<&'static str>> = None;
+    // Did any bare-metal attempt get as far as compiling *this* crate? A failure
+    // inside a dependency stops cargo before the main crate is ever built, so a
+    // host fallback after one of those says nothing about this crate's own std
+    // usage — see `PassOutcome::Success::std_inconclusive`.
+    let mut bare_metal_reached_crate = false;
 
     for target in targets {
         // Fresh output slot per attempt so a stale success can't be mistaken for
@@ -1054,6 +1062,9 @@ pub fn run_rustc_plugin_pass_with(
 
         last_stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         last_exit = output.status.code();
+        if target.is_some() && compile_failure_names_crate(&last_stderr, crate_name) {
+            bare_metal_reached_crate = true;
+        }
         debug!(
             "cargo hir failed for {} on target [{}] (exit {})",
             crate_name,
@@ -1070,11 +1081,18 @@ pub fn run_rustc_plugin_pass_with(
         };
     };
 
+    let std_inconclusive = succeeded_target.is_none() && !bare_metal_reached_crate;
+
     match succeeded_target {
         Some(t) => {
             *LAST_GOOD_TARGET.lock().unwrap() = Some(t);
             debug!("cargo hir succeeded for {} on target {}", crate_name, t);
         }
+        None if std_inconclusive => debug!(
+            "cargo hir succeeded for {} on host (no bare-metal target compiled, and every \
+             bare-metal attempt died inside a dependency — std records inconclusive)",
+            crate_name
+        ),
         None => debug!(
             "cargo hir succeeded for {} on host (no bare-metal target compiled)",
             crate_name
@@ -1108,7 +1126,47 @@ pub fn run_rustc_plugin_pass_with(
         macro_modules,
         std_spans,
         full_output,
+        std_inconclusive,
     }
+}
+
+/// Did this failing build get as far as compiling `crate_name` itself?
+///
+/// Cargo reports the package it gave up on — ``error: could not compile `core2`
+/// (lib) due to 4 previous errors`` — and stops there, so a line naming this
+/// crate is proof the crate was reached and a line naming something else is
+/// proof it was not. A build-script panic or a resolver error names nothing at
+/// all, which is also "not reached".
+///
+/// `crate_name` arrives as `name:version`; cargo prints the package name with
+/// dashes, while the rest of the pipeline uses either spelling, so both are
+/// normalised before comparing.
+pub fn compile_failure_names_crate(stderr: &str, crate_name: &str) -> bool {
+    let name = crate_name.split(':').next().unwrap_or(crate_name);
+    let norm = name.replace('-', "_");
+    stderr.lines().filter_map(compiled_package).any(|pkg| {
+        let pkg = pkg.replace('-', "_");
+        pkg == norm
+    })
+}
+
+/// Did the crate spell `std` itself anywhere in this path?
+///
+/// `std::marker::PhantomData` and `crate::std::error::Error` (a root facade) did;
+/// `io::Result` and `Write::write_all` did not — those name a *local binding*,
+/// and which crate it resolves to is decided by the dependency graph. On a run
+/// that never left the host that distinction is the whole question: the shim
+/// under `io` was built with its own default `std` feature, so it answers `std`
+/// no matter what this crate asks for.
+pub fn crate_named_std_in_path(path_text: &str) -> bool {
+    path_text.split("::").any(|seg| seg.trim() == "std")
+}
+
+/// The package name in a ``could not compile `X` `` line, if the line is one.
+fn compiled_package(line: &str) -> Option<&str> {
+    let rest = line.trim().strip_prefix("error: could not compile ")?;
+    let rest = rest.strip_prefix('`')?;
+    rest.split('`').next()
 }
 
 /// Parse a crate's manifest, or an empty table when it cannot be read.
@@ -1446,6 +1504,7 @@ pub fn find_feature_combs_for_all_code<'a>(
                     macro_modules,
                     std_spans: _,
                     full_output,
+                    std_inconclusive,
                 } => {
                     debug!(
                         "Baseline no_std run succeeded with {} records",
@@ -1456,6 +1515,7 @@ pub fn find_feature_combs_for_all_code<'a>(
                     covering_runs.push(CoveringRun {
                         features: baseline_feats,
                         output: full_output,
+                        std_inconclusive,
                     });
                     pending_modules.extend(macro_modules.into_iter().map(|(filename, modname)| {
                         (
@@ -1505,12 +1565,14 @@ pub fn find_feature_combs_for_all_code<'a>(
                             macro_modules,
                             std_spans: _,
                             full_output,
+                            std_inconclusive,
                         } => {
                             run.meta("outcome", "success");
                             run.meta("records", full_output.records.len().to_string());
                             covering_runs.push(CoveringRun {
                                 features: enable.clone(),
                                 output: full_output,
+                                std_inconclusive,
                             });
                             pending_modules.extend(macro_modules.into_iter().map(
                                 |(filename, modname)| {
@@ -1613,6 +1675,7 @@ pub fn find_feature_combs_for_all_code<'a>(
                             macro_modules,
                             std_spans: _,
                             full_output,
+                            std_inconclusive,
                         } => {
                             debug!(
                                 "[cegar iter {cegar_iter}] set {set_num}/{set_total}: ok ({} records, {} macro modules)",
@@ -1631,6 +1694,7 @@ pub fn find_feature_combs_for_all_code<'a>(
                             covering_runs.push(CoveringRun {
                                 features: enable.clone(),
                                 output: full_output,
+                                std_inconclusive,
                             });
                             pending_modules.extend(macro_modules.into_iter().map(
                                 |(filename, modname)| {
@@ -1803,6 +1867,7 @@ pub fn find_feature_combs_for_all_code<'a>(
                                     macro_modules,
                                     std_spans: _,
                                     full_output,
+                                    std_inconclusive,
                                 } => {
                                     debug!(
                                         "[fixpoint mod '{modname}', iter {fp_iter}] set {set_num}/{set_total}: ok ({} records, {} macro modules)",
@@ -1822,6 +1887,7 @@ pub fn find_feature_combs_for_all_code<'a>(
                                     covering_runs.push(CoveringRun {
                                         features: enable.clone(),
                                         output: full_output,
+                                        std_inconclusive,
                                     });
                                     next_pending.extend(macro_modules.into_iter().map(
                                         |(filename, modname)| {
@@ -2297,6 +2363,9 @@ pub fn discover_build_enablers<'a>(
             last_success = Some(CoveringRun {
                 features: feats,
                 output: full_output,
+                // The search runs with `allow_host_fallback = false`, so a trial
+                // that compiled did so for a bare-metal target.
+                std_inconclusive: false,
             });
         }
         trial.meta("compiles", ok.to_string());
@@ -2386,6 +2455,25 @@ fn classify_and_split(
         t.meta("runs", covering_runs.len().to_string());
         classify_spans(covering_runs)
     };
+
+    // High-water mark, not an assignment and not a sum. `classify_and_split` runs
+    // twice for one crate when the enabler search adopts a run (over the same set
+    // plus one, so adding them would double-count), and one `Telemetry` is shared
+    // by the main crate and every dependency analysed after it — a plain
+    // assignment lets the last dependency's zero erase the main crate's count.
+    let inconclusive = covering_runs
+        .iter()
+        .filter(|r| r.std_inconclusive)
+        .count();
+    telemetry.std_inconclusive_runs = telemetry.std_inconclusive_runs.max(inconclusive);
+    if inconclusive > 0 {
+        debug!(
+            "{} of {} covering run(s) compiled only on the host with every bare-metal attempt \
+             failing inside a dependency — their std records are not counted",
+            inconclusive,
+            covering_runs.len()
+        );
+    }
 
     // Spans where a derive-style collision and unavoidable std-ness coincide —
     // see `Telemetry::collided_std_spans`. Recorded before any probing so the
@@ -2564,7 +2652,7 @@ pub fn analyze_crate<'a>(
         })
         .collect::<Vec<_>>();
 
-    let hard_imports = probe_candidates(
+    let mut hard_imports = probe_candidates(
         ctx,
         crate_name,
         manifest,
@@ -2589,7 +2677,7 @@ pub fn analyze_crate<'a>(
         probe_candidates_usages
     );
 
-    let hard_usages = probe_usages(
+    let mut hard_usages = probe_usages(
         ctx,
         crate_name,
         manifest,
@@ -2790,6 +2878,45 @@ pub fn analyze_crate<'a>(
         );
     }
     telemetry.externally_gated_spans = externally_gated_spans;
+
+    // Not one covering run ever put this crate in a no_std environment: every one
+    // compiled only on the host, after a dependency had already failed on bare
+    // metal. The probe already refuses to call such a run's "still std" proof of
+    // hardness — but an *ungated* span never reaches the probe at all
+    // (`initial_ungated_results` short-circuits it to `StillStd` without
+    // compiling), so it would still be reported on the strength of those runs
+    // alone. Where the crate did not spell `std` itself, the std in the record
+    // came through a dependency's re-export, and that is the dependency's
+    // configuration talking: bitstream-io's residue is 30 × `writer.write_all(…)`
+    // against `W: io::Write`, where `io` is `core2::io`. Unproven, not hard.
+    //
+    // Conditioned on *every* run being inconclusive, not on any of them being so.
+    // A crate with even one bare-metal run has a real witness, and discounting
+    // records in that case silences genuine std — main_tests caught assertr 0.4.3
+    // (ungated `use std::marker::PhantomData`) and tinywasm-parser 0.8.0
+    // (`impl crate::std::error::Error`) when an earlier version of this tried it.
+    if !covering_runs.is_empty() && covering_runs.iter().all(|r| r.std_inconclusive) {
+        let mut downgraded = 0usize;
+        for result in hard_imports.iter_mut().chain(hard_usages.iter_mut()) {
+            if matches!(result.decision, ProbeDecision::StillStd { .. })
+                && !crate_named_std_in_path(&result.target.analysis.exemplar.path_text)
+            {
+                debug!(
+                    "'{}' at {:?} is std only in runs that never left the host; unproven, not hard",
+                    result.target.analysis.exemplar.path_text, result.target.analysis.span
+                );
+                result.decision = ProbeDecision::CompileFailed;
+                downgraded += 1;
+            }
+        }
+        if downgraded > 0 {
+            debug!(
+                "{} span(s) downgraded to unproven: no covering run compiled for a bare-metal \
+                 target and none of them names std in this crate's own source",
+                downgraded
+            );
+        }
+    }
 
     let compile_failed_spans = hard_imports
         .iter()

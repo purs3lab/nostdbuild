@@ -66,6 +66,11 @@ pub struct SpanAnalysis {
 pub struct CoveringRun {
     pub features: Vec<String>,
     pub output: FeatureRunOutput,
+    /// The run compiled only on the host, and no bare-metal attempt ever got as
+    /// far as compiling *this* crate — every one of them died inside a
+    /// dependency. See `PassOutcome::Success::std_inconclusive`: such a run's
+    /// `usage_crate == "std"` records are not evidence that the span is std.
+    pub std_inconclusive: bool,
 }
 
 /// The only part of a `PathRecord` that cross-crate item analysis needs: which
@@ -146,6 +151,28 @@ pub enum PassOutcome {
         std_spans: Vec<ReadableSpan>,
         /// Full output retained for cross-run comparison (Phase 1).
         full_output: FeatureRunOutput,
+        /// The pass compiled only on the host *and* no bare-metal attempt ever
+        /// reached this crate — every one of them failed inside a dependency
+        /// (an unresolved `std`, a build script that panicked, …).
+        ///
+        /// Such a run is not a no_std environment: `--no-default-features` on
+        /// the main crate does not take `std` out of the dependency graph, so a
+        /// shim like `core2` is still compiled with its own default `std`
+        /// feature and its items *are* std items. Every `io::Read` that a
+        /// no_std build would resolve to `core2` comes back
+        /// `usage_crate: "std"` (bitstream-io 4.0.0: 528 such records, 436
+        /// spans reported as unguarded std).
+        ///
+        /// So the run's std records are inconclusive — they may be the
+        /// dependency's configuration talking, not this crate's code. Its
+        /// *non*-std records stay evidence: a span that resolved to `core` here
+        /// resolves to `core` on bare metal too.
+        ///
+        /// False when any bare-metal attempt failed while compiling this crate:
+        /// that is the tarfs case the host fallback exists for — a feature whose
+        /// code does `use std::fs::File` fails on the target and the host build
+        /// is the only place that std usage surfaces.
+        std_inconclusive: bool,
     },
     CompileFailed {
         stderr: String,

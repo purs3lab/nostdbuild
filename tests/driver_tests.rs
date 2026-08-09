@@ -516,6 +516,7 @@ fn classify_spans_does_not_see_panic_expansion_as_std() {
     let runs = vec![CoveringRun {
         features: vec!["std".to_string()],
         output: out,
+        std_inconclusive: false,
     }];
     let analyses = classify_spans(&runs);
 

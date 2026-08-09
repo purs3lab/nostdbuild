@@ -1,0 +1,12 @@
+[package]
+name = "host_only_own_std"
+description = "The control: only the host compiles, but it is this crate's own ungated std usage that the bare-metal targets choke on"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "host_only_own_std"
+
+[features]
+default = []

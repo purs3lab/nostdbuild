@@ -548,9 +548,33 @@ where
                         PassOutcome::Success {
                             std_spans,
                             full_output,
+                            std_inconclusive,
                             ..
                         } => {
-                            let decision = classify_success(std_spans, full_output);
+                            let mut decision = classify_success(std_spans, full_output);
+                            // The negated gate compiled only on the host, and only
+                            // because no bare-metal attempt got past a dependency.
+                            // `--no-default-features` does not take std out of the
+                            // dependency graph there, so a shim like `core2` is
+                            // still built with its own default `std` feature and
+                            // its items resolve to std whatever this gate says.
+                            // "Still std" in that environment is the dependency's
+                            // configuration talking, not proof the gate is no way
+                            // out — report it as unproven instead, which keeps the
+                            // span out of `all_hard` and counts it.
+                            // `NonStd` is left alone: a span that resolved to
+                            // another crate here resolves there on bare metal too.
+                            if std_inconclusive
+                                && let ProbeDecision::StillStd { reason } = &decision
+                            {
+                                debug!(
+                                    "Probe compiled only on the host with every bare-metal attempt \
+                                     failing inside a dependency; not treating '{}' as proof of \
+                                     hardness",
+                                    reason
+                                );
+                                decision = ProbeDecision::CompileFailed;
+                            }
                             let is_nonstd = matches!(decision, ProbeDecision::NonStd { .. });
                             last_decision = decision.clone();
                             history.push(ProbeOneStep {

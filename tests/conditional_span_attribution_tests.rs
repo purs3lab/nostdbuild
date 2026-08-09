@@ -64,6 +64,7 @@ fn run(features: &[&str], records: Vec<PathRecord>) -> CoveringRun {
             macro_module_imports: vec![],
             out_dir: None,
         },
+        std_inconclusive: false,
     }
 }
 

@@ -457,6 +457,17 @@ pub struct Telemetry {
     /// because of the co-located records, and `Conditional` never reaches
     /// `all_hard`. This counts the spans that hinge on that distinction.
     pub collided_std_spans: usize,
+    /// Covering runs that compiled only on the host *and* only because no
+    /// bare-metal attempt ever reached this crate — every one died inside a
+    /// dependency. Such a run is not a no_std environment (the deps keep their
+    /// own default `std` features), so its std records are ignored by
+    /// `phases::classify_spans` and a probe that ends there reports unproven
+    /// rather than `StillStd`. Non-zero means part of this crate's evidence was
+    /// discounted for that reason.
+    ///
+    /// A high-water mark over every analysis that shares this `Telemetry` (the
+    /// main crate and then each dependency), so a later zero cannot erase it.
+    pub std_inconclusive_runs: usize,
     /// Std records that inherited a `#[cfg]` from the import that bound their
     /// name, summed over the covering runs (see
     /// `driver::resolve_import_to_use_gateways`).

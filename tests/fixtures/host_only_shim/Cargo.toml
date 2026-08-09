@@ -1,0 +1,25 @@
+[package]
+name = "host_only_shim"
+description = "A crate whose no_std build resolves through a shim that is itself compiled with std, so only the host compiles and the host says everything is std"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "host_only_shim"
+
+# bitstream-io's `core2` edge, exactly: no `default-features = false`, and
+# nothing in this crate's `[features]` reaches the shim. So the shim is built
+# with its own `default = ["std"]` no matter what is asked of *this* crate, and
+# every bare-metal target fails inside the shim before this crate is compiled.
+[dependencies.shim]
+path = "shim"
+
+[features]
+default = ["std"]
+std = []
+
+# `exclude` keeps the shim out of the workspace so `find_entrypoints` does not
+# analyse its lib as a second entrypoint.
+[workspace]
+exclude = ["shim"]
