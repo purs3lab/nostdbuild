@@ -125,14 +125,14 @@ fn no_extern_std_yields_no_condition() {
     assert!(no_std_condition(&ctx, "no_extern_std_shape.rs").is_none());
 }
 
-/// tinywasm's shape: the declaration is inside a module, so it binds `std` there
-/// and says nothing about the crate root.
+/// The declaration is inside an *inline* `mod` block, which is that module's own
+/// binding rather than the file's. Only a file's top level counts.
 #[test]
-fn extern_std_below_the_crate_root_yields_no_condition() {
+fn extern_std_inside_an_inline_module_yields_no_condition() {
     let ctx = z3::Context::new(&z3::Config::new());
     assert!(
         no_std_condition(&ctx, "nested_extern_std_shape.rs").is_none(),
-        "an `extern crate` binds the name in its own module only"
+        "an inline `mod`'s `extern crate` binds the name in that module only"
     );
 }
 
@@ -154,4 +154,52 @@ fn an_ungated_extern_std_vetoes_the_inference() {
 fn a_test_only_extern_std_yields_no_condition() {
     let ctx = z3::Context::new(&z3::Config::new());
     assert!(no_std_condition(&ctx, "cfg_test_shape.rs").is_none());
+}
+
+// ---------------------------------------------------------------------------
+// The declaration below the crate root — nate-common 0.1.10, tinywasm 0.8.0
+// ---------------------------------------------------------------------------
+
+/// nate-common's `src/details.rs`, tinywasm's `src/std.rs`: the crate root has no
+/// `extern crate std` at all and the whole std facade is a module of its own,
+/// reached unconditionally. That module's declaration links std for the crate
+/// exactly as a root one would, so it is the crate's statement of when it does.
+///
+/// Without this, nate-common got no no_std condition, no baseline no_std run
+/// (its log has no `Baseline no_std run:` line at all) and 23 `AlwaysStd` spans.
+#[test]
+fn a_facade_module_supplies_the_condition() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let cond = no_std_condition(&ctx, "submodule_facade/lib.rs")
+        .expect("an unconditionally reached module's `extern crate std` is the crate's");
+    assert!(
+        is_negation_of(&ctx, &cond, "std"),
+        "expected the negation of `feature = \"std\"`, got {cond}"
+    );
+}
+
+/// Control: the module holding the facade is itself gated, so the declaration's
+/// real condition carries the module's gate too. Folding that into the OR is
+/// what O-1 warns about — an erased atom inside it flips meaning under the
+/// negation — and leaving it out only leaves the OR too narrow, which keeps std
+/// linked in a run meant to be std-off. Nothing is claimed.
+#[test]
+fn a_gated_facade_module_yields_no_condition() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    assert!(
+        no_std_condition(&ctx, "gated_submodule_facade/lib.rs").is_none(),
+        "a conditionally compiled module does not speak for the crate"
+    );
+}
+
+/// Control: an ungated declaration two levels down vetoes the root's gate, just
+/// as an ungated one in the root does — std is linked whatever the features do.
+/// Doubles as the proof that the fold recurses past the first level.
+#[test]
+fn an_ungated_extern_std_in_a_grandchild_vetoes_the_inference() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    assert!(
+        no_std_condition(&ctx, "deep_ungated_facade/lib.rs").is_none(),
+        "std is linked unconditionally in a module the tree always reaches"
+    );
 }

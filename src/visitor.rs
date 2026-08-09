@@ -571,19 +571,19 @@ struct FileVisitor<'a> {
     pub no_std_condition: Option<Bool<'a>>,
     /// Did this file carry a bare inner `#![no_std]`? Such a crate has no
     /// `cfg_attr` for `finish` to read a no_std condition off, but it can still
-    /// link std through a gated crate-root `extern crate std` — see
-    /// `std_extern_gate`.
+    /// link std through a gated `extern crate std` — see `std_extern_gate`.
     unconditional_no_std: bool,
-    /// The condition under which a crate-root `extern crate std;` is present,
-    /// OR-combined across every such declaration (std is linked if any of them
-    /// is). Only collected at the top level of the file: an `extern crate` binds
-    /// the name in the module that declares it, and only the crate root's
-    /// binding decides whether the crate as a whole links std.
+    /// The condition under which a file-top-level `extern crate std;` is
+    /// present, OR-combined across every such declaration in this file (std is
+    /// linked if any of them is). Only collected at the top level: an `extern
+    /// crate` inside an inline `mod` block is that module's own binding.
+    /// `ModCollector` folds this file's gate together with those of every
+    /// unconditionally reached module — see [`StdExternFacts`].
     std_extern_gate: Option<Bool<'a>>,
-    /// A crate-root `extern crate std;` whose presence cannot be turned into a
-    /// condition: ungated, or gated by a cfg `negatable_cfg_gate` refuses. It
-    /// vetoes `std_extern_gate` — with std possibly linked for a reason not in
-    /// the OR, negating the OR would not be the no_std condition.
+    /// An `extern crate std;` whose presence cannot be turned into a condition:
+    /// ungated, or gated by a cfg `negatable_cfg_gate` refuses. It vetoes
+    /// `std_extern_gate` — with std possibly linked for a reason not in the OR,
+    /// negating the OR would not be the no_std condition.
     std_extern_unnegatable: bool,
     /// If the current module has a path override (from #[path]),
     /// this is the directory to search for its children.
@@ -1454,6 +1454,11 @@ impl<'a> FileVisitor<'a> {
     }
 
     /// Consume the visitor and return the top-level (items, children).
+    ///
+    /// The `#![no_std]` / `extern crate std` inference this file contributes to
+    /// is *not* applied here — one file cannot see it. `finish` reports the raw
+    /// observation as [`StdExternFacts`] and `ModCollector` folds the whole
+    /// crate's files together before deciding.
     fn finish(
         mut self,
     ) -> (
@@ -1462,39 +1467,58 @@ impl<'a> FileVisitor<'a> {
         Vec<Bool<'a>>,
         Option<Bool<'a>>,
         Vec<PendingInclude<'a>>,
+        StdExternFacts<'a>,
     ) {
         assert_eq!(self.condition_stack.len(), 1);
-        // A crate that is `#![no_std]` outright has no `#![cfg_attr(<cond>,
-        // no_std)]` for the loop above to read, so `no_std_condition` stays
-        // `None` — and then `covering_set_modes` produces no std/no_std split
-        // and the baseline no_std run never fires (driver.rs). Every covering
-        // run can then have `std` on, `classify_spans` sees std in all of them,
-        // and every std span lands `AlwaysStd`. That is what failed orchard,
-        // whose std-off build compiles fine.
-        //
-        // Such a crate still says when it links std: a gated crate-root `extern
-        // crate std`, without which no `std::` path resolves under `#![no_std]`.
-        // The no_std condition is the negation of that gate. `parser::
-        // process_crate` already derives the same equation the same way for the
-        // feature-selection solve (`attrs.unconditional_no_std` →
-        // `get_item_extern_std` → `eq.not()`); this is the coverage phase
-        // learning it too. An explicit `cfg_attr` always wins — it is the
-        // author's own statement, and this is only the inference for its absence.
-        if self.no_std_condition.is_none()
-            && self.unconditional_no_std
-            && !self.std_extern_unnegatable
-            && let Some(gate) = &self.std_extern_gate
-        {
-            debug!("Unconditional #![no_std]: no_std condition is not({gate})");
-            self.no_std_condition = Some(gate.not());
-        }
+        let facts = StdExternFacts {
+            unconditional_no_std: self.unconditional_no_std,
+            gate: self.std_extern_gate.take(),
+            unnegatable: self.std_extern_unnegatable,
+        };
         (
             self.items_stack.pop().unwrap(),
             self.children_stack.pop().unwrap(),
             self.hard_constraints,
             self.no_std_condition,
             self.pending_includes,
+            facts,
         )
+    }
+}
+
+/// What one file says about when this crate links `std`.
+///
+/// `#![no_std]` takes `std` out of the extern prelude, so under it a bare
+/// `std::` path resolves only where an `extern crate std;` binds the name. The
+/// `#[cfg]`s on those declarations are therefore the crate's own statement of
+/// when it links std, and the no_std condition is their negation — see
+/// [`ModCollector::visit_file`], which does the folding.
+#[derive(Debug, Default, Clone)]
+pub struct StdExternFacts<'a> {
+    /// A bare inner `#![no_std]` in this file. Only the entrypoint's is read: a
+    /// submodule can be `#![no_std]` on its own (argparsnip's `src/std.rs`)
+    /// without saying anything about the crate.
+    pub unconditional_no_std: bool,
+    /// OR of the `#[cfg]`s on the file-top-level `extern crate std;` items —
+    /// std is linked if any one of them is present.
+    pub gate: Option<Bool<'a>>,
+    /// One of those declarations cannot be turned into a condition. Vetoes
+    /// `gate`: with std possibly linked for a reason not in the OR, negating the
+    /// OR would not be the no_std condition.
+    pub unnegatable: bool,
+}
+
+impl<'a> StdExternFacts<'a> {
+    /// Fold another file's declarations in. `unconditional_no_std` is deliberately
+    /// not merged — it belongs to the entrypoint alone.
+    fn merge(&mut self, ctx: &'a z3::Context, other: StdExternFacts<'a>) {
+        self.unnegatable |= other.unnegatable;
+        if let Some(gate) = other.gate {
+            self.gate = Some(match self.gate.take() {
+                Some(prev) => Bool::or(ctx, &[&prev, &gate]),
+                None => gate,
+            });
+        }
     }
 }
 
@@ -2060,11 +2084,11 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         }
 
         let externally_gated = self.is_externally_gated(&i.attrs);
-        // `#[cfg(C)] extern crate std;` at the crate root of an unconditionally
-        // `#![no_std]` crate is that crate's statement of when it links std, and
-        // `finish` turns it into the no_std condition. `condition_stack.len() ==
-        // 1` is the top level of the file; a binding inside an inline `mod` is
-        // that module's, not the crate's.
+        // `#[cfg(C)] extern crate std;` in an unconditionally `#![no_std]` crate
+        // is that crate's statement of when it links std, and `ModCollector`
+        // turns it into the no_std condition. `condition_stack.len() == 1` is the
+        // top level of the file; a binding inside an inline `mod` is that
+        // module's, not the crate's.
         if i.ident == "std" && self.condition_stack.len() == 1 {
             match self.negatable_cfg_gate(&i.attrs) {
                 // Several such declarations link std if *any* of them is present.
@@ -2394,7 +2418,7 @@ impl<'a> ModCollector<'a> {
             self.known_features.clone(),
         );
         visitor.visit_file(&syntax);
-        let (local_items, mut children, hard_constraints, no_std_cond, pending_includes) =
+        let (local_items, mut children, hard_constraints, no_std_cond, pending_includes, mut facts) =
             visitor.finish();
         self.hard_constraints.extend(hard_constraints);
         self.pending_includes.extend(pending_includes);
@@ -2403,7 +2427,38 @@ impl<'a> ModCollector<'a> {
         }
 
         for child in &mut children {
-            Self::resolve_child(self.ctx, child, &mut self.hard_constraints, &mut self.pending_includes, self.known_features.clone());
+            Self::resolve_child(self.ctx, child, &mut self.hard_constraints, &mut self.pending_includes, &mut facts, self.known_features.clone());
+        }
+
+        // A crate that is `#![no_std]` outright has no `#![cfg_attr(<cond>,
+        // no_std)]` for the visitor to read, so `no_std_condition` stays `None`
+        // — and then `covering_set_modes` produces no std/no_std split and the
+        // baseline no_std run never fires (driver.rs). Every covering run can
+        // then have `std` on, `classify_spans` sees std in all of them, and
+        // every std span lands `AlwaysStd`. That is what failed orchard, whose
+        // std-off build compiles fine.
+        //
+        // Such a crate still says when it links std: a gated `extern crate std`,
+        // without which no `std::` path resolves under `#![no_std]`. The no_std
+        // condition is the negation of that gate. `parser::process_crate`
+        // already derives the same equation the same way for the feature-
+        // selection solve (`attrs.unconditional_no_std` → `get_item_extern_std`
+        // → `eq.not()`); this is the coverage phase learning it too. An explicit
+        // `cfg_attr` always wins — it is the author's own statement, and this is
+        // only the inference for its absence.
+        //
+        // The declaration need not be in the crate root. A crate's std facade is
+        // as often a module of its own (`mod std;` in tinywasm, `mod details;` in
+        // nate-common), and `extern crate std` there links std for the whole
+        // crate just the same — `resolve_child` folds in every file the module
+        // tree reaches unconditionally.
+        if self.no_std_condition.is_none()
+            && facts.unconditional_no_std
+            && !facts.unnegatable
+            && let Some(gate) = &facts.gate
+        {
+            debug!("Unconditional #![no_std]: no_std condition is not({gate})");
+            self.no_std_condition = Some(gate.not());
         }
 
         ModNode {
@@ -2423,11 +2478,12 @@ impl<'a> ModCollector<'a> {
         child: &mut ModNode<'a>,
         hard_constraints: &mut Vec<Bool<'a>>,
         pending_includes: &mut Vec<PendingInclude<'a>>,
+        facts: &mut StdExternFacts<'a>,
         known_features: Option<Rc<HashSet<String>>>,
     ) {
         if child.is_inline {
             for gc in &mut child.children {
-                Self::resolve_child(ctx, gc, hard_constraints, pending_includes, known_features.clone());
+                Self::resolve_child(ctx, gc, hard_constraints, pending_includes, facts, known_features.clone());
             }
             return;
         }
@@ -2469,14 +2525,29 @@ impl<'a> ModCollector<'a> {
                 known_features.clone(),
             );
             fv.visit_file(&syntax);
-            let (local_items, mut grandchildren, hard_constraints_child, _no_std_cond, pend) =
+            let (local_items, mut grandchildren, hard_constraints_child, _no_std_cond, pend, child_facts) =
                 fv.finish();
             hard_constraints.extend(hard_constraints_child);
             pending_includes.extend(pend);
 
+            // A module the tree reaches unconditionally is as much a part of the
+            // crate as its root, so its `extern crate std;` belongs in the OR
+            // that says when the crate links std. A *conditionally* compiled
+            // module's does not: the module's own gate would have to ride along,
+            // and an erased non-feature atom in it is read the wrong way once the
+            // whole thing is negated (O-1's lesson). Contributing nothing there
+            // can only leave the OR too narrow, i.e. leave std linked in a run
+            // meant to be std-off — which keeps a span looking std, the
+            // conservative direction. Its `unnegatable` is dropped for the same
+            // reason: a veto from a module that may not be compiled at all would
+            // take the condition away from crates that have one today.
+            if effective.is_none() {
+                facts.merge(ctx, child_facts);
+            }
+
             // Recurse into grandchildren
             for gc in &mut grandchildren {
-                Self::resolve_child(ctx, gc, hard_constraints, pending_includes, known_features.clone());
+                Self::resolve_child(ctx, gc, hard_constraints, pending_includes, facts, known_features.clone());
             }
 
             child.source_dir = source_dir;
