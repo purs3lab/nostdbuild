@@ -1,0 +1,11 @@
+[package]
+name = "lib_named_std_real_std"
+description = "Control: a crate whose [lib] name is `std` and which also uses the real sysroot std — the genuine usage must still be reported"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "std"
+path = "main.rs"
+
+[workspace]

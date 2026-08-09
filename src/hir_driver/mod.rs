@@ -11,7 +11,7 @@ use rustc_ast::token::{Delimiter, TokenKind};
 use rustc_ast::tokenstream::TokenTree;
 use rustc_ast::visit::{self, Visitor as AstVisitor};
 use rustc_driver::Compilation;
-use rustc_hir::def_id::DefId;
+use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_hir::intravisit::{self, Visitor as HirVisitor};
 use rustc_interface::interface;
 use rustc_middle::ty::{ResolverAstLowering, TyCtxt, TypeckResults};
@@ -287,11 +287,11 @@ impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
                 .collect::<Vec<_>>()
                 .join("::");
 
-            let definition_crate = self.tcx.crate_name(final_def_id.krate).to_string();
+            let definition_crate = reported_crate_name(self.tcx, final_def_id);
             let gateway_crate = if let Some(root_id) = root_def_id {
-                self.tcx.crate_name(root_id.krate).to_string()
+                reported_crate_name(self.tcx, root_id)
             } else {
-                "LOCAL".to_string()
+                consts::LOCAL_CRATE_SENTINEL.to_string()
             };
 
             let readable_span = get_readable_span(&self.tcx, effective_span, &gateway_crate);
@@ -379,7 +379,7 @@ struct MethodResolver<'a, 'tcx> {
 impl MethodResolver<'_, '_> {
     fn record(&mut self, site: Span, def_id: DefId) {
         let (effective_span, macro_body_cfgs) = call_site_span(site, self.macro_cfg_map);
-        let krate = self.tcx.crate_name(def_id.krate).to_string();
+        let krate = reported_crate_name(self.tcx, def_id);
 
         // `Owner::method`, where the owner is the receiver type's name for an
         // inherent method and the trait's name for a trait one — `HashMap::insert`,
@@ -492,6 +492,43 @@ fn collect_method_records<'tcx>(
     }
 
     records
+}
+
+/// The crate name to report for a resolution.
+///
+/// `definition_crate` and `usage_crate` are read downstream as *identities*, not
+/// as labels: `usage_crate == "std"` is what fails a crate. But a package is free
+/// to name its library anything, including a sysroot crate's name — stdworld
+/// 0.1.1 declares
+///
+/// ```toml
+/// [lib]
+/// name = "std"
+/// ```
+///
+/// and then `tcx.crate_name(LOCAL_CRATE)` answers `"std"` for every item the
+/// crate defines itself, down to its generic parameters (`W`, `K`, `T` all
+/// arrived as std usage). All 47 of stdworld's own names read as real std, and
+/// no feature set can remove a crate's own definitions, so the verdict could
+/// never be anything but "unguarded std".
+///
+/// A local `DefId` is by construction not the sysroot crate that shares its name,
+/// so report it as `LOCAL` — the sentinel the gateway side already uses for
+/// "resolved inside this crate", and which `is_local_reexport` and the
+/// cross-crate projection in `analyze_crate` both already recognise.
+///
+/// Deliberately narrow: a local crate with a non-colliding name keeps reporting
+/// its own name, exactly as before. Mapping *every* local resolution to `LOCAL`
+/// is the cleaner invariant but a corpus-wide behaviour change — a `crate::…`
+/// record currently carries the local crate's name, which is `!= "LOCAL"`, so
+/// `is_local_reexport` returns false for it today and would start returning true.
+/// That is not this fix.
+fn reported_crate_name(tcx: TyCtxt<'_>, def_id: DefId) -> String {
+    let name = tcx.crate_name(def_id.krate);
+    if def_id.krate == LOCAL_CRATE && consts::SYSROOT_CRATE_NAMES.contains(&name.as_str()) {
+        return consts::LOCAL_CRATE_SENTINEL.to_string();
+    }
+    name.to_string()
 }
 
 fn get_readable_span(tcx: &TyCtxt, span: Span, usage_crate: &str) -> ReadableSpan {

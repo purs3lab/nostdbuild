@@ -1,0 +1,11 @@
+[package]
+name = "lib_named_std"
+description = "Test that a crate whose [lib] name is `std` is not mistaken for the sysroot std: every name here is its own"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "std"
+path = "main.rs"
+
+[workspace]

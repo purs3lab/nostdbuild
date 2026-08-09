@@ -35,6 +35,19 @@ pub const TARGET_LIST: [&str; 26] = [
 
 pub const PLUGIN_OUTPUT_ENV: &str = "NO_STD_TOOL_OUTPUT_PATH";
 
+/// Sysroot crate names the pipeline reads as identities rather than as labels:
+/// `usage_crate == "std"` is the thing that fails a crate, and `core`/`alloc`
+/// are what mark a resolution as no_std-clean. A package that names its own
+/// library one of these (`[lib] name = "std"`) would otherwise have every item
+/// it defines mistaken for the sysroot crate — see
+/// `hir_driver::reported_crate_name`.
+pub const SYSROOT_CRATE_NAMES: [&str; 3] = ["std", "core", "alloc"];
+
+/// What the plugin reports instead of a crate name when a resolution stayed
+/// inside the crate being analysed. Not a crate name: no dependency is looked up
+/// under it, and `is_local_reexport` keys on it.
+pub const LOCAL_CRATE_SENTINEL: &str = "LOCAL";
+
 /// When we remove a feature from default enabled features, we add it to
 /// this custom feature list to preserve the original functionality
 /// of the crate when used in std mode.
