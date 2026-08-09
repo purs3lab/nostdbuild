@@ -96,8 +96,6 @@ pub fn clone_from_crates(
         dir = dir.join(format!("{}_deps", name.replace(':', "-")));
     }
 
-    let filename = format!("{}.crate", name);
-
     let (download_url, ver, newname) = with_retries(MAX_RETRIES, || {
         get_download_url(name, &version, main_name, parent_name)
     })?;
@@ -105,17 +103,30 @@ pub fn clone_from_crates(
 
     let crate_path = dir.join(format!("{}-{}", newname, ver));
     if crate_path.exists() {
-        if contains_one_rs_file(crate_path.to_str().unwrap()) {
+        if extraction_is_complete(&crate_path) {
             debug!("Crate with name {} already downloaded", newname);
             return Ok(format!("{}:{}", newname, ver));
         }
         fs::remove_dir_all(&crate_path)?;
     }
 
-    with_retries(MAX_RETRIES, || download_crate(&download_url, &filename))?;
+    // Staged under a name unique to this crate version AND this process. It used
+    // to be a bare `format!("{}.crate", name)` — a *relative* path, so every
+    // worker wrote `./<name>.crate` into the one CWD they share. Two workers
+    // wanting the same crate then raced: one read the tarball while the other was
+    // still writing it, hit EOF at the writer's current offset, and `unpack`
+    // stopped part-way through — leaving a directory with a garbled file and the
+    // rest of the crate missing, which the old `contains_one_rs_file` check then
+    // accepted forever. 13 such directories were still on disk (bp-polkadot's
+    // frame-support, bdk_core's serde, …) and each one silently shrinks the
+    // analysis to whatever survived. The old code also `remove_file`d that shared
+    // path, deleting a tarball another worker was about to extract.
+    let staging = staging_path(&newname, &ver)?;
+    with_retries(MAX_RETRIES, || download_crate(&download_url, &staging))?;
 
-    extract_crate(&filename, &dir)?;
-    fs::remove_file(&filename).context("Failed to delete crate file")?;
+    let extracted = extract_crate_checked(&staging, &dir, &crate_path);
+    let _ = fs::remove_file(&staging);
+    extracted?;
 
     debug!("Downloaded {} to {}", newname, dir.display());
     debug!("Name with version: {}:{}", newname, ver);
@@ -911,6 +922,111 @@ pub fn resolve_dep_version(
     }
     let entries = fetch_index(name)?;
     resolve_version(req, &entries)
+}
+
+/// Name of the marker `clone_from_crates` drops in a crate directory once
+/// `unpack` has returned success for it.
+///
+/// A directory without one is not condemned — every directory downloaded before
+/// this existed lacks it — it just falls back to the weaker `contains_one_rs_file`
+/// test, which is what the tool did for all of them anyway. A directory *with*
+/// one is known-complete, which is what lets the repair pass state which of the
+/// two it is looking at.
+pub const EXTRACT_MARKER: &str = ".nostd-extract-ok";
+
+/// Where to stage a downloaded `.crate` before unpacking it.
+///
+/// Unique per crate version and per process, so no two workers can ever be
+/// reading and writing the same tarball (see `clone_from_crates`). Lives under
+/// the download root rather than the CWD both to keep the tool's own directory
+/// clean and to stay on the same filesystem as the extraction.
+fn staging_path(name: &str, version: &str) -> Result<String, anyhow::Error> {
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static SWEEP: std::sync::Once = std::sync::Once::new();
+    let dir = PathBuf::from(DOWNLOAD_PATH).join(".staging");
+    fs::create_dir_all(&dir).context("Failed to create staging directory")?;
+    // Both exits from `clone_from_crates` delete the staged tarball, but a run
+    // killed outright (the eval's timeout) leaves its file behind. Sweep once
+    // per process; six hours is far longer than any single download, so nothing
+    // in flight is at risk.
+    SWEEP.call_once(|| sweep_stale_staging(&dir));
+    let unique = format!(
+        "{}-{}-{}-{}.crate",
+        name,
+        version,
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    Ok(dir.join(unique).to_string_lossy().into_owned())
+}
+
+/// Delete staged tarballs left by runs that were killed before they could clean
+/// up. Best-effort throughout: anything unreadable is simply left alone.
+fn sweep_stale_staging(dir: &Path) {
+    const STALE_AFTER: Duration = Duration::from_secs(6 * 60 * 60);
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|t| t.elapsed().unwrap_or_default() > STALE_AFTER)
+            .unwrap_or(false);
+        if stale && fs::remove_file(entry.path()).is_ok() {
+            debug!("Removed stale staged tarball {}", entry.path().display());
+        }
+    }
+}
+
+/// Unpack `staging` into `dir`, leaving behind either a complete crate
+/// directory (marked as such) or no directory at all.
+///
+/// The middle state is what caused the damage: a torn tarball makes `unpack`
+/// stop part-way, and the truncated directory it leaves behind looks exactly
+/// like a good one to the "already downloaded?" check. `crate_path` is where
+/// this crate's files land — `dir` is its parent, since the tarball carries the
+/// `<name>-<version>/` prefix itself.
+pub fn extract_crate_checked(
+    staging: &str,
+    dir: &Path,
+    crate_path: &Path,
+) -> Result<(), anyhow::Error> {
+    if let Err(e) = extract_crate(staging, dir) {
+        // A partial extraction must not outlive the failure that made it: the
+        // next run would find a directory full of plausible `.rs` files and
+        // never look again.
+        debug!(
+            "Discarding partial extraction at {}: {}",
+            crate_path.display(),
+            e
+        );
+        let _ = fs::remove_dir_all(crate_path);
+        return Err(e);
+    }
+    // Best-effort: the marker only strengthens the *next* run's check, and a
+    // crate we just unpacked is usable whether or not it lands.
+    if let Err(e) = fs::write(crate_path.join(EXTRACT_MARKER), b"") {
+        debug!(
+            "Could not mark {} as completely extracted: {}",
+            crate_path.display(),
+            e
+        );
+    }
+    Ok(())
+}
+
+/// Is this already-present directory usable as-is?
+///
+/// Marker present ⇒ a previous run unpacked it in full. Otherwise fall back to
+/// the historical test (does it contain any `.rs` file at all), which keeps the
+/// ~12k directories predating the marker in play; a truncated one among them is
+/// caught by the repair pass (`repair_downloads.py`), not here.
+pub fn extraction_is_complete(crate_path: &Path) -> bool {
+    if crate_path.join(EXTRACT_MARKER).exists() {
+        return true;
+    }
+    contains_one_rs_file(crate_path.to_str().unwrap_or_default())
 }
 
 fn download_crate(url: &str, filename: &str) -> Result<(), anyhow::Error> {

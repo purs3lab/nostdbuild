@@ -2163,11 +2163,15 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
             None => (None, false),
         };
 
+        // The invocation's own `#[cfg]`. Wanted by the `include!` arm, the
+        // general arm, and the `mod` scan at the end, so it is parsed once here;
+        // both helpers are `&self` and pure.
+        let own = self.parse_cfg_gate(&i.attrs);
+        let own_externally_gated = self.is_externally_gated(&i.attrs);
+
         if i.mac.path.is_ident("include") {
             // Capture any `#[cfg(...)]` on the include! item — previously the early
             // return discarded it, so the included file's std usage looked ungated.
-            let own = self.parse_cfg_gate(&i.attrs);
-            let own_externally_gated = self.is_externally_gated(&i.attrs);
             self.visit_include_macro(&i.mac.tokens, own, own_externally_gated);
             return;
         } else if i.mac.path.is_ident("compile_error") {
@@ -2193,10 +2197,9 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
             // The item's own `#[cfg]` (if any) ANDed with the gate its macro's
             // definition applies. Either may be absent; both absent reproduces
             // the previous unconditional LocalItem.
-            let own = self.parse_cfg_gate(&i.attrs);
-            let externally_gated = self.is_externally_gated(&i.attrs) || macro_externally_gated;
+            let externally_gated = own_externally_gated || macro_externally_gated;
             self.push_item(LocalItem {
-                own_condition: Self::and_conditions(self.ctx, own, macro_cond.clone()),
+                own_condition: Self::and_conditions(self.ctx, own.clone(), macro_cond.clone()),
                 span: self.get_span(&i.span()),
                 name: None,
                 externally_gated,
@@ -2212,8 +2215,22 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         // The declared modules inherit the macro's gate too: `if_std! { mod mpsc; }`
         // must give `mpsc.rs` the `feature = "std"` condition, or bucket H makes
         // the file visible only for every span in it to read as unguarded std.
-        let child_cond = Self::and_conditions(self.ctx, self.current_condition(), macro_cond);
-        let child_externally_gated = self.current_externally_gated() || macro_externally_gated;
+        //
+        // …and the invocation's OWN `#[cfg]` for the same reason. Dropping it made
+        // serde_json's
+        //     #[cfg(not(any(feature = "std", feature = "alloc")))]
+        //     hide_from_rustfmt! { mod error; }
+        // register `features_check/error.rs` with no gate at all, so anything in a
+        // file reached this way read as unconditional. The three sources are
+        // independent — ambient stack, macro definition, invocation attribute —
+        // and Rust requires all three to hold, so they AND together.
+        let child_cond = Self::and_conditions(
+            self.ctx,
+            Self::and_conditions(self.ctx, self.current_condition(), own),
+            macro_cond,
+        );
+        let child_externally_gated =
+            self.current_externally_gated() || own_externally_gated || macro_externally_gated;
         self.scan_macro_mod_decls_with(&i.mac.tokens, child_cond, child_externally_gated);
         syn::visit::visit_item_macro(self, i);
     }

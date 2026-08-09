@@ -61,3 +61,36 @@ fn macro_declared_module_file_is_walked_and_gated() {
         "grandchild std usage should inherit the parent chain gate through the macro"
     );
 }
+
+/// The `#[cfg]` on the *invocation* gates what the invocation declares.
+///
+/// serde_json's `#[cfg(not(any(feature = "std", feature = "alloc")))]
+/// hide_from_rustfmt! { mod error; }` used to register `error.rs` with no gate:
+/// the scan received only the ambient condition stack ANDed with the macro
+/// *definition*'s gate, and the item's own attribute was parsed for the
+/// `LocalItem` and then dropped. Everything in a file reached that way then read
+/// as unconditional.
+#[test]
+fn module_declared_by_a_gated_macro_invocation_inherits_the_invocation_gate() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut c = ModCollector::new(&ctx);
+    let node = c.collect(&root(), "macro_mod_decl");
+
+    // invoked.rs holds an ungated std usage, so the ONLY gate that can reach it
+    // is `#[cfg(feature = "invocation")]` on the `passthrough! { mod invoked; }`
+    // invocation.
+    let invoked = span_of("invoked.rs", "std::string::String");
+    assert!(
+        ancestors_for_span(&node, &invoked).is_some(),
+        "std usage in a module declared by a #[cfg]-gated macro invocation must \
+         carry that gate"
+    );
+
+    // Control: same macro, no attribute on the invocation, nothing gating the
+    // usage — the fix must not manufacture a gate where none exists.
+    let ungated = span_of("ungated.rs", "std::string::String");
+    assert!(
+        ancestors_for_span(&node, &ungated).is_none(),
+        "an ungated macro invocation must leave its module ungated"
+    );
+}

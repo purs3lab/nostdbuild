@@ -22,3 +22,24 @@ cfg_time! {
 // is declared via the macro and must inherit the parent's gate.
 #[cfg(feature = "parent")]
 pub mod child;
+
+// A macro invocation carrying its OWN `#[cfg]`. The module it declares must
+// inherit that gate: only the ambient condition stack and the macro
+// *definition*'s gate used to reach the child, so serde_json's
+//     #[cfg(not(any(feature = "std", feature = "alloc")))]
+//     hide_from_rustfmt! { mod error; }
+// registered `features_check/error.rs` with no gate at all.
+macro_rules! passthrough {
+    ( $($item:item)* ) => { $( $item )* };
+}
+
+#[cfg(feature = "invocation")]
+passthrough! {
+    mod invoked;
+}
+
+// Control: the same macro without an attribute still yields no gate, so an
+// ungated std usage below it stays ungated.
+passthrough! {
+    mod ungated;
+}
