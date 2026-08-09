@@ -102,6 +102,54 @@ fn enabler_feature_is_found_and_makes_the_std_span_provable() {
     );
 }
 
+/// The search compiles the configuration it reports, and those records are the
+/// crate's only std-off evidence — so the run is adopted as a covering run
+/// rather than thrown away with only the feature name kept.
+///
+/// xmrs 0.9.9 is the case (O-4). Pinning its enabler is not enough: its eight
+/// `f32::{powf,round,…}` calls carry no `#[cfg]`, so the probe short-circuits
+/// them to `StillStd` without compiling, and they are `AlwaysStd` only because
+/// the one surviving covering run has `std` on. The trial that compiled
+/// resolves all eight to `micromath::F32Ext` and holds no std record at all.
+#[cargo_test]
+fn the_trial_that_compiled_becomes_a_covering_run() {
+    let (_p, manifest) = load_fixture("build_enabler_shim_method");
+
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut telemetry = Telemetry::default();
+
+    let (hard_spans, _condition, coverage, _ce, _root, _records, unproven) =
+        analyze_crate(&ctx, &manifest, "build_enabler_shim_method", &mut telemetry);
+
+    assert_eq!(
+        telemetry.build_enabler_features,
+        vec!["libm".to_string()],
+        "`libm` is the only feature this crate builds on bare metal with"
+    );
+
+    // The run set the classification saw. One covering run is the std-on host
+    // build; the second is the trial the search compiled, and it exists only if
+    // that trial was adopted.
+    let coverage = coverage.expect("the default-features pass should have succeeded");
+    assert_eq!(
+        coverage.num_covering_runs, 2,
+        "the compiling std-off trial should have joined the covering runs, got {coverage:?}"
+    );
+
+    // The payoff. `nearest` is ungated, so no probe can ever clear it — only a
+    // run in which it resolves to the shim can.
+    assert!(
+        hard_spans.is_empty(),
+        "`x.round()` binds the shim's `F32Ext::round` in the configuration the \
+         enabler search compiled, so it is not unavoidable std: {hard_spans:?}"
+    );
+    assert!(
+        unproven.is_empty(),
+        "no span should be left unproven once the compiling run is counted: {unproven:?}"
+    );
+    assert_eq!(telemetry.unproven_std_spans, 0);
+}
+
 /// The search costs up to 26 builds when it fails, so it must not run for the
 /// ordinary crate. `test_extern_std_on_feature` compiles for a bare-metal target
 /// in its ¬`use_std` configuration, which is exactly the condition that skips it.

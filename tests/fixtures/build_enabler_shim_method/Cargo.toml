@@ -1,0 +1,29 @@
+[package]
+name = "build_enabler_shim_method"
+description = "A crate whose only compiling no_std configuration is one the enabler search finds — and whose std spans are only explained by that run's records"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "build_enabler_shim_method"
+
+# `f32shim` stands in for micromath / core_maths / num-traits: it carries the
+# `F32Ext` trait that gives `f32` a `round` when std is not linked, and it only
+# has that trait once one of its backends is selected.
+[dependencies.f32shim]
+path = "f32shim"
+default-features = false
+
+# `libm` gates none of this crate's own code, so no `#[cfg]` mentions it and no
+# solve has an opinion about it — every model leaves it off, and the only
+# configuration that compiles for a bare-metal target is the one nothing asks for.
+[features]
+default = ["std"]
+std = ["f32shim/std"]
+libm = ["f32shim/libm"]
+
+# `exclude` keeps the shim out of the workspace so `find_entrypoints` does not
+# analyse its lib as a second entrypoint.
+[workspace]
+exclude = ["f32shim"]

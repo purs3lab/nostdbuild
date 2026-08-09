@@ -1,0 +1,15 @@
+[package]
+name = "f32shim"
+description = "The two-backend float shim of the build_enabler_shim_method fixture (stands in for micromath)"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+name = "f32shim"
+
+[features]
+std = []
+libm = []
+
+[workspace]

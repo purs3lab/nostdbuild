@@ -395,9 +395,20 @@ impl MethodResolver<'_, '_> {
         // Spelling the owner as a full path, or hiding it behind `<…>`, severs
         // that join and reports a properly gated call as unguarded std.
         //
-        // `f32::log2` is the case that stays hard, and should: the owner is a
-        // primitive, nothing binds `f32`, so there is no import to inherit and no
-        // configuration in which the call is not std.
+        // `f32::log2` is the case no *gate* can reach: the owner is a primitive,
+        // nothing binds `f32`, so there is no import whose cfg the record could
+        // inherit. That is a statement about gating, not about std-ness — this
+        // comment used to go on to claim there is "no configuration in which the
+        // call is not std", and that is wrong. The shim case two paragraphs above
+        // is exactly such a configuration: with std linked, `x.log2()` binds
+        // std's *inherent* `f32::log2` (inherent beats trait) and is recorded
+        // here as std; with std off and `micromath::F32Ext` in scope, the same
+        // expression binds `F32Ext::log2` and is recorded as `micromath`. Both
+        // records are correct. What settles such a span is therefore a std-off
+        // covering *run*, not a gate and not a probe — an ungated span is
+        // short-circuited by `initial_ungated_results` without compiling.
+        // Confirmed on xmrs 0.9.9, whose eight `f32::{powf,log2,round,…}` spans
+        // resolve to `micromath` in the run `discover_build_enablers` compiles.
         let parent = self.tcx.parent(def_id);
         let owner = match self.tcx.def_kind(parent) {
             rustc_hir::def::DefKind::Impl { .. } => {

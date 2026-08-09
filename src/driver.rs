@@ -2166,16 +2166,33 @@ const MAX_ENABLER_PROBES: usize = 16;
 /// Returns the empty vector when the base set already compiles, when no candidate
 /// set does, or when there are no candidates — i.e. this never manufactures a
 /// verdict, it only reports one it compiled.
+///
+/// The second half of the answer is the run that *did* compile. These trials are
+/// full plugin passes, and this search only runs when nothing else has compiled
+/// for a bare-metal target — so a trial that succeeds is very often the only
+/// std-off evidence the crate will ever produce, and reporting the feature name
+/// while discarding the records throws it away. xmrs 0.9.9 is the case: its one
+/// covering run has `std` on, so its ungated `f32::{powf,round,…}` calls bind
+/// std's inherent methods and every span is `AlwaysStd`; the trial that compiles
+/// with `["default"]` resolves all eight to `micromath::F32Ext` and holds no std
+/// record at all.
+///
+/// Only the *last* success is returned, and that is not an arbitrary choice: the
+/// halving and removal passes below only ever move `keep` to a set that has just
+/// compiled, so the last successful trial is always the one for the final `keep`
+/// — the smallest compiling configuration found. Keeping just it, rather than
+/// every trial, bounds this to one record set for a crate that emits hundreds of
+/// thousands of them.
 pub fn discover_build_enablers<'a>(
     ctx: &'a Context,
     manifest: &str,
     crate_name: &str,
     hard_constraints: &[Bool<'a>],
     avoid_gates: &[Bool<'a>],
-) -> Vec<String> {
+) -> (Vec<String>, Option<CoveringRun>) {
     let declared = visitor::declared_features(manifest);
     if declared.is_empty() {
-        return Vec::new();
+        return (Vec::new(), None);
     }
 
     // The constraints the enabler has to live under: the crate's own, plus each
@@ -2190,7 +2207,7 @@ pub fn discover_build_enablers<'a>(
         }
         if probe.check() != z3::SatResult::Sat {
             debug!("[enablers] hard constraints are unsatisfiable; skipping discovery");
-            return Vec::new();
+            return (Vec::new(), None);
         }
         for gate in avoid_gates {
             let negated = gate.not();
@@ -2213,7 +2230,7 @@ pub fn discover_build_enablers<'a>(
     }
     if solver.check() != z3::SatResult::Sat {
         debug!("[enablers] constraints are unsatisfiable; skipping discovery");
-        return Vec::new();
+        return (Vec::new(), None);
     }
     let base = solver::model_to_features(&solver.get_model()).0;
     let base_set: HashSet<&String> = base.iter().collect();
@@ -2238,7 +2255,7 @@ pub fn discover_build_enablers<'a>(
     candidates.sort();
 
     if candidates.is_empty() {
-        return Vec::new();
+        return (Vec::new(), None);
     }
 
     debug!(
@@ -2256,7 +2273,10 @@ pub fn discover_build_enablers<'a>(
     // and if this one is wrong the search just reports nothing, which is where it
     // would have been anyway.
     let pinned = std::cell::Cell::new(false);
-    let compiles = |extra: &[String]| -> bool {
+    // The records of the most recent trial that compiled, kept so the caller can
+    // adopt it as a covering run instead of paying for the build and dropping it.
+    let mut last_success: Option<CoveringRun> = None;
+    let mut compiles = |extra: &[String]| -> bool {
         if budget.get() == 0 {
             return false;
         }
@@ -2270,10 +2290,15 @@ pub fn discover_build_enablers<'a>(
         let mut feats = base.clone();
         feats.extend(extra.iter().cloned());
         let trial = timing::scope("enabler_trial", extra.join(","));
-        let ok = matches!(
-            run_rustc_plugin_pass_with(manifest, crate_name, &feats, None, false, pin),
-            PassOutcome::Success { .. }
-        );
+        let outcome = run_rustc_plugin_pass_with(manifest, crate_name, &feats, None, false, pin);
+        let ok = matches!(outcome, PassOutcome::Success { .. });
+        if let PassOutcome::Success { full_output, .. } = outcome {
+            trial.meta("records", full_output.records.len().to_string());
+            last_success = Some(CoveringRun {
+                features: feats,
+                output: full_output,
+            });
+        }
         trial.meta("compiles", ok.to_string());
         drop(trial);
         debug!(
@@ -2301,7 +2326,7 @@ pub fn discover_build_enablers<'a>(
             Some(c) => vec![c],
             None => {
                 debug!("[enablers] no candidate makes the crate build for a bare-metal target");
-                return Vec::new();
+                return (Vec::new(), None);
             }
         }
     };
@@ -2340,7 +2365,51 @@ pub fn discover_build_enablers<'a>(
     } else {
         debug!("[enablers] crate does not build for any bare-metal target without {keep:?}");
     }
-    keep
+    (keep, last_success)
+}
+
+/// Classify every span the covering runs recorded and split off the two
+/// `AlwaysStd` populations the prober works on: imports and everything else.
+///
+/// Its own function because it runs twice — once over the runs the covering-set
+/// search produced, and again when `discover_build_enablers` adopts a run that
+/// compiled. Re-classifying is the whole point of that adoption: `AlwaysStd`
+/// means "std in *every* run", so it is a verdict about the run set, not about a
+/// span, and it has to be recomputed when the run set grows.
+fn classify_and_split(
+    covering_runs: &[CoveringRun],
+    crate_name: &str,
+    telemetry: &mut Telemetry,
+) -> (Vec<SpanAnalysis>, Vec<SpanAnalysis>, Vec<SpanAnalysis>) {
+    let analyses = {
+        let t = timing::scope("classify", crate_name);
+        t.meta("runs", covering_runs.len().to_string());
+        classify_spans(covering_runs)
+    };
+
+    // Spans where a derive-style collision and unavoidable std-ness coincide —
+    // see `Telemetry::collided_std_spans`. Recorded before any probing so the
+    // count reflects classification alone.
+    telemetry.collided_std_spans = analyses
+        .iter()
+        .filter(|a| a.std_in_every_run && !a.non_std_configs.is_empty())
+        .count();
+    if telemetry.collided_std_spans > 0 {
+        debug!(
+            "{} std span(s) collide with non-std records at the same position and are std in every run",
+            telemetry.collided_std_spans
+        );
+    }
+
+    let imports = get_always_std_imports(&analyses)
+        .into_iter()
+        .cloned()
+        .collect();
+    let others = get_always_std_others(&analyses)
+        .into_iter()
+        .cloned()
+        .collect();
+    (analyses, imports, others)
 }
 
 /// The last element is the *unproven* spans — std spans that are std in every
@@ -2384,10 +2453,11 @@ pub fn analyze_crate<'a>(
     // visitor already dropped.
     let known_features = visitor::declared_features(manifest);
 
-    let coverage_comparison = match run_default_features_pass(manifest, crate_name) {
-        PassOutcome::Success { full_output, .. } => {
-            Some(compute_coverage_comparison(&full_output, &covering_runs))
-        }
+    // The comparison is against the *final* run set, so it is computed after the
+    // enabler search below may have added one. Only the pass stays here — it is a
+    // compile, and moving it would reorder the builds.
+    let default_features_output = match run_default_features_pass(manifest, crate_name) {
+        PassOutcome::Success { full_output, .. } => Some(full_output),
         _ => {
             warn!(
                 "Default-features pass failed; skipping coverage comparison for {}",
@@ -2399,31 +2469,8 @@ pub fn analyze_crate<'a>(
 
     let all_constraints = visitor::collect_all_items(&root, ctx);
 
-    let analyses = {
-        let t = timing::scope("classify", crate_name);
-        t.meta("runs", covering_runs.len().to_string());
-        classify_spans(&covering_runs)
-    };
-
-    // Spans where a derive-style collision and unavoidable std-ness coincide —
-    // see `Telemetry::collided_std_spans`. Recorded before any probing so the
-    // count reflects classification alone.
-    telemetry.collided_std_spans = analyses
-        .iter()
-        .filter(|a| a.std_in_every_run && !a.non_std_configs.is_empty())
-        .count();
-    if telemetry.collided_std_spans > 0 {
-        debug!(
-            "{} std span(s) collide with non-std records at the same position and are std in every run",
-            telemetry.collided_std_spans
-        );
-    }
-
-    let always_std_imports = get_always_std_imports(&analyses);
-    let mut always_std_others: Vec<SpanAnalysis> = get_always_std_others(&analyses)
-        .into_iter()
-        .cloned()
-        .collect();
+    let (mut analyses, mut always_std_imports, mut always_std_others) =
+        classify_and_split(&covering_runs, crate_name, telemetry);
 
     // `LAST_GOOD_TARGET` is still unset only when not one covering run compiled
     // for a bare-metal target — every record above came from the host fallback.
@@ -2459,7 +2506,8 @@ pub fn analyze_crate<'a>(
             })
             .flatten()
             .collect();
-        build_enablers = {
+        let enabler_run;
+        (build_enablers, enabler_run) = {
             let _t = timing::scope("build_enablers", crate_name);
             discover_build_enablers(ctx, manifest, crate_name, &hard_constraints, &avoid_gates)
         };
@@ -2472,7 +2520,38 @@ pub fn analyze_crate<'a>(
         telemetry
             .build_enabler_features
             .extend(build_enablers.iter().cloned());
+
+        // A trial that compiled is a successful bare-metal build of a real feature
+        // set — the same thing every other `CoveringRun` is — and it is the only
+        // one this crate has. Adopting it is what makes the search's records count:
+        // pinning `default` for xmrs 0.9.9 still leaves its eight ungated
+        // `f32::{powf,round,…}` calls `AlwaysStd`, because `std_in_every_run` is
+        // trivially true over the one std-on run, and an ungated span is
+        // short-circuited to `StillStd` by `initial_ungated_results` without ever
+        // compiling. The adopted run resolves all eight to `micromath::F32Ext`.
+        //
+        // Adding runs only ever weakens an `AlwaysStd` verdict — the verdict needs
+        // the span to be std in *every* run — so this cannot fail a crate that
+        // passes today. A span only the new run witnesses arrives `Conditional`,
+        // which keeps it out of `all_hard` as well.
+        if let Some(mut run) = enabler_run {
+            // The same normalisation every other covering run gets on the way in.
+            telemetry.routed_import_anchors +=
+                resolve_import_to_use_gateways(&mut run.output, &root);
+            debug!(
+                "[enablers] adopting the trial that compiled ({:?}, {} records) as a covering run",
+                run.features,
+                run.output.records.len()
+            );
+            covering_runs.push(run);
+            (analyses, always_std_imports, always_std_others) =
+                classify_and_split(&covering_runs, crate_name, telemetry);
+        }
     }
+
+    let coverage_comparison = default_features_output
+        .as_ref()
+        .map(|out| compute_coverage_comparison(out, &covering_runs));
 
     let probe_candidates_imports = always_std_imports
         .into_iter()
