@@ -1,0 +1,12 @@
+[package]
+name = "target_cfg_no_std_own_std"
+description = "The control: no_std on a target predicate, but the std usage is spelled out in this crate's own source, so the weakening must not reach it"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "target_cfg_no_std_own_std"
+
+[features]
+default = []

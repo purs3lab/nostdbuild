@@ -1,0 +1,12 @@
+[package]
+name = "target_cfg_no_std"
+description = "A crate that is #![no_std] only on a target this tool cannot build, so the only run that compiles is a host build in which the attribute never applied"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "target_cfg_no_std"
+
+[features]
+default = []

@@ -16,6 +16,7 @@ pub mod driver;
 pub mod parser;
 pub mod phases;
 pub mod solver;
+pub mod target_cfg;
 pub mod timing;
 pub mod types;
 pub mod visitor;
@@ -474,6 +475,32 @@ pub struct Telemetry {
     /// A high-water mark over every analysis that shares this `Telemetry` (the
     /// main crate and then each dependency), so a later zero cannot erase it.
     pub std_inconclusive_runs: usize,
+    /// The predicate of a crate-root `#![cfg_attr(<pred>, no_std)]` that names no
+    /// feature and that rustc can decide — `target_arch = "spirv"`, `target_os =
+    /// "cuda"`, `target_os = "none"`. `None` for every crate whose no_std switch
+    /// is a feature (nearly all of them) and for one rustc does not derive from
+    /// the target at all (`not(test)`, `docsrs`, a build-script cfg — see
+    /// `target_cfg::is_decidable`). Measured over the 20789-crate corpus: 789
+    /// crate roots carry a non-feature predicate, of which 46 are decidable.
+    ///
+    /// Such a crate is no_std on some targets and a plain std crate on the rest,
+    /// so a run that compiled only on the host may say nothing about its
+    /// no_std-ness — see `driver::HOST_NOT_NO_STD`, which is what decides that.
+    pub no_std_cfg_predicate: Option<String>,
+    /// Which members of `consts::TARGET_LIST` satisfy that predicate, i.e. where
+    /// this crate is actually `#![no_std]`.
+    ///
+    /// **Empty is the interesting value**: the crate is no_std only in an
+    /// environment this tool cannot build at all (`target_arch = "spirv"` — rustc
+    /// has no spirv target; the codegen backend is out of tree), so no verdict
+    /// about its std usage can rest on a compile. Non-empty and still failing is
+    /// the ordinary case of a target that exists and did not compile (cuda_std
+    /// 0.2.2 → `nvptx64-nvidia-cuda`, which fails on removed language features).
+    ///
+    /// Empty is never "undecided" — an undecidable predicate leaves
+    /// `no_std_cfg_predicate` `None` and never reaches this field, precisely so
+    /// the two cannot be confused.
+    pub no_std_predicate_targets: Vec<String>,
     /// Std records that inherited a `#[cfg]` from the import that bound their
     /// name, summed over the covering runs (see
     /// `driver::resolve_import_to_use_gateways`).

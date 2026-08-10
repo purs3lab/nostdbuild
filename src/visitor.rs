@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use z3::ast::Bool;
 
 use crate::types::*;
-use crate::{Attributes, driver, parser};
+use crate::{Attributes, driver, parser, target_cfg};
 
 /// Source files the module walk could not read or parse, main crate and
 /// dependencies alike. Reported through `telemetry.files_syn_failed`.
@@ -590,6 +590,9 @@ struct FileVisitor<'a> {
     /// its only job is to veto the "nothing links std" inference — see
     /// [`StdExternFacts::any_extern_std`].
     any_extern_std: bool,
+    /// The predicate of an inner `#![cfg_attr(<pred>, no_std)]` that names no
+    /// feature — see [`StdExternFacts::non_feature_no_std_predicate`].
+    non_feature_no_std_predicate: Option<target_cfg::CfgPred>,
     /// If the current module has a path override (from #[path]),
     /// this is the directory to search for its children.
     current_search_dir: PathBuf,
@@ -655,6 +658,7 @@ impl<'a> FileVisitor<'a> {
             std_extern_gate: None,
             std_extern_unnegatable: false,
             any_extern_std: false,
+            non_feature_no_std_predicate: None,
             macro_cfg_gates: HashMap::new(),
         }
     }
@@ -1481,6 +1485,7 @@ impl<'a> FileVisitor<'a> {
             gate: self.std_extern_gate.take(),
             unnegatable: self.std_extern_unnegatable,
             any_extern_std: self.any_extern_std,
+            non_feature_no_std_predicate: self.non_feature_no_std_predicate.take(),
         };
         (
             self.items_stack.pop().unwrap(),
@@ -1520,6 +1525,26 @@ pub struct StdExternFacts<'a> {
     /// can be read as "nothing links std". This can: it is the veto on the
     /// no-declaration inference in [`ModCollector::visit_file`].
     pub any_extern_std: bool,
+    /// The predicate of an inner `#![cfg_attr(<pred>, no_std)]` that names no
+    /// `feature` — `target_arch = "spirv"` (macaw), `target_os = "cuda"`
+    /// (cuda_std), `target_os = "none"` (xous-ipc), `not(test)` (splay-safe-rs).
+    ///
+    /// Every atom in such a predicate is one policy G erases, so
+    /// `parse_meta_for_cfg_attr` returns no equation and `no_std_condition`
+    /// stays `None`. The predicate is kept as written because it is *decidable
+    /// once a target is named*: `rustc --print cfg --target <t>` is that
+    /// target's complete cfg set. The one consumer,
+    /// `driver::run_rustc_plugin_pass`, uses it to ask whether the run it just
+    /// performed was a no_std environment at all. Nothing here reaches the
+    /// solver — no `CfgPred` ever becomes a Z3 term.
+    ///
+    /// `not(test)` lands here too and comes out **true** on every target, which
+    /// is O-14(a)'s assumption arrived at by evaluation rather than by decree —
+    /// and the reason that rule is right where the target ones are not.
+    ///
+    /// Entrypoint-only, like `unconditional_no_std`: this is a statement about
+    /// the crate root, and a submodule's `#![cfg_attr]` is its own business.
+    pub non_feature_no_std_predicate: Option<target_cfg::CfgPred>,
 }
 
 impl<'a> StdExternFacts<'a> {
@@ -1528,7 +1553,9 @@ impl<'a> StdExternFacts<'a> {
     ///
     /// `any_extern_std` is **not** merged here either: it has to survive from
     /// files this fold skips, so `ModCollector::resolve_child` ORs it in for
-    /// every child, gated or not.
+    /// every child, gated or not. `non_feature_no_std_predicate` is not merged for
+    /// the same reason as `unconditional_no_std` — it is the crate root's
+    /// declaration or it is nobody's.
     fn merge(&mut self, ctx: &'a z3::Context, other: StdExternFacts<'a>) {
         self.unnegatable |= other.unnegatable;
         if let Some(gate) = other.gate {
@@ -1828,6 +1855,26 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         if matches!(i.style, syn::AttrStyle::Inner(_)) && cfg_attr_no_std_when_not_test(i) {
             debug!("`#![cfg_attr(not(test), no_std)]` is an unconditional #![no_std] here");
             self.unconditional_no_std = true;
+        }
+
+        // `#![cfg_attr(target_arch = "spirv", no_std)]` — no_std on a *target*
+        // axis. Policy G erases the atom, so the `if let Some(own)` below never
+        // fires and the crate gets no no_std condition; O-14(a) does the same
+        // job for `not(test)`, which is known-false, but a target predicate is
+        // not known at all until a target is named. Keep it as written and let
+        // `driver::run_rustc_plugin_pass` decide it per run — the target of a
+        // build we performed is not an unknown.
+        //
+        // Matched structurally, never off `ParsedAttr::constants`: that field
+        // mixes erased atoms with the applied attributes' names, and cannot tell
+        // this from a crate with a *feature* called `no_std` (O-14, kwap-common).
+        if matches!(i.style, syn::AttrStyle::Inner(_))
+            && self.non_feature_no_std_predicate.is_none()
+            && let Some(pred) = cfg_attr_no_std_predicate(i)
+            && !pred.mentions("feature")
+        {
+            debug!("`#![no_std]` here is conditional on the target: {pred}");
+            self.non_feature_no_std_predicate = Some(pred);
         }
 
         if i.path().is_ident("cfg_attr")
@@ -2398,6 +2445,10 @@ pub struct ModCollector<'a> {
     ctx: &'a z3::Context,
     pub hard_constraints: Vec<Bool<'a>>,
     pub no_std_condition: Option<Bool<'a>>,
+    /// See [`StdExternFacts::non_feature_no_std_predicate`]. Set from the
+    /// entrypoint's own attributes; the driver reads it to decide whether a run
+    /// it performed was a no_std environment.
+    pub non_feature_no_std_predicate: Option<target_cfg::CfgPred>,
     /// Deferred `include!(concat!(env!("OUT_DIR"), …))` sites across all files,
     /// for the driver to resolve once a plugin run reveals OUT_DIR.
     pub pending_includes: Vec<PendingInclude<'a>>,
@@ -2412,6 +2463,7 @@ impl<'a> ModCollector<'a> {
             ctx,
             hard_constraints: vec![],
             no_std_condition: None,
+            non_feature_no_std_predicate: None,
             pending_includes: vec![],
             known_features: None,
         }
@@ -2460,6 +2512,9 @@ impl<'a> ModCollector<'a> {
         self.pending_includes.extend(pending_includes);
         if no_std_cond.is_some() {
             self.no_std_condition = no_std_cond;
+        }
+        if self.non_feature_no_std_predicate.is_none() {
+            self.non_feature_no_std_predicate = facts.non_feature_no_std_predicate.clone();
         }
 
         for child in &mut children {
@@ -2863,47 +2918,55 @@ fn should_skip(attrs: &[syn::Attribute]) -> bool {
 /// assumption — so the predicate is true in every configuration and the crate is
 /// as unconditionally `#![no_std]` as one carrying the bare attribute.
 ///
-/// Deliberately narrow. It matches the predicate structurally rather than
-/// reading `ParsedAttr::constants`, which mixes erased cfg atoms with the names
-/// of the attributes being applied and cannot tell `not(test)` from a *feature*
-/// literally called `no_std` (kwap-common 0.7.0). And only `test` counts as
-/// known-false: `#![cfg_attr(target_arch = "spirv", no_std)]` (macaw,
-/// renderling) and `#![cfg_attr(target_os = "none", no_std)]` (xous-ipc) erase
-/// the same way but say the opposite thing about the targets in `TARGET_LIST`,
-/// where those atoms are true or unknown rather than false.
+/// Deliberately narrow, and **only `test` counts as known-false**:
+/// `#![cfg_attr(target_arch = "spirv", no_std)]` (macaw, renderling) and
+/// `#![cfg_attr(target_os = "none", no_std)]` (xous-ipc) erase the same way but
+/// say the opposite thing about the targets in `TARGET_LIST`, where those atoms
+/// are true rather than false. Those go to
+/// [`StdExternFacts::non_feature_no_std_predicate`] and are decided per run against
+/// the target that ran, not turned into a condition here.
 fn cfg_attr_no_std_when_not_test(attr: &Attribute) -> bool {
+    cfg_attr_no_std_predicate(attr).is_some_and(|pred| {
+        pred == target_cfg::CfgPred::Not(Box::new(target_cfg::CfgPred::Atom {
+            key: "test".to_string(),
+            value: None,
+        }))
+    })
+}
+
+/// The predicate of a `#[cfg_attr(<pred>, …, no_std, …)]`, or `None` when the
+/// attribute is not one or its predicate is a shape `CfgPred` does not model.
+///
+/// The single structural matcher for "this attribute applies `#![no_std]` under
+/// a condition" — [`cfg_attr_no_std_when_not_test`] is a pattern match on its
+/// result. Both rules must agree about what counts as applying `no_std`, and
+/// they cannot drift while there is one parse.
+///
+/// Structural on purpose. `parser::parse_meta_for_cfg_attr` walks the same
+/// tokens, but it is lossy exactly where this needs precision: a non-feature
+/// atom contributes its *key* to `ParsedAttr::constants` and its value literal
+/// is dropped (`target_os = "none"` and `target_os = "cuda"` are the same
+/// `constants` entry), and `logic` is a flat list, so the nesting is gone too.
+/// That loss is deliberate there — those atoms are erased on the way to a Z3
+/// formula over features — and it is why nothing in that path can answer
+/// "does this predicate hold on this target". `no_std` must also appear among
+/// the *applied* attributes, so a cfg atom or feature that merely happens to be
+/// spelled `no_std` cannot be mistaken for one (kwap-common 0.7.0).
+fn cfg_attr_no_std_predicate(attr: &Attribute) -> Option<target_cfg::CfgPred> {
     use syn::punctuated::Punctuated;
 
     if !attr.path().is_ident("cfg_attr") {
-        return false;
+        return None;
     }
-    let Ok(metas) =
-        attr.parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated)
-    else {
-        return false;
-    };
+    let metas = attr
+        .parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+        .ok()?;
     let mut metas = metas.into_iter();
-    let Some(predicate) = metas.next() else {
-        return false;
-    };
-
-    // The predicate must be exactly `not(test)`.
-    let Meta::List(list) = &predicate else {
-        return false;
-    };
-    if !list.path.is_ident("not") {
-        return false;
+    let predicate = metas.next()?;
+    if !metas.any(|m| matches!(m, Meta::Path(p) if p.is_ident("no_std"))) {
+        return None;
     }
-    let Ok(inner) = list.parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated)
-    else {
-        return false;
-    };
-    if inner.len() != 1 || !matches!(&inner[0], Meta::Path(p) if p.is_ident("test")) {
-        return false;
-    }
-
-    // …and one of the attributes it applies must be `no_std`.
-    metas.any(|m| matches!(m, Meta::Path(p) if p.is_ident("no_std")))
+    target_cfg::CfgPred::parse(&predicate)
 }
 
 /// Run `cargo metadata` for `manifest`, working around published tarballs whose

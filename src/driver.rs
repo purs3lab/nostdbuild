@@ -18,7 +18,7 @@ use crate::visitor::{self, ModCollector, ModNode};
 use crate::{
     ReadableSpan, Telemetry,
     consts::{self, PLUGIN_OUTPUT_ENV},
-    downloader, parser, solver, timing,
+    downloader, parser, solver, target_cfg, timing,
 };
 
 /// The first bare-metal `--target` that successfully compiled a no_std plugin
@@ -32,6 +32,24 @@ use crate::{
 /// exactly those combos. Process-global is safe: the tool analyses one main
 /// crate per process.
 static LAST_GOOD_TARGET: Mutex<Option<&'static str>> = Mutex::new(None);
+
+/// Does the crate under analysis declare `#![no_std]` on a *target* predicate
+/// that the host does not satisfy?
+///
+/// If so, the crate compiled without `--target` is not merely a std-linking
+/// build of a no_std crate — it is a build in which the crate's own `#![no_std]`
+/// was never applied, i.e. a different crate configuration from the one under
+/// test. Its std records are inconclusive for the same reason O-7's are, and
+/// more strongly: there, `--no-default-features` at least reached the crate with
+/// no_std in force and a dependency answered `std`; here the attribute itself is
+/// off. See `run_rustc_plugin_pass`.
+///
+/// Set per crate from `visitor::ModCollector::non_feature_no_std_predicate`, at the
+/// top of `find_feature_combs_for_all_code` — before that crate's first pass and
+/// after the previous crate's last, so a dependency is never judged by the main
+/// crate's attribute. False for the overwhelming majority: 46 crates of the
+/// 20789-crate corpus carry a target-conditional `#![no_std]` at all.
+static HOST_NOT_NO_STD: Mutex<bool> = Mutex::new(false);
 
 /// The `--target` the user pinned on the command line, if any. When set, the
 /// plugin record pass compiles *only* for this target (host as the genuine-std
@@ -1081,13 +1099,33 @@ pub fn run_rustc_plugin_pass_with(
         };
     };
 
-    let std_inconclusive = succeeded_target.is_none() && !bare_metal_reached_crate;
+    // Two ways a host-only run fails to be a no_std environment, and the second
+    // is invisible to the first. `bare_metal_reached_crate` asks which package
+    // cargo gave up on, which is the right question when the crate is `#![no_std]`
+    // everywhere: a failure inside a dependency means the crate was never
+    // compiled, a failure in the crate itself means it was. For a crate whose
+    // `#![no_std]` hangs off a target predicate the host does not satisfy, that
+    // question is the wrong one — every bare-metal build fails *in the crate*,
+    // with `can't find crate for std`, precisely because the attribute does not
+    // apply there either, so the discriminator says "reached" and the host run
+    // keeps its authority. But on the host the crate is not no_std at all, and
+    // "this compiles with std" was never in doubt. cuda_std 0.2.2 is the case:
+    // 58 spans, all of them `f64::…` inherent methods that the crate's own
+    // `f32_intrinsic!` replaces with `intrinsics::…` under `target_os = "cuda"`.
+    let host_not_no_std = *HOST_NOT_NO_STD.lock().unwrap();
+    let std_inconclusive =
+        succeeded_target.is_none() && (!bare_metal_reached_crate || host_not_no_std);
 
     match succeeded_target {
         Some(t) => {
             *LAST_GOOD_TARGET.lock().unwrap() = Some(t);
             debug!("cargo hir succeeded for {} on target {}", crate_name, t);
         }
+        None if std_inconclusive && host_not_no_std => debug!(
+            "cargo hir succeeded for {} on host (no bare-metal target compiled, and this \
+             crate's `#![no_std]` does not apply to the host — std records inconclusive)",
+            crate_name
+        ),
         None if std_inconclusive => debug!(
             "cargo hir succeeded for {} on host (no bare-metal target compiled, and every \
              bare-metal attempt died inside a dependency — std records inconclusive)",
@@ -1127,6 +1165,56 @@ pub fn run_rustc_plugin_pass_with(
         std_spans,
         full_output,
         std_inconclusive,
+    }
+}
+
+/// Set [`HOST_NOT_NO_STD`] for the crate whose coverage phase is starting, and
+/// record what was seen.
+///
+/// Always assigns, so the previous crate's answer cannot leak into this one —
+/// dependencies are analysed in the same process and go through the same phase.
+/// A predicate that cannot be decided leaves the flag false, which is the
+/// pre-existing behaviour: the rule is not applied rather than applied on a
+/// guess. That covers a rustc this environment cannot run, and — the case that
+/// matters — a predicate naming an atom rustc does not derive from the target
+/// (`target_cfg::is_decidable`): a build script's `cargo:rustc-cfg=rustc_1_6`
+/// is absent from `--print cfg` yet true in the build that actually happens.
+fn set_host_no_std_applicability(pred: Option<&target_cfg::CfgPred>, telemetry: &mut Telemetry) {
+    let host_not_no_std = match pred {
+        Some(p) => target_cfg::holds_for(p, None) == Some(false),
+        None => false,
+    };
+    *HOST_NOT_NO_STD.lock().unwrap() = host_not_no_std;
+
+    let Some(p) = pred else { return };
+    if !target_cfg::is_decidable(p) {
+        // `not(test)` and friends land here, and nothing is recorded: an empty
+        // target list would read as "no target makes this crate no_std", which
+        // is the opposite of the truth for a predicate that is simply not the
+        // target's to answer.
+        debug!("`#![no_std]` is conditional on `{p}`, which no target decides; rule not applied");
+        return;
+    }
+    let targets = target_cfg::supported_no_std_targets(p);
+    debug!(
+        "`#![no_std]` is conditional on the target ({p}): holds on the host = {}, and on \
+         {} of the {} targets in TARGET_LIST{}",
+        !host_not_no_std,
+        targets.len(),
+        consts::TARGET_LIST.len(),
+        if targets.is_empty() {
+            " — no target this tool builds makes this crate no_std".to_string()
+        } else {
+            format!(" ({})", targets.join(", "))
+        }
+    );
+    // Telemetry is shared with every dependency analysed after the main crate,
+    // so record only the first (main-crate) sighting — the same reason
+    // `std_inconclusive_runs` is kept as a high-water mark.
+    if telemetry.no_std_cfg_predicate.is_none() {
+        telemetry.no_std_cfg_predicate = Some(p.to_string());
+        telemetry.no_std_predicate_targets =
+            targets.iter().map(|t| t.to_string()).collect();
     }
 }
 
@@ -1437,6 +1525,12 @@ pub fn find_feature_combs_for_all_code<'a>(
     let known_features = visitor::declared_features(manifest);
     debug!("Declared features for {}: {:?}", manifest, known_features);
 
+    // Clear the previous crate's answer before this one's entrypoints are even
+    // read: a crate whose entrypoints all turn out to be missing never reaches
+    // the call below, and inheriting a dependency's predicate would be worse
+    // than having none.
+    set_host_no_std_applicability(None, telemetry);
+
     for entry_path in &entrypoints {
         if !entry_path.exists() {
             debug!(
@@ -1454,6 +1548,7 @@ pub fn find_feature_combs_for_all_code<'a>(
         let mut collector = ModCollector::with_known_features(ctx, known_features.clone());
         let mut root = collector.collect(entry_path, name);
         let no_std_cond = collector.no_std_condition.clone();
+        set_host_no_std_applicability(collector.non_feature_no_std_predicate.as_ref(), telemetry);
         let mut solved_files: HashSet<PathBuf> = HashSet::new();
 
         let mut items = visitor::collect_all_items(&root, ctx);
