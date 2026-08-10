@@ -585,6 +585,11 @@ struct FileVisitor<'a> {
     /// `std_extern_gate` — with std possibly linked for a reason not in the OR,
     /// negating the OR would not be the no_std condition.
     std_extern_unnegatable: bool,
+    /// Was *any* `extern crate std;` seen in this file, at any nesting depth?
+    /// Unlike `std_extern_gate` this ignores where the declaration sits, because
+    /// its only job is to veto the "nothing links std" inference — see
+    /// [`StdExternFacts::any_extern_std`].
+    any_extern_std: bool,
     /// If the current module has a path override (from #[path]),
     /// this is the directory to search for its children.
     current_search_dir: PathBuf,
@@ -649,6 +654,7 @@ impl<'a> FileVisitor<'a> {
             unconditional_no_std: false,
             std_extern_gate: None,
             std_extern_unnegatable: false,
+            any_extern_std: false,
             macro_cfg_gates: HashMap::new(),
         }
     }
@@ -1474,6 +1480,7 @@ impl<'a> FileVisitor<'a> {
             unconditional_no_std: self.unconditional_no_std,
             gate: self.std_extern_gate.take(),
             unnegatable: self.std_extern_unnegatable,
+            any_extern_std: self.any_extern_std,
         };
         (
             self.items_stack.pop().unwrap(),
@@ -1506,11 +1513,22 @@ pub struct StdExternFacts<'a> {
     /// `gate`: with std possibly linked for a reason not in the OR, negating the
     /// OR would not be the no_std condition.
     pub unnegatable: bool,
+    /// An `extern crate std;` exists *somewhere* — any file, any nesting depth,
+    /// gated module or not. `gate` and `unnegatable` are both silent about
+    /// declarations they deliberately do not model (an inline `mod`'s own
+    /// binding, or anything inside a conditionally compiled module), so neither
+    /// can be read as "nothing links std". This can: it is the veto on the
+    /// no-declaration inference in [`ModCollector::visit_file`].
+    pub any_extern_std: bool,
 }
 
 impl<'a> StdExternFacts<'a> {
     /// Fold another file's declarations in. `unconditional_no_std` is deliberately
     /// not merged — it belongs to the entrypoint alone.
+    ///
+    /// `any_extern_std` is **not** merged here either: it has to survive from
+    /// files this fold skips, so `ModCollector::resolve_child` ORs it in for
+    /// every child, gated or not.
     fn merge(&mut self, ctx: &'a z3::Context, other: StdExternFacts<'a>) {
         self.unnegatable |= other.unnegatable;
         if let Some(gate) = other.gate {
@@ -1794,6 +1812,21 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         // paired with a gated crate-root `extern crate std` it names the
         // condition under which the crate links std — see `finish`.
         if i.path().is_ident("no_std") && matches!(i.style, syn::AttrStyle::Inner(_)) {
+            self.unconditional_no_std = true;
+        }
+
+        // `#![cfg_attr(not(test), no_std)]` is a bare `#![no_std]` for every
+        // configuration this tool builds. `test` is not a feature, so it is
+        // erased, and an erased atom leaves `parse_meta_for_cfg_attr` with no
+        // equation at all — the `if let Some(own)` below never runs, and the
+        // crate reached neither the `cfg_attr` condition nor the
+        // `unconditional_no_std` inference, despite being unconditionally
+        // no_std. splay-safe-rs 0.8.3 is the shape: this attribute plus
+        // `#[cfg(feature = "std")] extern crate std;`, whose negation is the
+        // condition — one seed `(or std)`, one run `[std]`, every span
+        // `AlwaysStd`.
+        if matches!(i.style, syn::AttrStyle::Inner(_)) && cfg_attr_no_std_when_not_test(i) {
+            debug!("`#![cfg_attr(not(test), no_std)]` is an unconditional #![no_std] here");
             self.unconditional_no_std = true;
         }
 
@@ -2089,6 +2122,9 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         // turns it into the no_std condition. `condition_stack.len() == 1` is the
         // top level of the file; a binding inside an inline `mod` is that
         // module's, not the crate's.
+        if i.ident == "std" {
+            self.any_extern_std = true;
+        }
         if i.ident == "std" && self.condition_stack.len() == 1 {
             match self.negatable_cfg_gate(&i.attrs) {
                 // Several such declarations link std if *any* of them is present.
@@ -2452,13 +2488,35 @@ impl<'a> ModCollector<'a> {
         // nate-common), and `extern crate std` there links std for the whole
         // crate just the same — `resolve_child` folds in every file the module
         // tree reaches unconditionally.
-        if self.no_std_condition.is_none()
-            && facts.unconditional_no_std
-            && !facts.unnegatable
-            && let Some(gate) = &facts.gate
-        {
-            debug!("Unconditional #![no_std]: no_std condition is not({gate})");
-            self.no_std_condition = Some(gate.not());
+        //
+        // And a crate with no `extern crate std` at all links std in *no*
+        // configuration, so its no_std condition is simply `true`. There is
+        // nothing to negate, but there is still something to say: without a
+        // condition the driver runs no baseline at all, and a crate whose
+        // covering seeds all come out std-on then has no std-off run to
+        // contradict `AlwaysStd`. `true` costs nothing anywhere else — it makes
+        // `covering_set_modes` unsat on the negated side, so the mode pair
+        // collapses to the single set it already produced, and it contributes
+        // no atom to `all_hard` or to the declared no_std switch. The only
+        // effect is the baseline.
+        //
+        // The veto matters here and nowhere else. `gate` and `unnegatable` are
+        // both silent about an inline `mod`'s declaration and about anything in
+        // a conditionally compiled module (`merge` is only called for children
+        // the tree reaches unconditionally), so `gate == None` on its own is
+        // not evidence that nothing links std — `any_extern_std` is.
+        if self.no_std_condition.is_none() && facts.unconditional_no_std && !facts.unnegatable {
+            match &facts.gate {
+                Some(gate) => {
+                    debug!("Unconditional #![no_std]: no_std condition is not({gate})");
+                    self.no_std_condition = Some(gate.not());
+                }
+                None if !facts.any_extern_std => {
+                    debug!("Unconditional #![no_std] and no `extern crate std`: no_std condition is true");
+                    self.no_std_condition = Some(Bool::from_bool(self.ctx, true));
+                }
+                None => {}
+            }
         }
 
         ModNode {
@@ -2541,6 +2599,11 @@ impl<'a> ModCollector<'a> {
             // conservative direction. Its `unnegatable` is dropped for the same
             // reason: a veto from a module that may not be compiled at all would
             // take the condition away from crates that have one today.
+            //
+            // `any_extern_std` is the exception and rides across the boundary:
+            // a declaration in a module that may not be compiled is still proof
+            // that the crate has one, which is all that flag claims.
+            facts.any_extern_std |= child_facts.any_extern_std;
             if effective.is_none() {
                 facts.merge(ctx, child_facts);
             }
@@ -2791,6 +2854,56 @@ fn should_skip(attrs: &[syn::Attribute]) -> bool {
         }
         false
     })
+}
+
+/// Is this `#![cfg_attr(not(test), … no_std …)]`?
+///
+/// `test` is never set for anything this tool builds — it runs `cargo hir --lib`,
+/// and `should_skip` above already drops every `#[cfg(test)]` item on that same
+/// assumption — so the predicate is true in every configuration and the crate is
+/// as unconditionally `#![no_std]` as one carrying the bare attribute.
+///
+/// Deliberately narrow. It matches the predicate structurally rather than
+/// reading `ParsedAttr::constants`, which mixes erased cfg atoms with the names
+/// of the attributes being applied and cannot tell `not(test)` from a *feature*
+/// literally called `no_std` (kwap-common 0.7.0). And only `test` counts as
+/// known-false: `#![cfg_attr(target_arch = "spirv", no_std)]` (macaw,
+/// renderling) and `#![cfg_attr(target_os = "none", no_std)]` (xous-ipc) erase
+/// the same way but say the opposite thing about the targets in `TARGET_LIST`,
+/// where those atoms are true or unknown rather than false.
+fn cfg_attr_no_std_when_not_test(attr: &Attribute) -> bool {
+    use syn::punctuated::Punctuated;
+
+    if !attr.path().is_ident("cfg_attr") {
+        return false;
+    }
+    let Ok(metas) =
+        attr.parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+    else {
+        return false;
+    };
+    let mut metas = metas.into_iter();
+    let Some(predicate) = metas.next() else {
+        return false;
+    };
+
+    // The predicate must be exactly `not(test)`.
+    let Meta::List(list) = &predicate else {
+        return false;
+    };
+    if !list.path.is_ident("not") {
+        return false;
+    }
+    let Ok(inner) = list.parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+    else {
+        return false;
+    };
+    if inner.len() != 1 || !matches!(&inner[0], Meta::Path(p) if p.is_ident("test")) {
+        return false;
+    }
+
+    // …and one of the attributes it applies must be `no_std`.
+    metas.any(|m| matches!(m, Meta::Path(p) if p.is_ident("no_std")))
 }
 
 /// Run `cargo metadata` for `manifest`, working around published tarballs whose

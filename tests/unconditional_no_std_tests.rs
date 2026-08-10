@@ -56,6 +56,14 @@ fn is_negation_of(ctx: &z3::Context, cond: &Bool<'_>, feature: &str) -> bool {
     solver.check() == SatResult::Unsat
 }
 
+/// Is `cond` true under every assignment? The O-14 condition, for a crate that
+/// links std in no configuration at all.
+fn is_tautology(ctx: &z3::Context, cond: &Bool<'_>) -> bool {
+    let solver = z3::Solver::new(ctx);
+    solver.assert(&cond.not());
+    solver.check() == SatResult::Unsat
+}
+
 // ---------------------------------------------------------------------------
 // The crates that were failing
 // ---------------------------------------------------------------------------
@@ -118,11 +126,20 @@ fn all_erased_atom_yields_no_condition() {
     );
 }
 
-/// No `extern crate std` anywhere: nothing links std, so there is no condition.
+/// O-14: no `extern crate std` anywhere, so nothing links std in *any*
+/// configuration and the condition is `true`. It used to be `None`, which left
+/// the driver with no baseline run — and a crate whose only feature-gated items
+/// are `#[cfg(feature = "std")]` then has `(or std)` as its one covering seed,
+/// std on in every run, and every std span `AlwaysStd`.
 #[test]
-fn no_extern_std_yields_no_condition() {
+fn no_extern_std_yields_an_unconditional_condition() {
     let ctx = z3::Context::new(&z3::Config::new());
-    assert!(no_std_condition(&ctx, "no_extern_std_shape.rs").is_none());
+    let cond = no_std_condition(&ctx, "no_extern_std_shape.rs")
+        .expect("a crate that never links std is no_std unconditionally");
+    assert!(
+        is_tautology(&ctx, &cond),
+        "expected an unconditionally true condition, got {cond}"
+    );
 }
 
 /// The declaration is inside an *inline* `mod` block, which is that module's own
@@ -148,12 +165,15 @@ fn an_ungated_extern_std_vetoes_the_inference() {
 }
 
 /// elfloader: `#[cfg(test)] extern crate std`. `should_skip` drops the item
-/// before it is recorded, so no gate is seen — and rightly, since the crate is
-/// no_std in every configuration cargo builds here.
+/// before it is recorded, so no gate is seen — and no *declaration* is seen
+/// either, which is right: the crate is no_std in every configuration cargo
+/// builds here, so O-14's `true` is the condition.
 #[test]
-fn a_test_only_extern_std_yields_no_condition() {
+fn a_test_only_extern_std_is_no_std_unconditionally() {
     let ctx = z3::Context::new(&z3::Config::new());
-    assert!(no_std_condition(&ctx, "cfg_test_shape.rs").is_none());
+    let cond = no_std_condition(&ctx, "cfg_test_shape.rs")
+        .expect("a declaration cargo never compiles does not link std");
+    assert!(is_tautology(&ctx, &cond), "expected `true`, got {cond}");
 }
 
 // ---------------------------------------------------------------------------
@@ -201,5 +221,90 @@ fn an_ungated_extern_std_in_a_grandchild_vetoes_the_inference() {
     assert!(
         no_std_condition(&ctx, "deep_ungated_facade/lib.rs").is_none(),
         "std is linked unconditionally in a module the tree always reaches"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// O-14 — the crate that links std in no configuration at all
+//
+// Two halves, both measured on the 46 crates that reach a verdict with no
+// no_std condition in the log. `#![cfg_attr(not(test), no_std)]` is a bare
+// `#![no_std]` for everything this tool builds, and a crate with no `extern
+// crate std` anywhere has a no_std condition of `true`.
+// ---------------------------------------------------------------------------
+
+/// splay-safe-rs 0.8.3 / blas-array2 0.3.0. The payoff half: the attribute is
+/// recognised as unconditional, so the *existing* O-3 negation fires and the
+/// crate gets `¬std`. Before this its only covering seed was `(or std)`.
+#[test]
+fn a_not_test_cfg_attr_reaches_the_extern_std_negation() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let cond = no_std_condition(&ctx, "not_test_cfg_attr_shape.rs")
+        .expect("`not(test)` is an unconditional `#![no_std]`");
+    assert!(
+        is_negation_of(&ctx, &cond, "std"),
+        "expected the negation of `feature = \"std\"`, got {cond}"
+    );
+}
+
+/// ckc-rs 0.1.15: the same attribute with nothing linking std — both halves.
+#[test]
+fn a_not_test_cfg_attr_with_no_extern_std_is_unconditional() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let cond = no_std_condition(&ctx, "not_test_no_extern_shape.rs")
+        .expect("`not(test)` and no `extern crate std` is no_std unconditionally");
+    assert!(is_tautology(&ctx, &cond), "expected `true`, got {cond}");
+}
+
+/// Control: `not(test)` inherits every veto the bare attribute has. It is the
+/// same `unconditional_no_std` flag, not a second inference.
+#[test]
+fn a_not_test_cfg_attr_still_respects_an_ungated_extern_std() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    assert!(
+        no_std_condition(&ctx, "not_test_ungated_extern_shape.rs").is_none(),
+        "std is linked whatever the features do"
+    );
+}
+
+/// Control: a target cfg erases exactly as `test` does and must NOT be read as
+/// unconditional — on `TARGET_LIST` those atoms are true or unknown, never
+/// known-false. This is the line between O-14 and the 7 crates it excludes
+/// (macaw, renderling, saft-sdf, rukako-shader, cuda-std, xous-ipc,
+/// xous-api-names).
+#[test]
+fn a_target_cfg_attr_claims_nothing() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    assert!(
+        no_std_condition(&ctx, "target_cfg_attr_shape.rs").is_none(),
+        "`target_arch = \"spirv\"` is not known-false the way `test` is"
+    );
+}
+
+/// Control for the `any_extern_std` veto. `std_extern_gate` is only recorded at
+/// a file's top level, so an inline `mod`'s declaration is invisible to it —
+/// and without a separate veto the crate would read as "nothing links std" and
+/// get `true`, which is wrong: it links std whenever that gate holds. Pairs
+/// with `extern_std_inside_an_inline_module_yields_no_condition` above, which
+/// asserts the same fixture from the other direction.
+#[test]
+fn an_inline_module_extern_std_vetoes_the_unconditional_inference() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    assert!(
+        no_std_condition(&ctx, "nested_extern_std_shape.rs").is_none(),
+        "a declaration the gate fold skips is still a declaration"
+    );
+}
+
+/// The same veto across the boundary `StdExternFacts::merge` deliberately stops
+/// at: a *gated* module's facts are dropped wholesale, so `any_extern_std` has
+/// to be ORed in separately by `resolve_child`. Without that, this crate — which
+/// links std whenever `extras` and `std` are both on — would claim `true`.
+#[test]
+fn a_gated_module_extern_std_vetoes_the_unconditional_inference() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    assert!(
+        no_std_condition(&ctx, "gated_submodule_facade/lib.rs").is_none(),
+        "a conditionally compiled module's `extern crate std` still links std"
     );
 }
