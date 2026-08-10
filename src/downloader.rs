@@ -201,6 +201,13 @@ pub fn download_all_dependencies(
 
         if parser::is_proc_macro(&name_with_version, Some(main_name)) {
             debug!("{} is a proc-macro, skipping", name_with_version);
+            // Skipping is right for the no_std *evidence*: this crate is compiled for
+            // the host and run there. It is wrong for the crate's `std` feature, which
+            // selects the tokens it injects here — see
+            // `parser::park_proc_macro_std_default`. This loop is the main crate's own
+            // dependency list (the transitive walk runs after it), so the edge being
+            // rewritten is one the main manifest actually owns.
+            parser::park_proc_macro_std_default(main_name, &name_with_version, telemetry);
             continue;
         }
 

@@ -2572,6 +2572,239 @@ pub fn features_reference_dep_explicitly(manifest_toml: &toml::Value, dep_key: &
     })
 }
 
+/// Park a proc-macro dependency's default `std` feature on the main crate's edge.
+///
+/// A proc-macro crate is exempt from the no_std walk for a good reason: it is
+/// compiled for the *host* and run there, so its own `use std::collections::HashMap`
+/// says nothing about the crate being analysed. But its `[features]` are not host-only
+/// — they select which tokens it injects into its consumer:
+///
+/// ```ignore
+/// // displaydoc 0.2.6, src/expand.rs — `default = ["std"]`
+/// #[cfg(feature = "std")]
+/// fn path_specialization() -> TokenStream {
+///     quote! {
+///         extern crate std;                                  // ← lands in the CONSUMER
+///         impl PathToDisplayDoc for std::path::Path { … }     // ← std::path::Display
+///     }
+/// }
+/// #[cfg(not(feature = "std"))]                                // ← emits nothing
+/// ```
+///
+/// Skipping the dependency everywhere therefore left that default on, and every
+/// `#[derive(Display)]` in a `#![no_std]` crate got `extern crate std` injected at the
+/// derive's span: unguarded std the consumer cannot gate away, on an item it never
+/// wrote. Measured on a two-item fixture against `aarch64-unknown-none`: with the
+/// default on, one std record at the derive and the crate fails `E0463 can't find
+/// crate for std`; with `default-features = false` on that one edge, no std records
+/// and it compiles. So it is not only false evidence — the emitted config could not
+/// have built either. dfu-core 0.7.0 (4 spans), embedded-exfat 0.2.4 (5) and
+/// tftp 0.1.0 (1) are the displaydoc half of it; `sp-api-proc-macro` and
+/// `sp-debug-derive` (`#[cfg(feature = "std")]` / `#[cfg(not(…))]` emissions, both
+/// `default = ["std"]`) are the same mechanism in the Substrate family. 78 distinct
+/// proc-macro crates in the corpus declare a `std`/`alloc` feature.
+///
+/// Deliberately narrow: **only a default feature named `std` is parked.** Every other
+/// feature of the macro is left exactly as its author set it, so a macro that needs
+/// its own defaults to compile on the host is untouched. The parked feature is
+/// re-declared in `custom_default_features` like any other removed default, and the
+/// remaining defaults are re-declared on the edge — the same policy as
+/// `update_main_crate_default_list`, including its refusal to touch an edge whose
+/// default list names something a dependency edge cannot name (`dep/feat`, `dep:x`).
+///
+/// # Arguments
+/// * `main_name` - The main crate, `name:version`
+/// * `dep_name_with_version` - The proc-macro dependency, `name:version`
+/// * `telemetry` - Records the dependencies actually parked
+/// # Returns
+/// None
+pub fn park_proc_macro_std_default(
+    main_name: &str,
+    dep_name_with_version: &str,
+    telemetry: &mut Telemetry,
+) {
+    let dep_manifest = determine_manifest_file(dep_name_with_version, Some(main_name));
+    let Ok(dep_text) = fs::read_to_string(&dep_manifest) else {
+        debug!("Proc-macro std parking: cannot read {}", dep_manifest);
+        return;
+    };
+    let Ok(dep_toml) = toml::from_str::<toml::Value>(&dep_text) else {
+        debug!("Proc-macro std parking: cannot parse {}", dep_manifest);
+        return;
+    };
+
+    let dep_package = dep_name_with_version
+        .split(':')
+        .next()
+        .unwrap_or(dep_name_with_version)
+        .to_string();
+
+    let main_manifest = determine_manifest_file(main_name, None);
+    let Ok(main_text) = fs::read_to_string(&main_manifest) else {
+        debug!("Proc-macro std parking: cannot read {}", main_manifest);
+        return;
+    };
+    let Ok(mut main_toml) = toml::from_str::<toml::Value>(&main_text) else {
+        debug!("Proc-macro std parking: cannot parse {}", main_manifest);
+        return;
+    };
+
+    if !park_proc_macro_std_in_manifest(&mut main_toml, &dep_toml, &dep_package) {
+        return;
+    }
+
+    if let Err(e) = fs::write(
+        &main_manifest,
+        toml::to_string(&main_toml).expect("Failed to convert Value to string"),
+    ) {
+        debug!(
+            "Proc-macro std parking: cannot write {}: {}",
+            main_manifest, e
+        );
+        return;
+    }
+    telemetry.proc_macro_std_parked.push(dep_package);
+}
+
+/// The manifest surgery behind `park_proc_macro_std_default`, on values rather than
+/// files. Returns whether `main_toml` was changed.
+///
+/// Every reason to leave the edge alone lives here: the macro has no default `std`
+/// (nothing to park), its default list names something an edge cannot name, or the
+/// main manifest has no table entry for it.
+pub fn park_proc_macro_std_in_manifest(
+    main_toml: &mut toml::Value,
+    dep_toml: &toml::Value,
+    dep_package: &str,
+) -> bool {
+    let defaults: Vec<String> = dep_toml
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .and_then(|features| features.get("default"))
+        .and_then(toml::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let to_park: Vec<String> = defaults
+        .iter()
+        .filter(|f| is_std_feature_name(f))
+        .cloned()
+        .collect();
+    if to_park.is_empty() {
+        return false;
+    }
+
+    let keep_on_edge: Vec<String> = defaults
+        .iter()
+        .filter(|f| !is_std_feature_name(f))
+        .cloned()
+        .collect();
+    if keep_on_edge.iter().any(|f| !is_own_feature_name(f)) {
+        debug!(
+            "Proc-macro {} has non-local entries in its default list ({:?}); leaving the edge alone",
+            dep_package, defaults
+        );
+        return false;
+    }
+
+    let Some(edge_key) = proc_macro_edge_key(main_toml, dep_package) else {
+        debug!(
+            "Proc-macro {} has no dependency table entry to park on",
+            dep_package
+        );
+        return false;
+    };
+
+    let Some(toml::Value::Table(edge)) = main_toml
+        .get_mut("dependencies")
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|deps| deps.get_mut(&edge_key))
+    else {
+        return false;
+    };
+
+    edge.insert("default-features".to_string(), toml::Value::Boolean(false));
+    if !keep_on_edge.is_empty() {
+        let edge_feats = edge
+            .entry("features".to_string())
+            .or_insert_with(|| toml::Value::Array(Vec::new()));
+        if let Some(arr) = edge_feats.as_array_mut() {
+            for feat in &keep_on_edge {
+                if !arr.iter().any(|v| v.as_str() == Some(feat.as_str())) {
+                    arr.push(toml::Value::String(feat.clone()));
+                }
+            }
+        }
+    }
+
+    debug!(
+        "Proc-macro {}: parking default(s) {:?}, keeping {:?} on the edge",
+        dep_package, to_park, keep_on_edge
+    );
+    let parked: Vec<String> = to_park
+        .iter()
+        .map(|feat| format!("{}/{}", edge_key, feat))
+        .collect();
+    add_feats_to_custom_feature(main_toml, consts::CUSTOM_FEATURES_DISABLED, &parked);
+    true
+}
+
+/// The names a proc-macro crate gives the feature that decides whether the tokens it
+/// injects are std-flavoured.
+///
+/// Measured rather than assumed: over all 1701 distinct proc-macro crates in the
+/// corpus, a `#[cfg]`-gated region mentioning `std` whose gate names one of the
+/// macro's *own default* features is spelled `std` at 343 sites and `use_std` at one
+/// (`bf-impl`). Nothing else in the corpus gates injected std under another name — the
+/// other hits (`educe`'s `PartialEq`/`Debug`, `duplicate`'s `module_disambiguation`,
+/// `rstest_macros`' `async-timeout`) gate code that merely mentions std nearby.
+///
+/// A name test is a heuristic, and the name-free alternative is real: the compiler
+/// knows which expansion produced a span, so the plugin could report the *defining
+/// crate* of the expansion (`outer_expn_data`, which `macro_body_cfgs` already walks),
+/// and the driver could then probe the macro's `default` list one feature at a time
+/// and keep whichever removal makes the std record disappear — evidence, not names.
+/// That costs a plugin change and an extra pass per candidate; it is written up in
+/// FP_HANDOFF as the general path. Deliberately NOT extended to `alloc`: a no_std
+/// crate can and usually does want `alloc`.
+fn is_std_feature_name(feature: &str) -> bool {
+    matches!(feature, "std" | "use_std" | "use-std")
+}
+
+/// The key under `[dependencies]` that carries a package, following a rename.
+///
+/// The edge is keyed by the *dependency name*, which is the package name unless the
+/// manifest renames it (`[dependencies.foo] package = "bar"`), and cargo's published
+/// manifests normalise `_`/`-` inconsistently between the dependency list and the
+/// package name. Only table entries are considered: a bare `foo = "1"` cannot carry
+/// `default-features`, and rewriting it into a table is a manifest change with a
+/// blast radius of its own.
+fn proc_macro_edge_key(main_toml: &toml::Value, dep_package: &str) -> Option<String> {
+    let deps = main_toml.get("dependencies")?.as_table()?;
+    let renamed = deps.iter().find(|(_, value)| {
+        value
+            .as_table()
+            .and_then(|t| t.get("package"))
+            .and_then(toml::Value::as_str)
+            == Some(dep_package)
+    });
+    if let Some((key, _)) = renamed {
+        return Some(key.clone());
+    }
+    [
+        dep_package.to_string(),
+        dep_package.replace('-', "_"),
+        dep_package.replace('_', "-"),
+    ]
+    .into_iter()
+    .find(|candidate| deps.get(candidate).is_some_and(toml::Value::is_table))
+}
+
 /// Update the main crate's default features list
 /// by adding the default features of the given dependency.
 /// This function will also set the dependency to not have

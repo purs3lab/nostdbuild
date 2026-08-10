@@ -232,3 +232,16 @@ fn test_chainable_if() {
 fn test_stak_vm() {
     run_main_test("stak-vm", "0.10.21", "x86_64-unknown-none");
 }
+
+/// O-9: a proc-macro dependency's `std` feature selects the tokens it injects into
+/// *this* crate. displaydoc 0.2.6 (`default = ["std"]`) emits `extern crate std;` and
+/// `impl PathToDisplayDoc for std::path::Path` into every `#[derive(Display)]` site,
+/// so dfu-core's four derives read as unguarded std — at spans the crate never wrote
+/// — and no bare-metal target could link (`E0463 can't find crate for std`). Proc
+/// macros are skipped by the dependency walk, correctly for their own host-side std
+/// and wrongly for that default, so nothing ever turned it off. The walk now parks a
+/// proc-macro's default `std` on the edge (`parser::park_proc_macro_std_default`).
+#[cargo_test]
+fn test_dfu_core() {
+    run_main_test("dfu-core", "0.7.0", "x86_64-unknown-none");
+}

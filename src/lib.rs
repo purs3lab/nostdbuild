@@ -380,6 +380,12 @@ pub struct Telemetry {
     pub default_list_modified: Vec<(String, bool)>,
     /// Did we change the default-features to false for any dependency
     pub default_true_unset_deps: Vec<(String, bool)>,
+    /// Proc-macro dependencies whose default `std` feature was parked on the
+    /// edge (O-9). A proc-macro's `std` is the *consumer's* std — it selects
+    /// which tokens the macro injects into this crate — so it is turned off
+    /// like any other dependency's std, even though the macro crate itself is
+    /// exempt from the no_std walk. See `parser::park_proc_macro_std_default`.
+    pub proc_macro_std_parked: Vec<String>,
     /// Did we remove any unnecessary features from main crate features that main enabled for any of its dependencies
     pub unnecessary_features_removed: Vec<(String, bool)>,
     /// Features that were moved for the above case
