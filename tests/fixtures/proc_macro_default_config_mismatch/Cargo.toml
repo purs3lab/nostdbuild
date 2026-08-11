@@ -1,0 +1,22 @@
+[package]
+name = "proc_macro_default_config_mismatch"
+description = "multiwii_serial_protocol_v2's shape: the macro builds fine without its std default, but the std-off expansion does not fit THIS crate's default (std) configuration — a build that was never the question"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+name = "proc_macro_default_config_mismatch"
+
+[dependencies.dual]
+path = "dual"
+
+# The name the macro's std-off expansion reaches for exists only here, under a
+# feature the default configuration does not enable — so the parked trial fails
+# in *this* crate while `dual` itself compiles perfectly well.
+[features]
+default = []
+alt = []
+
+[workspace]
+exclude = ["dual"]

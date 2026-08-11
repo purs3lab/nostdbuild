@@ -1,0 +1,16 @@
+[package]
+name = "needs_std"
+description = "Injects std into its consumer AND cannot be built without its own `std` feature. Both halves of the evidence are needed to get this one right."
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+name = "needs_std"
+proc-macro = true
+
+[features]
+default = ["std"]
+std = []
+
+[workspace]

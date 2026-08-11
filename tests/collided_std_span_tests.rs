@@ -43,6 +43,7 @@ fn record(
         local_route: local_route.map(String::from),
         defining_module: None,
         macro_body_cfgs: vec![],
+        expansion_crate: None,
         is_extern_crate: false,
         gateway_anchor: None,
     }

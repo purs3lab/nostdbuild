@@ -1,0 +1,18 @@
+[package]
+name = "proc_macro_own_std"
+description = "bebytes 0.7.1's shape: a proc-macro dependency whose default `std` guards the macro's OWN host code and injects nothing — the control the name test got wrong"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+name = "proc_macro_own_std"
+
+[dependencies.hostonly]
+path = "hostonly"
+
+[features]
+default = []
+
+[workspace]
+exclude = ["hostonly"]

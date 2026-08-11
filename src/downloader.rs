@@ -18,7 +18,7 @@ use walkdir::WalkDir;
 
 use crate::types::*;
 use crate::{
-    CrateInfo, DEPENDENCIES, Dependency, Telemetry,
+    CrateInfo, DEPENDENCIES, Dependency, ProcMacroDep, Telemetry,
     consts::{DOWNLOAD_PATH, INDEX_CRATES_IO, STATIC_CRATES_IO},
     parser,
 };
@@ -138,6 +138,10 @@ pub fn clone_from_crates(
 /// and add them to the worklist
 /// # Arguments
 /// * `worklist` - The initial worklist containing the dependencies of the crate
+/// * `proc_macro_deps` - Out: the main crate's own proc-macro dependencies, which
+///   the walk skips. `driver::park_injecting_proc_macros` probes these once the
+///   crate can be compiled — a proc macro's features are the *consumer's*, and
+///   whether one of them put std here is a question only a build answers.
 /// # Returns
 /// * `Result` - Whether every dependency reached supports no_std, an `Error`
 ///   otherwise
@@ -159,6 +163,7 @@ pub fn download_all_dependencies(
     depth: u32,
     telemetry: &mut Telemetry,
     top_level_deps: &mut Vec<(String, String)>,
+    proc_macro_deps: &mut Vec<ProcMacroDep>,
 ) -> Result<bool, anyhow::Error> {
     debug!("Initial worklist length: {}", worklist.len());
     let mut initlist = Vec::new();
@@ -202,12 +207,16 @@ pub fn download_all_dependencies(
         if parser::is_proc_macro(&name_with_version, Some(main_name)) {
             debug!("{} is a proc-macro, skipping", name_with_version);
             // Skipping is right for the no_std *evidence*: this crate is compiled for
-            // the host and run there. It is wrong for the crate's `std` feature, which
-            // selects the tokens it injects here — see
-            // `parser::park_proc_macro_std_default`. This loop is the main crate's own
-            // dependency list (the transitive walk runs after it), so the edge being
-            // rewritten is one the main manifest actually owns.
-            parser::park_proc_macro_std_default(main_name, &name_with_version, telemetry);
+            // the host and run there. It is wrong for the crate's features, which
+            // select the tokens it injects here — see
+            // `driver::park_injecting_proc_macros`, which decides from a compile of
+            // this crate whether any of them did. This loop is the main crate's own
+            // dependency list (the transitive walk runs after it), so the edges it
+            // names are ones the main manifest actually owns.
+            proc_macro_deps.push(ProcMacroDep {
+                package: name.clone(),
+                manifest: parser::determine_manifest_file(&name_with_version, Some(main_name)),
+            });
             continue;
         }
 

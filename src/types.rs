@@ -117,6 +117,11 @@ pub struct PathRecord {
     /// module-level extern-crate anchors for local facade gateway resolution.
     #[serde(default)]
     pub is_extern_crate: bool,
+    /// The crate that *defines* the macro whose expansion produced this record,
+    /// when the record came out of one. `None` for code the crate wrote itself
+    /// and for expansions of the crate's own macros.
+    #[serde(default)]
+    pub expansion_crate: Option<String>,
     /// Span of the `extern crate` declaration this record inherited its
     /// `usage_crate` from, when `resolve_local_facade_gateways` rewrote it.
     ///

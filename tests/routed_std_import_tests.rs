@@ -58,6 +58,7 @@ fn std_record_at(name: &str, needle: &str, path_text: &str) -> PathRecord {
         local_route: None,
         defining_module: None,
         macro_body_cfgs: vec![],
+        expansion_crate: None,
         is_extern_crate: false,
         gateway_anchor: None,
     }

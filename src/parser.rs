@@ -2572,7 +2572,7 @@ pub fn features_reference_dep_explicitly(manifest_toml: &toml::Value, dep_key: &
     })
 }
 
-/// Park a proc-macro dependency's default `std` feature on the main crate's edge.
+/// Park one default feature of a proc-macro dependency on the main crate's edge.
 ///
 /// A proc-macro crate is exempt from the no_std walk for a good reason: it is
 /// compiled for the *host* and run there, so its own `use std::collections::HashMap`
@@ -2601,83 +2601,110 @@ pub fn features_reference_dep_explicitly(manifest_toml: &toml::Value, dep_key: &
 /// have built either. dfu-core 0.7.0 (4 spans), embedded-exfat 0.2.4 (5) and
 /// tftp 0.1.0 (1) are the displaydoc half of it; `sp-api-proc-macro` and
 /// `sp-debug-derive` (`#[cfg(feature = "std")]` / `#[cfg(not(…))]` emissions, both
-/// `default = ["std"]`) are the same mechanism in the Substrate family. 78 distinct
-/// proc-macro crates in the corpus declare a `std`/`alloc` feature.
+/// `default = ["std"]`) are the same mechanism in the Substrate family.
 ///
-/// Deliberately narrow: **only a default feature named `std` is parked.** Every other
-/// feature of the macro is left exactly as its author set it, so a macro that needs
-/// its own defaults to compile on the host is untouched. The parked feature is
-/// re-declared in `custom_default_features` like any other removed default, and the
-/// remaining defaults are re-declared on the edge — the same policy as
-/// `update_main_crate_default_list`, including its refusal to touch an edge whose
-/// default list names something a dependency edge cannot name (`dep/feat`, `dep:x`).
+/// **Which default to park is decided by evidence, never by its name** — see
+/// `driver::park_injecting_proc_macros`, which calls this once per trial and keeps
+/// the trial that made the injected std records disappear without breaking the
+/// build. The name test this replaced was wrong in both directions: it missed a
+/// macro that spells the feature something else, and — measured over the corpus —
+/// it parked the `std` default of 8 of the 115 macros that have one where that
+/// feature guards the macro's *own host code*, so the macro stopped compiling and
+/// every target build of the consumer failed inside it (bebytes 0.7.1 →
+/// bebytes_derive 0.8.1, `use std::vec::Vec` at `src/bit_validation.rs:5`).
+///
+/// Everything else the macro's author set is left exactly as it is: the parked
+/// feature is re-declared in `custom_default_features` like any other removed
+/// default, and the remaining defaults are re-declared on the edge — the same
+/// policy as `update_main_crate_default_list`, including its refusal to touch an
+/// edge whose default list names something a dependency edge cannot name
+/// (`dep/feat`, `dep:x`).
 ///
 /// # Arguments
-/// * `main_name` - The main crate, `name:version`
-/// * `dep_name_with_version` - The proc-macro dependency, `name:version`
-/// * `telemetry` - Records the dependencies actually parked
+/// * `main_manifest` - Path to the main crate's `Cargo.toml`, which is rewritten
+/// * `dep_manifest` - Path to the proc-macro dependency's `Cargo.toml`
+/// * `dep_package` - The proc-macro's package name, as its edge names it
+/// * `feature` - The default feature to park
 /// # Returns
-/// None
-pub fn park_proc_macro_std_default(
-    main_name: &str,
-    dep_name_with_version: &str,
-    telemetry: &mut Telemetry,
-) {
-    let dep_manifest = determine_manifest_file(dep_name_with_version, Some(main_name));
-    let Ok(dep_text) = fs::read_to_string(&dep_manifest) else {
-        debug!("Proc-macro std parking: cannot read {}", dep_manifest);
-        return;
+/// Whether the main manifest was rewritten.
+///
+/// Paths rather than `name:version` throughout: the caller has already resolved
+/// them, and taking them here is what lets a fixture drive the whole rule instead
+/// of only its manifest arithmetic.
+pub fn park_proc_macro_default(
+    main_manifest: &str,
+    dep_manifest: &str,
+    dep_package: &str,
+    feature: &str,
+) -> bool {
+    let Ok(dep_text) = fs::read_to_string(dep_manifest) else {
+        debug!("Proc-macro parking: cannot read {}", dep_manifest);
+        return false;
     };
     let Ok(dep_toml) = toml::from_str::<toml::Value>(&dep_text) else {
-        debug!("Proc-macro std parking: cannot parse {}", dep_manifest);
-        return;
+        debug!("Proc-macro parking: cannot parse {}", dep_manifest);
+        return false;
     };
 
-    let dep_package = dep_name_with_version
-        .split(':')
-        .next()
-        .unwrap_or(dep_name_with_version)
-        .to_string();
-
-    let main_manifest = determine_manifest_file(main_name, None);
-    let Ok(main_text) = fs::read_to_string(&main_manifest) else {
-        debug!("Proc-macro std parking: cannot read {}", main_manifest);
-        return;
+    let Ok(main_text) = fs::read_to_string(main_manifest) else {
+        debug!("Proc-macro parking: cannot read {}", main_manifest);
+        return false;
     };
     let Ok(mut main_toml) = toml::from_str::<toml::Value>(&main_text) else {
-        debug!("Proc-macro std parking: cannot parse {}", main_manifest);
-        return;
+        debug!("Proc-macro parking: cannot parse {}", main_manifest);
+        return false;
     };
 
-    if !park_proc_macro_std_in_manifest(&mut main_toml, &dep_toml, &dep_package) {
-        return;
+    if !park_proc_macro_default_in_manifest(&mut main_toml, &dep_toml, dep_package, feature) {
+        return false;
     }
 
     if let Err(e) = fs::write(
-        &main_manifest,
+        main_manifest,
         toml::to_string(&main_toml).expect("Failed to convert Value to string"),
     ) {
-        debug!(
-            "Proc-macro std parking: cannot write {}: {}",
-            main_manifest, e
-        );
-        return;
+        debug!("Proc-macro parking: cannot write {}: {}", main_manifest, e);
+        return false;
     }
-    telemetry.proc_macro_std_parked.push(dep_package);
+    true
 }
 
-/// The manifest surgery behind `park_proc_macro_std_default`, on values rather than
-/// files. Returns whether `main_toml` was changed.
+/// The name rustc knows a dependency by, which is its `[lib] name` when it sets one
+/// and its package name otherwise.
 ///
-/// Every reason to leave the edge alone lives here: the macro has no default `std`
-/// (nothing to park), its default list names something an edge cannot name, or the
-/// main manifest has no table entry for it.
-pub fn park_proc_macro_std_in_manifest(
-    main_toml: &mut toml::Value,
-    dep_toml: &toml::Value,
-    dep_package: &str,
-) -> bool {
-    let defaults: Vec<String> = dep_toml
+/// The two differ for 5 of the corpus's 1719 proc-macro crates (`ethereum_ssz_derive`
+/// builds `ssz_derive`, `sea-strum_macros` builds `strum_macros`), and only the lib
+/// name ever appears in a `PathRecord::expansion_crate`. The *package* name stays the
+/// right key for the dependency edge, so the two are read separately rather than
+/// conflated.
+pub fn dep_crate_name(dep_manifest: &str, package: &str) -> String {
+    fs::read_to_string(dep_manifest)
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+        .and_then(|toml| {
+            toml.get("lib")?
+                .get("name")?
+                .as_str()
+                .map(|name| name.to_string())
+        })
+        .unwrap_or_else(|| package.to_string())
+}
+
+/// The default features a proc-macro dependency's manifest declares, in declaration
+/// order. The candidate list `driver::park_injecting_proc_macros` probes; empty
+/// means there is nothing a consumer's edge could turn off.
+pub fn proc_macro_default_features(dep_manifest: &str) -> Vec<String> {
+    let Ok(dep_text) = fs::read_to_string(dep_manifest) else {
+        return Vec::new();
+    };
+    let Ok(dep_toml) = toml::from_str::<toml::Value>(&dep_text) else {
+        return Vec::new();
+    };
+    declared_default_features(&dep_toml)
+}
+
+fn declared_default_features(dep_toml: &toml::Value) -> Vec<String> {
+    dep_toml
         .get("features")
         .and_then(toml::Value::as_table)
         .and_then(|features| features.get("default"))
@@ -2688,11 +2715,26 @@ pub fn park_proc_macro_std_in_manifest(
                 .filter_map(|v| v.as_str().map(str::to_string))
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// The manifest surgery behind `park_proc_macro_default`, on values rather than
+/// files. Returns whether `main_toml` was changed.
+///
+/// Every reason to leave the edge alone lives here: `feature` is not one of the
+/// macro's defaults (nothing to park), its default list names something an edge
+/// cannot name, or the main manifest has no table entry for it.
+pub fn park_proc_macro_default_in_manifest(
+    main_toml: &mut toml::Value,
+    dep_toml: &toml::Value,
+    dep_package: &str,
+    feature: &str,
+) -> bool {
+    let defaults = declared_default_features(dep_toml);
 
     let to_park: Vec<String> = defaults
         .iter()
-        .filter(|f| is_std_feature_name(f))
+        .filter(|f| f.as_str() == feature)
         .cloned()
         .collect();
     if to_park.is_empty() {
@@ -2701,7 +2743,7 @@ pub fn park_proc_macro_std_in_manifest(
 
     let keep_on_edge: Vec<String> = defaults
         .iter()
-        .filter(|f| !is_std_feature_name(f))
+        .filter(|f| f.as_str() != feature)
         .cloned()
         .collect();
     if keep_on_edge.iter().any(|f| !is_own_feature_name(f)) {
@@ -2754,25 +2796,21 @@ pub fn park_proc_macro_std_in_manifest(
     true
 }
 
-/// The names a proc-macro crate gives the feature that decides whether the tokens it
-/// injects are std-flavoured.
+/// The order `driver::park_injecting_proc_macros` tries a macro's defaults in.
 ///
-/// Measured rather than assumed: over all 1701 distinct proc-macro crates in the
-/// corpus, a `#[cfg]`-gated region mentioning `std` whose gate names one of the
-/// macro's *own default* features is spelled `std` at 343 sites and `use_std` at one
-/// (`bf-impl`). Nothing else in the corpus gates injected std under another name — the
-/// other hits (`educe`'s `PartialEq`/`Debug`, `duplicate`'s `module_disambiguation`,
-/// `rstest_macros`' `async-timeout`) gate code that merely mentions std nearby.
+/// **Ordering only — it decides nothing.** A trial is accepted because the injected
+/// std records went away and the crate still compiled, so a wrong order costs builds
+/// and never a wrong answer. It is worth having because the answer is a `std`-named
+/// feature almost every time: measured over all 1719 distinct proc-macro crates in
+/// the corpus, a `#[cfg]`-gated std-mentioning region whose gate names one of the
+/// macro's own defaults is spelled `std` at 343 sites and `use_std` at exactly one
+/// (`bf-impl`), so trying those first usually settles it in one build.
 ///
-/// A name test is a heuristic, and the name-free alternative is real: the compiler
-/// knows which expansion produced a span, so the plugin could report the *defining
-/// crate* of the expansion (`outer_expn_data`, which `macro_body_cfgs` already walks),
-/// and the driver could then probe the macro's `default` list one feature at a time
-/// and keep whichever removal makes the std record disappear — evidence, not names.
-/// That costs a plugin change and an extra pass per candidate; it is written up in
-/// FP_HANDOFF as the general path. Deliberately NOT extended to `alloc`: a no_std
-/// crate can and usually does want `alloc`.
-fn is_std_feature_name(feature: &str) -> bool {
+/// This is what is left of the name *test* that used to decide the parking outright.
+/// Note that `alloc` is no longer special-cased away: under the old rule excluding it
+/// was a guess about intent, and under this one a macro's `alloc` default is parked
+/// only if turning it off is what removes std from the consumer.
+pub fn std_feature_name_first(feature: &str) -> bool {
     matches!(feature, "std" | "use_std" | "use-std")
 }
 

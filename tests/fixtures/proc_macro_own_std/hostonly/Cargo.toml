@@ -1,0 +1,16 @@
+[package]
+name = "hostonly"
+description = "bebytes_derive 0.8.1 in miniature: `default = [\"std\"]`, and that feature is what lets the macro itself compile. Turning it off costs the consumer every target build and gains nothing."
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+name = "hostonly"
+proc-macro = true
+
+[features]
+default = ["std"]
+std = []
+
+[workspace]

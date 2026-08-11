@@ -16,7 +16,7 @@ use crate::phases::*;
 use crate::types::*;
 use crate::visitor::{self, ModCollector, ModNode};
 use crate::{
-    ReadableSpan, Telemetry,
+    ProcMacroDep, ReadableSpan, Telemetry,
     consts::{self, PLUGIN_OUTPUT_ENV},
     downloader, parser, solver, target_cfg, timing,
 };
@@ -762,7 +762,15 @@ pub fn run_default_features_pass(manifest: &str, crate_name: &str) -> PassOutcom
         );
     }
 
-    let args = ["hir", "--", "--manifest-path", manifest];
+    // `--lib` for the same reason every other pass takes it (bucket F): the pass
+    // stops before codegen, so no rmeta is emitted for the lib and a `[[bin]]`
+    // that uses its own crate fails on `extern location for X does not exist`.
+    // The whole pass then fails and its records are lost — which is how bebytes
+    // 0.7.1's `bin/macro_test.rs` silently cost this crate its evidence.
+    let mut args: Vec<&str> = vec!["hir", "--", "--manifest-path", manifest];
+    if visitor::package_has_lib(manifest) {
+        args.push("--lib");
+    }
 
     debug!(
         "Running default-features pass for {}, output -> {:?}",
@@ -839,6 +847,252 @@ pub fn run_default_features_pass(manifest: &str, crate_name: &str) -> PassOutcom
         // The default-features pass is a host build of the crate's *default*
         // configuration — a std run by construction, and never classified.
         std_inconclusive: false,
+    }
+}
+
+/// Upper bound on the trial builds [`park_injecting_proc_macros`] spends on one
+/// macro. The answer is a single feature in every case measured, and the ordering
+/// puts the likely one first, so this only bites a macro with a long default list
+/// that injects std under a late one — where the alternative is a build per
+/// default (`educe` declares twelve).
+const MAX_PROC_MACRO_PARK_TRIALS: usize = 4;
+
+/// Turn off the default feature of a proc-macro dependency that the compiler shows
+/// is injecting `std` into this crate — and only if turning it off both removes
+/// that std and leaves the crate building.
+///
+/// A proc macro is skipped by the no_std walk because it is compiled for the host
+/// and run there: its own `use std::collections::HashMap` says nothing about the
+/// crate being analysed. Its `[features]` are a different matter — they choose the
+/// tokens it *injects*, which land in this crate at the macro's call span, ungated
+/// and unremovable by anything the crate itself declares:
+///
+/// ```ignore
+/// // displaydoc 0.2.6, src/expand.rs — `default = ["std"]`
+/// #[cfg(feature = "std")]
+/// fn specialization() -> TokenStream {
+///     quote! { extern crate std;                                  // ← the consumer's
+///              impl PathToDisplayDoc for std::path::Path { … } } }
+/// #[cfg(not(feature = "std"))]                                    // emits nothing
+/// ```
+///
+/// **The question is which feature, and it is answered by building, not by
+/// reading names.** `PathRecord::expansion_crate` carries the crate that *defines*
+/// the macro a record came out of, so a std record attributed to `displaydoc` is
+/// the compiler saying displaydoc put it there. Each of that macro's defaults is
+/// then parked in turn and the crate recompiled: the trial is accepted when the
+/// records attributed to it are gone **and** the pass still compiled, and rolled
+/// back otherwise.
+///
+/// Both halves are load-bearing, and the name test they replace was wrong in both
+/// directions:
+///
+/// * *attribution* — parking a macro that never injected anything is a manifest
+///   change with nothing to gain. 115 of the corpus's 1719 proc-macro crates have
+///   a `std`-named default; almost none of them inject std.
+/// * *the build* — of those 115, **8** use that default to guard their own host
+///   code, so parking it stops the macro compiling and every target build of the
+///   consumer dies inside it. bebytes 0.7.1 is the measured case: parking
+///   `bebytes_derive/std` cost it all 26 targets on `E0433 use of unresolved
+///   module std` at `bebytes_derive/src/bit_validation.rs:5`, and bebytes_derive
+///   injects no std at all — evidence rejects the parking twice over.
+///
+/// Cost is zero for a crate with no proc-macro dependency carrying defaults (4% of
+/// the corpus have one), one host build for those, and one build per trial only
+/// where the evidence pass actually found injected std.
+///
+/// Only *defaults* are candidates. A feature the consumer names on the edge itself
+/// (`features = ["std"]`) is the author asking for it, not something on by omission,
+/// and removing it is a different decision that belongs to the ordinary feature
+/// solve. The old rule drew the same line.
+pub fn park_injecting_proc_macros(
+    main_name: &str,
+    manifest: &str,
+    proc_macro_deps: &[ProcMacroDep],
+    telemetry: &mut Telemetry,
+) {
+    let candidates: Vec<(&ProcMacroDep, Vec<String>)> = proc_macro_deps
+        .iter()
+        .map(|dep| {
+            let mut defaults = parser::proc_macro_default_features(&dep.manifest);
+            // Ordering only — see `parser::std_feature_name_first`. The trial that
+            // is kept is the one that compiled with the std records gone.
+            defaults.sort_by_key(|f| !parser::std_feature_name_first(f));
+            (dep, defaults)
+        })
+        .filter(|(_, defaults)| !defaults.is_empty())
+        .collect();
+    if candidates.is_empty() {
+        return;
+    }
+
+    let _t = timing::scope("proc_macro_evidence", main_name);
+    debug!(
+        "Proc-macro parking: {} candidate dependenc(ies) with defaults: {:?}",
+        candidates.len(),
+        candidates
+    );
+
+    // The crate as its author wrote it: every macro's defaults on, and the host, so
+    // the pass compiles for a crate whose no_std configuration is not known yet.
+    // A crate that does not build this way yields no evidence, and no evidence is
+    // no parking — the same place the run would have been without this.
+    let PassOutcome::Success { full_output, .. } = run_default_features_pass(manifest, main_name)
+    else {
+        debug!("Proc-macro parking: the crate does not compile with its default features; no evidence to park on");
+        return;
+    };
+
+    for (dep, defaults) in candidates {
+        // The edge is keyed by the package name; the records name the *crate*.
+        let krate = parser::dep_crate_name(&dep.manifest, &dep.package);
+        if injected_std_records(&full_output, &krate) == 0 {
+            continue;
+        }
+        telemetry
+            .proc_macro_std_injectors
+            .push(dep.package.clone());
+        park_one_proc_macro(main_name, manifest, dep, &krate, &defaults, telemetry);
+    }
+}
+
+/// Try each default in turn, keep the first trial that compiles with the macro's
+/// std records gone, and leave the manifest untouched if none does.
+fn park_one_proc_macro(
+    main_name: &str,
+    manifest: &str,
+    dep: &ProcMacroDep,
+    krate: &str,
+    defaults: &[String],
+    telemetry: &mut Telemetry,
+) {
+    let package = dep.package.as_str();
+    let Ok(original) = fs::read_to_string(manifest) else {
+        warn!("Proc-macro parking: cannot read {}", manifest);
+        return;
+    };
+    let restore = |what: &str| {
+        if let Err(e) = fs::write(manifest, &original) {
+            warn!("Proc-macro parking: cannot restore {}: {}", manifest, e);
+        } else {
+            debug!("Proc-macro parking: rolled back {} — {}", package, what);
+        }
+    };
+
+    for feature in defaults.iter().take(MAX_PROC_MACRO_PARK_TRIALS) {
+        if !parser::park_proc_macro_default(manifest, &dep.manifest, package, feature) {
+            continue;
+        }
+        match run_default_features_pass(manifest, main_name) {
+            PassOutcome::Success { full_output, .. } => {
+                let left = injected_std_records(&full_output, krate);
+                if left == 0 {
+                    debug!(
+                        "Proc-macro {}: parking `{}` removed every std record it injected",
+                        package, feature
+                    );
+                    telemetry
+                        .proc_macro_std_parked
+                        .push(format!("{}/{}", package, feature));
+                    return;
+                }
+                // Turning the *default* off did not turn the feature off. The
+                // usual reason is the consumer's own `std` forwarding it —
+                // ibc-types-core-client's `std = [… "displaydoc/std" …]`, whose
+                // displaydoc edge already carries `default-features = false` and
+                // still gets the std expansion. Nothing here can fix that, and
+                // nothing needs to: the feature solve turns the crate's own `std`
+                // off, and that takes the macro's with it.
+                restore(&format!(
+                    "`{}` off still leaves {} injected std record(s)",
+                    feature, left
+                ));
+            }
+            // The macro itself is what stopped compiling: this feature is its own
+            // host code's, whatever else it may also select. bebytes_derive 0.8.1
+            // is the case — `use std::vec::Vec` under `#![cfg_attr(not(feature =
+            // "std"), no_std)]` — and parking it there cost bebytes 0.7.1 all 26
+            // of its target builds inside a crate it never wrote.
+            PassOutcome::CompileFailed { ref stderr, .. }
+                if compile_failure_names_crate(stderr, package) =>
+            {
+                restore(&format!("the macro's own build needs `{}`", feature))
+            }
+            // The macro built; what failed is *this crate*, in its **default**
+            // configuration — which is not the configuration under test. The
+            // expansion the macro emits with the feature off is the no_std one,
+            // and it does not have to fit a std build:
+            // multiwii_serial_protocol_v2 0.1.12 is the case, where
+            // packed_struct_codegen switches `::std::result::Result` for
+            // `::core::result::Result` and the crate's own std configuration then
+            // fails on `you might be missing crate core`. Rejecting here would
+            // throw away a parking the no_std build wants, on evidence from a
+            // build that was never the question — the same mistake O-7 and D2 are
+            // both about. So it is kept, and recorded as what it is: a parking
+            // whose *effect on the std records* could not be confirmed. The
+            // covering runs are where that gets settled.
+            PassOutcome::CompileFailed { .. } => {
+                debug!(
+                    "Proc-macro {}: `{}` off does not compile in this crate's DEFAULT \
+                     configuration, but the macro itself built — keeping the parking \
+                     unverified, the no_std runs decide",
+                    package, feature
+                );
+                telemetry
+                    .proc_macro_std_parked
+                    .push(format!("{}/{}", package, feature));
+                telemetry
+                    .proc_macro_std_parked_unverified
+                    .push(package.to_string());
+                return;
+            }
+            // No records and no compile error to read: nothing was learned, so
+            // nothing is changed.
+            outcome => restore(&format!(
+                "`{}` off yielded no evidence ({})",
+                feature,
+                outcome_summary(&outcome)
+            )),
+        }
+    }
+
+    debug!(
+        "Proc-macro {}: injects std and no default of it can be turned off; leaving the edge alone",
+        package
+    );
+    telemetry
+        .proc_macro_std_unparkable
+        .push(package.to_string());
+}
+
+/// How many std records this run attributes to a macro defined in crate `krate`.
+///
+/// `usage_crate` is the std identity the pipeline reads (a `panic_fmt` record
+/// carries `definition_crate: "core"` and `usage_crate: "std"`), and both names are
+/// compared with `-`/`_` folded — `derive-new` the package is `derive_new` the
+/// crate. Where the two differ by more than that, `parser::dep_crate_name` is what
+/// resolves it.
+pub fn injected_std_records(output: &FeatureRunOutput, krate: &str) -> usize {
+    let wanted = krate.replace('-', "_");
+    output
+        .records
+        .iter()
+        .filter(|r| r.span.usage_crate.as_deref() == Some("std"))
+        .filter(|r| {
+            r.expansion_crate
+                .as_ref()
+                .is_some_and(|c| c.replace('-', "_") == wanted)
+        })
+        .count()
+}
+
+fn outcome_summary(outcome: &PassOutcome) -> String {
+    match outcome {
+        PassOutcome::Success { .. } => "compiled".to_string(),
+        PassOutcome::CompileFailed { exit_code, .. } => {
+            format!("compile failed, exit {:?}", exit_code)
+        }
+        PassOutcome::PluginMissingOutput { .. } => "plugin produced no output".to_string(),
     }
 }
 

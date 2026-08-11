@@ -324,6 +324,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut top_level_deps: Vec<(String, String)> = Vec::new();
+    let mut proc_macro_deps: Vec<nostd::ProcMacroDep> = Vec::new();
     // Covers the download of the whole dependency graph; the transitive no_std
     // walk it ends with opens its own `dep_verify` scope inside.
     let no_std = {
@@ -335,6 +336,7 @@ fn main() -> anyhow::Result<()> {
             depth,
             &mut telemetry,
             &mut top_level_deps,
+            &mut proc_macro_deps,
         )?
     };
 
@@ -378,6 +380,21 @@ fn main() -> anyhow::Result<()> {
         stats.telemetry = Some(exchange.telemetry);
         stats.dump(true);
         return Err(anyhow::anyhow!(reason));
+    }
+
+    // Before any of the analysis, and after the graph is on disk: a proc macro's
+    // features choose the tokens it injects *here*, and the only way to learn
+    // whether one of them injected std is to compile the crate and read the
+    // expansion each std record came out of. Runs here so everything downstream —
+    // the covering runs, the solve, the emitted manifest — sees the parked edge.
+    {
+        let manifest = parser::determine_manifest_file(&exchange.name_with_version, None);
+        driver::park_injecting_proc_macros(
+            &exchange.name_with_version,
+            &manifest,
+            &proc_macro_deps,
+            &mut exchange.telemetry,
+        );
     }
 
     let ctx = z3::Context::new(&z3::Config::new());

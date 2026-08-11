@@ -40,6 +40,7 @@ fn record(path_text: &str, usage_crate: &str, line: usize) -> PathRecord {
         local_route: None,
         defining_module: None,
         macro_body_cfgs: vec![],
+        expansion_crate: None,
         is_extern_crate: false,
         gateway_anchor: None,
     }

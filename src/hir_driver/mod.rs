@@ -203,6 +203,7 @@ impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
                     context: PathContext::ImportDeclaration,
                     span: readable_span,
                     macro_body_cfgs: vec![],
+                    expansion_crate: expansion_def_crate(self.tcx, item.span),
                     is_extern_crate: true,
                     // Set by the driver's facade-gateway pass, not here.
                     gateway_anchor: None,
@@ -310,6 +311,7 @@ impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
                 context: self.current_context,
                 span: readable_span,
                 macro_body_cfgs,
+                expansion_crate: expansion_def_crate(self.tcx, path.span),
                 is_extern_crate: false,
                 // Set by the driver's facade-gateway pass, not here.
                 gateway_anchor: None,
@@ -328,6 +330,22 @@ impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
 /// a false positive. Reporting the outermost call site instead is what keeps the
 /// record inside the tree. Shared by the AST path walk and the HIR method walk so
 /// the two cannot drift on this.
+/// The crate that defines the macro this span came out of, if any.
+///
+/// The outermost expansion is the one the crate's own source invoked, so its
+/// `macro_def_id` names the crate that put these tokens here. A local macro
+/// reports `None`: the crate's own macros are its own code.
+fn expansion_def_crate(tcx: TyCtxt<'_>, span: Span) -> Option<String> {
+    if !span.from_expansion() {
+        return None;
+    }
+    let def_id = span.macro_backtrace().last()?.macro_def_id?;
+    if def_id.krate == LOCAL_CRATE {
+        return None;
+    }
+    Some(tcx.crate_name(def_id.krate).to_string())
+}
+
 fn call_site_span(
     span: Span,
     macro_cfg_map: &HashMap<Symbol, Vec<String>>,
@@ -433,6 +451,7 @@ impl MethodResolver<'_, '_> {
             context: PathContext::Expression,
             span,
             macro_body_cfgs,
+            expansion_crate: expansion_def_crate(self.tcx, site),
             is_extern_crate: false,
             // Set by the driver's facade-gateway pass, not here.
             gateway_anchor: None,

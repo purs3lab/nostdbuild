@@ -29,6 +29,7 @@ fn extern_crate_record(alias: &str, target: &str, defining_module: &str) -> Path
         local_route: None,
         defining_module: Some(defining_module.to_string()),
         macro_body_cfgs: vec![],
+        expansion_crate: None,
         is_extern_crate: true,
         gateway_anchor: None,
     }
@@ -48,6 +49,7 @@ fn usage_record(
         local_route: local_route.map(String::from),
         defining_module: None,
         macro_body_cfgs: vec![],
+        expansion_crate: None,
         is_extern_crate: false,
         gateway_anchor: None,
     }
@@ -128,6 +130,7 @@ fn facade_ignores_use_imports_not_extern_crate_decls() {
         local_route: None,
         defining_module: Some("crate::lib".to_string()),
         macro_body_cfgs: vec![],
+        expansion_crate: None,
         is_extern_crate: false, // not an extern crate declaration
         gateway_anchor: None,
     };

@@ -1,0 +1,18 @@
+[package]
+name = "proc_macro_unparkable"
+description = "The other side of the same coin: the macro really does inject std, and it also needs its `std` feature to compile — so the parking is rolled back and the std is reported instead of hidden"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+name = "proc_macro_unparkable"
+
+[dependencies.needs_std]
+path = "needs_std"
+
+[features]
+default = []
+
+[workspace]
+exclude = ["needs_std"]

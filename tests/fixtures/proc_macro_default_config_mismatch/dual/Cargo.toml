@@ -1,0 +1,16 @@
+[package]
+name = "dual"
+description = "packed_struct_codegen in miniature: its `std` default picks which flavour of the expansion the consumer gets, and the macro itself compiles either way"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+name = "dual"
+proc-macro = true
+
+[features]
+default = ["std"]
+std = []
+
+[workspace]

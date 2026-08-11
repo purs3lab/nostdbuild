@@ -276,6 +276,19 @@ pub struct DepNoStdFailure {
     pub depth: u32,
 }
 
+/// A proc-macro dependency of the main crate, which the no_std walk skips and
+/// `driver::park_injecting_proc_macros` then examines for what it injects.
+///
+/// Carries the resolved manifest path rather than `name:version` so the rule can
+/// be driven against a fixture tree instead of only against `DOWNLOAD_PATH`.
+#[derive(Debug, Clone)]
+pub struct ProcMacroDep {
+    /// The package name, as the consumer's dependency edge names it.
+    pub package: String,
+    /// Path to the proc-macro crate's own `Cargo.toml`.
+    pub manifest: String,
+}
+
 /// Everything about the crate being processed is stored here.
 /// This is specifically useful when we want to keep track of
 /// special handling for certain crates.
@@ -381,12 +394,34 @@ pub struct Telemetry {
     pub default_list_modified: Vec<(String, bool)>,
     /// Did we change the default-features to false for any dependency
     pub default_true_unset_deps: Vec<(String, bool)>,
-    /// Proc-macro dependencies whose default `std` feature was parked on the
-    /// edge (O-9). A proc-macro's `std` is the *consumer's* std — it selects
-    /// which tokens the macro injects into this crate — so it is turned off
-    /// like any other dependency's std, even though the macro crate itself is
-    /// exempt from the no_std walk. See `parser::park_proc_macro_std_default`.
+    /// Proc-macro defaults parked on the edge, as `<package>/<feature>` (O-9). A
+    /// proc-macro's features are the *consumer's* — they select which tokens the
+    /// macro injects into this crate — so one of them is turned off like any
+    /// other dependency's std, even though the macro crate itself is exempt from
+    /// the no_std walk. Every entry here is one the compiler attributed std to
+    /// and one whose removal was verified by a build: see
+    /// `driver::park_injecting_proc_macros`.
     pub proc_macro_std_parked: Vec<String>,
+    /// Proc-macro dependencies a pass caught injecting `std` into this crate
+    /// (a std record whose `expansion_crate` is the macro's). A superset of what
+    /// was parked — the parking still has to compile.
+    pub proc_macro_std_injectors: Vec<String>,
+    /// Injectors where no *default of the macro* was the switch: every trial either
+    /// broke the macro's own build (needs_std, bebytes_derive) or left the injected
+    /// std exactly where it was. The second is not always a dead end — when the
+    /// consumer's own `std` feature forwards `dep/std`
+    /// (ibc-types-core-client: `std = [… "displaydoc/std" …]`), the edge default is
+    /// not what holds it on and the ordinary feature solve is what turns it off.
+    /// Either way the edge is left alone, and the fact is reported rather than a
+    /// no-op manifest change being claimed as a fix.
+    pub proc_macro_std_unparkable: Vec<String>,
+    /// Parked, but with the *effect* unconfirmed: the macro built without the
+    /// feature and this crate's **default** configuration then did not, so no
+    /// record set could be compared. Kept because the default configuration is a
+    /// std build and never the one under test — the macro's std-off expansion does
+    /// not have to fit it (multiwii_serial_protocol_v2 → packed_struct_codegen).
+    /// The covering runs settle it.
+    pub proc_macro_std_parked_unverified: Vec<String>,
     /// Did we remove any unnecessary features from main crate features that main enabled for any of its dependencies
     pub unnecessary_features_removed: Vec<(String, bool)>,
     /// Features that were moved for the above case

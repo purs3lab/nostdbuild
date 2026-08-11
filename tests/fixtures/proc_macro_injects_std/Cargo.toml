@@ -1,0 +1,24 @@
+[package]
+name = "proc_macro_injects_std"
+description = "dfu-core's shape: a #![no_std] crate whose only std arrives inside a derive expansion, put there by a proc-macro dependency's default feature"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+name = "proc_macro_injects_std"
+
+# displaydoc's edge, exactly: no `default-features = false`, and nothing in this
+# crate's `[features]` reaches the macro. So the macro is built with its own
+# `default = ["std"]` no matter what is asked of *this* crate, and the tokens it
+# injects here are the std ones.
+[dependencies.injector]
+path = "injector"
+
+[features]
+default = []
+
+# `exclude` keeps the macro out of the workspace so it is only ever built as a
+# dependency.
+[workspace]
+exclude = ["injector"]

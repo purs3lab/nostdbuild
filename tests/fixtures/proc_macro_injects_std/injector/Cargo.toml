@@ -1,0 +1,18 @@
+[package]
+name = "injector"
+description = "The displaydoc stand-in: its `std` default decides whether the tokens it injects into a consumer are std-flavoured. The macro itself compiles either way."
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+name = "injector"
+proc-macro = true
+
+# displaydoc's own table: `default = ["std"]`, and a consumer that does not say
+# `default-features = false` gets the std-flavoured expansion.
+[features]
+default = ["std"]
+std = []
+
+[workspace]
