@@ -1,0 +1,26 @@
+# peniko in miniature: no `compile_error!` of its own, a feature that forwards
+# to the dependency's, and an optional dependency whose constraint must be left
+# alone because the build may not link it.
+[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.paired]
+version = "1.0.0"
+default-features = false
+
+[dependencies.quiet]
+version = "1.0.0"
+default-features = false
+
+[dependencies.optional-dep]
+version = "1.0.0"
+optional = true
+default-features = false
+
+[features]
+default = ["std"]
+std = ["paired/std"]
+libm = ["paired/libm"]
+math = ["libm"]

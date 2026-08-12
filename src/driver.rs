@@ -1637,6 +1637,160 @@ pub fn read_manifest_toml(manifest: &str) -> toml::Value {
         .unwrap_or(toml::Value::Table(toml::map::Map::new()))
 }
 
+/// What a *dependency's* `compile_error!` requires of **this** crate's features
+/// — O-12(e).
+///
+/// O-2 gave a crate's own `compile_error!` to the solve that picks its covering
+/// runs, because a run that ignores it dies on the macro and contributes no
+/// records. The same thing happens one level down and nothing carried it: a
+/// dependency's `compile_error!` fails this crate's build just as hard, and this
+/// crate's solve has never seen it.
+///
+/// peniko 0.3.1 declares none of its own (`Compile-error constraints: []`,
+/// correctly), so its baseline solved to `[]` and died on
+///
+/// ```text
+/// error: color requires either the `std` or `libm` feature
+/// error: kurbo requires either the `std` or `libm` feature
+/// ```
+///
+/// leaving it with no std-off run at all. Its *emitted* config is
+/// `--features libm` and builds on 14 targets — the dependency walk gets there —
+/// so what was lost was only evidence, which is the bottleneck this whole
+/// section is about. 87 crates in the corpus have a baseline killed by a
+/// dependency's `compile_error!`.
+///
+/// The translation is per atom, and it is the only interesting part. A
+/// constraint over the *dependency's* feature names says nothing until each is
+/// re-expressed in this crate's:
+///
+/// * on unconditionally — the edge does not set `default-features = false` and
+///   the feature is in the dependency's `default` closure, or the edge names it
+///   in `features = [...]`. Cargo enables it no matter what this crate's own
+///   features do, so the atom is `true`.
+/// * otherwise — the disjunction of this crate's features that reach
+///   `<dep>/<feat>`, transitively through its own `[features]` table. `libm` is
+///   how peniko reaches `color/libm` and `kurbo/libm`.
+/// * nothing reaches it — the constraint is **dropped**. See the comment at that
+///   branch: `false` is the tempting reading and the dangerous one.
+///
+/// The substitution equates `<dep>/<feat>` with the disjunction, which is
+/// stronger than the truth (`(f1 ∨ …) ⇒ <dep>/<feat>`, not the converse — the
+/// dependency walk can also supply it). That is deliberate: what it forces on is
+/// a feature of this crate that exists for exactly this purpose, and it is what
+/// the emitted config ends up doing anyway. peniko's is `--features libm`.
+///
+/// Z3 name collisions are why substitution is required rather than asserting the
+/// dependency's formula directly: color's `libm` and peniko's `libm` are the
+/// same `Bool::new_const` name and *not* the same feature. Here they happen to
+/// coincide; `std` routinely does not.
+///
+/// Optional dependencies are skipped. Their constraint holds only in the
+/// configurations that link them, and asserting it unconditionally would impose
+/// a dependency's requirement on builds that never compile it — the same reason
+/// `optional_dep_link_constraints` guards its own edges.
+///
+/// `compile_error_constraint` is reused for each attribute, so O-1's rule
+/// carries over unchanged: a cfg naming an atom policy G erases yields no
+/// constraint, because its negation admits no truth value.
+pub fn dependency_compile_error_constraints<'a>(
+    ctx: &'a Context,
+    manifest: &str,
+    manifest_toml: &toml::Value,
+) -> Vec<Bool<'a>> {
+    let mut constraints = Vec::new();
+    let optional = downloader::optional_deps_in_manifest(manifest_toml);
+
+    for (dep_key, dep_value) in parser::dependency_edges(manifest_toml) {
+        let package = dep_value
+            .get("package")
+            .and_then(|p| p.as_str())
+            .unwrap_or(&dep_key)
+            .to_string();
+        if optional.contains(&dep_key) || optional.contains(&package) {
+            continue;
+        }
+        let Some(dep_dir) = parser::find_sibling_crate_dir(manifest, &package) else {
+            continue;
+        };
+        let Some(entry) = parser::crate_entry_file(&dep_dir) else {
+            continue;
+        };
+        // Reading the file is the prefilter: parsing every dependency of every
+        // analysed crate with syn is not worth doing for the crates that declare
+        // no `compile_error!` at all, which is nearly all of them.
+        match fs::read_to_string(&entry) {
+            Ok(text) if text.contains("compile_error!") => {}
+            _ => continue,
+        }
+
+        let dep_attrs = parser::parse_crate(&package, false, None, &[], Some(&[entry]));
+        if dep_attrs.compile_error_attrs.is_empty() {
+            continue;
+        }
+        let dep_toml = read_manifest_toml(&dep_dir.join("Cargo.toml").display().to_string());
+        let always_on = parser::edge_supplied_dep_features(&dep_value, &dep_toml);
+
+        for attr in dep_attrs.compile_error_attrs.iter() {
+            let Some(eq) = parser::compile_error_constraint(attr, ctx, None) else {
+                continue;
+            };
+            let (_, parsed) = parser::parse_main_attributes_direct(attr, ctx);
+            let mut substitutions = Vec::new();
+            let mut translatable = true;
+            for feat in &parsed.features {
+                let from = Bool::new_const(ctx, feat.as_str());
+                let to = if always_on.contains(feat) {
+                    Bool::from_bool(ctx, true)
+                } else {
+                    let enablers =
+                        parser::local_features_enabling_dep_feature(manifest_toml, &dep_key, feat);
+                    if enablers.is_empty() {
+                        // NOT `false`. No feature of this crate reaches it, but
+                        // the dependency walk rewrites dependency manifests and
+                        // can turn it on with no feature path from here at all —
+                        // the asymmetry that made O-12(b)'s sapling entry wrong
+                        // for a week. Reading it as `false` would make the whole
+                        // constraint unsatisfiable, and an unsat `all_hard`
+                        // costs the crate every covering run: no baseline, no
+                        // solved sets, `std_in_every_run` trivially true. That
+                        // is worse than the failing build this is meant to fix,
+                        // so an atom this crate cannot speak about is a reason
+                        // to say nothing about the constraint at all.
+                        translatable = false;
+                        break;
+                    }
+                    let vars: Vec<Bool> = enablers
+                        .iter()
+                        .map(|f| Bool::new_const(ctx, f.as_str()))
+                        .collect();
+                    Bool::or(ctx, &vars.iter().collect::<Vec<_>>())
+                };
+                substitutions.push((from, to));
+            }
+            if !translatable {
+                debug!(
+                    "Dependency {}'s compile_error names a feature this crate cannot reach; \
+                     leaving its constraint out",
+                    package
+                );
+                continue;
+            }
+            let pairs: Vec<(&Bool, &Bool)> = substitutions.iter().map(|(f, t)| (f, t)).collect();
+            let translated = eq.substitute(&pairs).simplify();
+            if translated == Bool::from_bool(ctx, true) {
+                continue;
+            }
+            debug!(
+                "Dependency {}'s compile_error constrains this crate: {:?}",
+                package, translated
+            );
+            constraints.push(translated);
+        }
+    }
+    constraints
+}
+
 /// The `cfg => optional-dependency` edges for one crate: every gated
 /// `use`/`extern crate` in `root` paired with the features that link the
 /// dependency it names (bucket 11).
@@ -1938,9 +2092,17 @@ pub fn find_feature_combs_for_all_code<'a>(
         let (optdep_constraints, _) =
             optional_dep_link_constraints(ctx, &manifest_toml, &known_features, &root);
 
+        // O-12(e): a dependency's `compile_error!` fails this crate's build the
+        // same way its own does, and only its own reached the solve. peniko's
+        // baseline ran `[]` and died on "color requires either the `std` or
+        // `libm` feature", so it had no std-off run at all.
+        let dep_error_constraints =
+            dependency_compile_error_constraints(ctx, manifest, &manifest_toml);
+
         let mut all_hard: Vec<Bool> = compile_error_constraints.clone();
         all_hard.extend(impl_constraints.iter().cloned());
         all_hard.extend(optdep_constraints.iter().cloned());
+        all_hard.extend(dep_error_constraints.iter().cloned());
 
         let mut pending_modules: Vec<(Option<Bool>, String, String)> = vec![];
 

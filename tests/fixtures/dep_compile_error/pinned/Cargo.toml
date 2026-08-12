@@ -1,0 +1,15 @@
+# The edge supplies the feature itself, so the constraint is satisfied by the
+# manifest as written whatever the consumer's own features do.
+[package]
+name = "pinned"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.paired]
+version = "1.0.0"
+default-features = false
+features = ["libm"]
+
+[features]
+default = ["std"]
+std = []

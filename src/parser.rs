@@ -2738,6 +2738,140 @@ pub fn find_sibling_crate_dir(manifest: &str, krate: &str) -> Option<PathBuf> {
     None
 }
 
+/// Every dependency edge the manifest declares, as `(key, spec)`.
+///
+/// The key is the manifest's own name for the edge — what a `feature = ["k/f"]`
+/// reference has to match — and the spec is normalised to a table so a plain
+/// `foo = "1.0"` and a `foo = { version = "1.0" }` read the same. `dev` edges
+/// are excluded: they are not in the build whose constraints are being derived.
+pub fn dependency_edges(manifest_toml: &toml::Value) -> Vec<(String, toml::Value)> {
+    const SECTIONS: [&str; 2] = ["dependencies", "build-dependencies"];
+    let mut edges = Vec::new();
+    let mut collect = |table: Option<&toml::Value>| {
+        let Some(table) = table.and_then(|t| t.as_table()) else {
+            return;
+        };
+        for (key, value) in table {
+            let spec = if value.is_table() {
+                value.clone()
+            } else {
+                toml::Value::Table(toml::map::Map::new())
+            };
+            edges.push((key.clone(), spec));
+        }
+    };
+    for section in SECTIONS {
+        collect(manifest_toml.get(section));
+    }
+    if let Some(targets) = manifest_toml.get("target").and_then(|t| t.as_table()) {
+        for cfg in targets.values() {
+            for section in SECTIONS {
+                collect(cfg.get(section));
+            }
+        }
+    }
+    edges
+}
+
+/// A downloaded crate's library entrypoint: the declared `[lib] path`, else
+/// `src/lib.rs`. `None` when neither exists.
+///
+/// Deliberately not `visitor::find_entrypoints`, which shells out to `cargo
+/// metadata` — this is called once per dependency of every analysed crate, and
+/// the file it is looking for is the crate root, which is where a
+/// feature-guarding `compile_error!` sits.
+pub fn crate_entry_file(dir: &Path) -> Option<PathBuf> {
+    let declared = fs::read_to_string(dir.join("Cargo.toml"))
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+        .and_then(|t| {
+            t.get("lib")
+                .and_then(|lib| lib.get("path"))
+                .and_then(|p| p.as_str())
+                .map(|p| dir.join(p))
+        });
+    declared
+        .into_iter()
+        .chain([dir.join("src/lib.rs")])
+        .find(|p| p.exists())
+}
+
+/// The dependency's features cargo turns on because of the *edge itself*,
+/// whatever the consumer's own features do: the ones named in
+/// `features = [...]`, plus the dependency's `default` closure unless the edge
+/// says `default-features = false`.
+///
+/// These are the atoms a dependency-derived constraint must read as `true`
+/// rather than looking for a feature of this crate that reaches them.
+pub fn edge_supplied_dep_features(
+    dep_value: &toml::Value,
+    dep_toml: &toml::Value,
+) -> HashSet<String> {
+    let mut on: HashSet<String> = dep_value
+        .get("features")
+        .and_then(|f| f.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let defaults_on = dep_value
+        .get("default-features")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    if defaults_on {
+        on.insert("default".to_string());
+    }
+
+    let features = crate::downloader::read_local_features(dep_toml);
+    close_over_local_features(&on, &features)
+}
+
+/// This crate's features that reach `<dep_key>/<dep_feature>`, directly or by
+/// enabling another feature that does.
+///
+/// A weak `dep?/feat` reference is excluded — it enables the sub-feature only
+/// when something else already linked the dependency, so it is not on its own a
+/// way for this crate to turn that feature on.
+pub fn local_features_enabling_dep_feature(
+    manifest_toml: &toml::Value,
+    dep_key: &str,
+    dep_feature: &str,
+) -> Vec<String> {
+    let Some(features) = manifest_toml.get("features").and_then(|f| f.as_table()) else {
+        return Vec::new();
+    };
+    let target = format!("{}/{}", dep_key, dep_feature);
+
+    let mut reaching: HashSet<String> = HashSet::new();
+    loop {
+        let mut grew = false;
+        for (name, values) in features {
+            if reaching.contains(name) {
+                continue;
+            }
+            let Some(arr) = values.as_array() else {
+                continue;
+            };
+            let hit = arr.iter().filter_map(|v| v.as_str()).any(|entry| {
+                entry == target || (!entry.contains('/') && reaching.contains(entry))
+            });
+            if hit && reaching.insert(name.clone()) {
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    let mut out: Vec<String> = reaching.into_iter().collect();
+    out.sort();
+    out
+}
+
 /// Whether a downloaded crate directory holds a proc macro. The non-panicking,
 /// version-free counterpart to [`is_proc_macro`], which needs `name:version` and
 /// `unreachable!`s when the manifest is not where it expects.

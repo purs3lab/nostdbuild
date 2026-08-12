@@ -1,0 +1,16 @@
+# O-12(b)'s shape: the dependency demands a feature and the consumer's
+# `[features]` has no path to it. The constraint must be dropped, not translated
+# to `false` — the dependency walk rewrites dependency manifests and can enable
+# it with no feature path from here.
+[package]
+name = "unreachable"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.paired]
+version = "1.0.0"
+default-features = false
+
+[features]
+default = ["std"]
+std = []
