@@ -245,3 +245,23 @@ fn test_stak_vm() {
 fn test_dfu_core() {
     run_main_test("dfu-core", "0.7.0", "x86_64-unknown-none");
 }
+
+/// A `compile_error!` whose features are disjoint from the no_std condition is
+/// withheld from the feature solve on purpose (`excluded_compile_error_eqs` —
+/// uom's 21-way disjunction shows what asserting it costs), and until now a
+/// violation of one was reported only as a warning. It is not a warning: the
+/// compiler stops on the macro, so the emitted config cannot build. lexical-util
+/// 1.0.6 shipped `--no-default-features --features floats` against
+/// `#[cfg(all(feature = "floats", not(any(feature = "write-floats", feature =
+/// "parse-floats"))))] compile_error!(…)` and lost every target to it.
+///
+/// The repair is applied as a retry in the KI-11 shape — only after a build that
+/// failed everywhere, kept only because the rebuild succeeded — so this test is
+/// what proves the wiring: `parser::compile_error_repair_features` returning the
+/// right feature is not the same as `bin/main.rs` retrying with it. The golden
+/// holds ONE row, the repaired build, because the failed attempt's records are
+/// discarded.
+#[cargo_test]
+fn test_lexical_util() {
+    run_main_test("lexical-util", "1.0.6", "x86_64-unknown-none");
+}

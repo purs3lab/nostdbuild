@@ -2237,6 +2237,167 @@ pub fn violated_compile_error_constraints(
     violated
 }
 
+/// The features to switch on so a feature set stops violating the crate's own
+/// `compile_error!` conditions — empty when nothing is violated, and empty when
+/// no set of the crate's declared features would satisfy them.
+///
+/// **This is a repair, not a constraint, and the distinction is the whole
+/// design.** A `compile_error!` whose features are disjoint from the no_std
+/// condition is deliberately withheld from the feature solve
+/// (`excluded_compile_error_eqs` in `process_crate`): uom's is a 21-way
+/// `any(feature = "usize", …, "f64")`, and asserting it lets Z3 satisfy it with
+/// an arbitrary disjunct — 5 of uom's 21 pull in a dependency that links std, so
+/// the constraint that was supposed to protect the build breaks it instead. That
+/// filter stays. Rule 10's reason for it (never add a conjunct to a solve whose
+/// arbitrary model you then read) is unchanged too.
+///
+/// What was missing is the other half: when the emitted set *does* violate a
+/// constraint, the crate cannot compile — the `compile_error!` is what the
+/// compiler stops on — and the run reported it only as a warning. lexical-util
+/// 1.0.6 emitted `--no-default-features --features floats` against
+///
+/// ```ignore
+/// #[cfg(all(feature = "floats",
+///           not(any(feature = "write-floats", feature = "parse-floats"))))]
+/// compile_error!("Do not use the `floats` feature directly. …");
+/// ```
+///
+/// and lost all 26 targets to it, though `--features write-floats` compiles clean
+/// on bare metal.
+///
+/// So the repair is computed here and *applied by a retry* (`bin/main.rs`), the
+/// KI-11 shape: only for a build that already failed, and kept only if the
+/// rebuild succeeds. A crate that builds today never reaches it, which is what
+/// makes this unable to do what asserting the constraint would.
+///
+/// The world is closed exactly as [`violated_compile_error_constraints`] closes
+/// it, and three kinds of atom cannot be part of a repair:
+/// * one already on — a repair only *adds*. Turning `floats` back off would
+///   satisfy the constraint too, but the feature solve chose it to cover code,
+///   and this pass has no standing to overrule that.
+/// * one in `forbidden` — the disable list, i.e. the features the no_std verdict
+///   turned off. Re-enabling `std` to satisfy a `compile_error!` would trade the
+///   build for the property the whole run exists to establish.
+/// * one the crate does not declare — a `compile_error!` may test a cfg a build
+///   script emits (bucket I), and `--features` naming it makes cargo error out.
+///
+/// The result is subset-minimal: each candidate is forced off in turn and kept
+/// off whenever the system stays satisfiable.
+///
+/// # Arguments
+/// * `ctx` - The Z3 context
+/// * `attrs` - The main crate's attributes, holding the compile_error conditions
+/// * `crate_info` - Supplies the `[features]` table: the closure, and which
+///   names are declared
+/// * `enabled` - Features the build passes to cargo via `--features`
+/// * `default_features_on` - False when the build passes `--no-default-features`
+/// * `forbidden` - Features that must stay off (the no_std disable list)
+/// # Returns
+/// The features to add, sorted; empty when there is nothing to repair or no
+/// repair exists.
+pub fn compile_error_repair_features(
+    ctx: &z3::Context,
+    attrs: &Attributes,
+    crate_info: &CrateInfo,
+    enabled: &[String],
+    default_features_on: bool,
+    forbidden: &[String],
+) -> Vec<String> {
+    // "Is anything violated" is a closed-world question and this function's own
+    // solver deliberately leaves the repair candidates free, which would answer
+    // it Sat every time. The check the run already trusts is the one to ask.
+    if violated_compile_error_constraints(ctx, attrs, crate_info, enabled, default_features_on)
+        .is_empty()
+    {
+        return Vec::new();
+    }
+
+    let mut on: HashSet<String> = enabled.iter().cloned().collect();
+    if default_features_on {
+        on.insert("default".to_string());
+    }
+    let on = close_over_local_features(&on, &crate_info.features);
+
+    let declared: HashSet<&str> = crate_info
+        .features
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let forbidden: HashSet<&str> = forbidden.iter().map(String::as_str).collect();
+
+    let solver = z3::Solver::new(ctx);
+    let mut candidates: Vec<String> = Vec::new();
+    let mut constrained = false;
+    for attr in attrs.compile_error_attrs.iter() {
+        let (_, parsed) = parse_main_attributes_direct(attr, ctx);
+        // Same skip as the check: a constraint over an erased atom is the
+        // over-strong one, so neither its violation nor its repair is real.
+        let Some(eq) = compile_error_constraint(attr, ctx, None) else {
+            continue;
+        };
+        solver.assert(&eq);
+        constrained = true;
+        for feat in &parsed.features {
+            let var = Bool::new_const(ctx, feat.as_str());
+            if on.contains(feat) {
+                solver.assert(&var);
+            } else if forbidden.contains(feat.as_str()) || !declared.contains(feat.as_str()) {
+                solver.assert(&var.not());
+            } else if !candidates.contains(feat) {
+                candidates.push(feat.clone());
+            }
+        }
+    }
+    // No constraint survived the erasure skip, or every atom that could repair
+    // one is pinned: nothing to offer.
+    if !constrained || candidates.is_empty() {
+        return Vec::new();
+    }
+
+    candidates.sort();
+    // Subset-minimal: force each candidate off and keep it off if the system is
+    // still satisfiable. A rejected push is popped immediately, so the stack
+    // stays LIFO-consistent.
+    for feat in &candidates {
+        solver.push();
+        solver.assert(&Bool::new_const(ctx, feat.as_str()).not());
+        if solver.check() != z3::SatResult::Sat {
+            solver.pop(1);
+        }
+    }
+    if solver.check() != z3::SatResult::Sat {
+        debug!("No set of declared features satisfies the compile_error constraints");
+        return Vec::new();
+    }
+    let Some(model) = solver.get_model() else {
+        return Vec::new();
+    };
+
+    let mut additions: Vec<String> = candidates
+        .into_iter()
+        .filter(|feat| {
+            model
+                .eval(&Bool::new_const(ctx, feat.as_str()), true)
+                .and_then(|v| v.as_bool())
+                == Some(true)
+        })
+        .collect();
+    additions.sort();
+    additions.dedup();
+
+    // The model satisfies the constraints one at a time; the authoritative check
+    // is the one the run already trusts, over the whole set with the closure
+    // applied. A repair that does not pass it is not offered.
+    let repaired: Vec<String> = enabled.iter().chain(additions.iter()).cloned().collect();
+    if !violated_compile_error_constraints(ctx, attrs, crate_info, &repaired, default_features_on)
+        .is_empty()
+    {
+        debug!("Candidate compile_error repair {:?} does not clear the check", additions);
+        return Vec::new();
+    }
+    additions
+}
+
 /// Parse the attributes of a dependency crate.
 /// This does not need to verify if the crate is no_std or not.
 /// # Arguments

@@ -422,6 +422,13 @@ pub struct Telemetry {
     /// not have to fit it (multiwii_serial_protocol_v2 → packed_struct_codegen).
     /// The covering runs settle it.
     pub proc_macro_std_parked_unverified: Vec<String>,
+    /// Features added to repair a violated `compile_error!` after a build that
+    /// failed on every target, and kept because the rebuild then succeeded
+    /// (`parser::compile_error_repair_features`). Empty when nothing was
+    /// violated, when no declared feature set satisfies the constraint, or when
+    /// the repaired build failed too — in the last two cases
+    /// `compile_error_constraint_unsatisfied` still names the crate.
+    pub compile_error_repair_features: Vec<String>,
     /// Did we remove any unnecessary features from main crate features that main enabled for any of its dependencies
     pub unnecessary_features_removed: Vec<(String, bool)>,
     /// Features that were moved for the above case

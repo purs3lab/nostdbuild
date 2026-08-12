@@ -198,6 +198,179 @@ fn no_storage_type_violates_the_wide_disjunction() {
 }
 
 // ---------------------------------------------------------------------------
+// The repair — the features that make a violated constraint satisfiable
+// ---------------------------------------------------------------------------
+
+fn repair(
+    fixture_name: &str,
+    info: &CrateInfo,
+    enabled: &[&str],
+    default_features_on: bool,
+    forbidden: &[&str],
+) -> Vec<String> {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let attrs = attrs_for(fixture_name);
+    let enabled: Vec<String> = enabled.iter().map(|s| s.to_string()).collect();
+    let forbidden: Vec<String> = forbidden.iter().map(|s| s.to_string()).collect();
+    parser::compile_error_repair_features(
+        &ctx,
+        &attrs,
+        info,
+        &enabled,
+        default_features_on,
+        &forbidden,
+    )
+}
+
+fn lexical_info() -> CrateInfo {
+    crate_info(&[
+        ("default", &["std"]),
+        ("std", &[]),
+        ("floats", &[]),
+        ("write", &[]),
+        ("parse", &[]),
+        ("write-floats", &["write", "floats"]),
+        ("parse-floats", &["parse", "floats"]),
+    ])
+}
+
+/// lexical-util's shipped set. One feature is enough and one is what must come
+/// back — a repair that switched on both disjuncts would be correct and not
+/// minimal.
+#[test]
+fn a_violated_implication_is_repaired_by_one_added_feature() {
+    let add = repair("lexical_shape.rs", &lexical_info(), &["floats"], false, &["std"]);
+    assert_eq!(
+        add.len(),
+        1,
+        "expected exactly one added feature, got {:?}",
+        add
+    );
+    assert!(
+        add[0] == "write-floats" || add[0] == "parse-floats",
+        "expected one of the two disjuncts, got {:?}",
+        add
+    );
+}
+
+/// The repair adds; it never takes the feature solve's choice away. Dropping
+/// `floats` would satisfy the constraint too, and is not this pass's call.
+#[test]
+fn the_repair_never_removes_an_enabled_feature() {
+    let add = repair("lexical_shape.rs", &lexical_info(), &["floats"], false, &["std"]);
+    assert!(
+        !add.contains(&"floats".to_string()),
+        "the repair must not name an already-enabled feature, got {:?}",
+        add
+    );
+}
+
+/// The repaired set has to pass the check that reported the violation. Guards
+/// the wiring between the two functions, not just the model.
+#[test]
+fn the_repaired_feature_set_no_longer_violates() {
+    let info = lexical_info();
+    let add = repair("lexical_shape.rs", &info, &["floats"], false, &["std"]);
+    let mut enabled = vec!["floats".to_string()];
+    enabled.extend(add);
+    let ctx = z3::Context::new(&z3::Config::new());
+    let v = parser::violated_compile_error_constraints(
+        &ctx,
+        &attrs_for("lexical_shape.rs"),
+        &info,
+        &enabled,
+        false,
+    );
+    assert!(v.is_empty(), "repaired set still violates: {:?}", v);
+}
+
+/// uom's 21-way disjunction: the wide shape must not produce a wide repair.
+#[test]
+fn a_wide_disjunction_is_repaired_minimally() {
+    let info = crate_info(&[
+        ("default", &["f32", "f64", "std"]),
+        ("u32", &[]),
+        ("i32", &[]),
+        ("f32", &[]),
+        ("f64", &[]),
+        ("std", &[]),
+    ]);
+    let add = repair("uom_shape.rs", &info, &["std"], false, &["std"]);
+    assert_eq!(add.len(), 1, "expected a single storage type, got {:?}", add);
+}
+
+/// Nothing violated, nothing to repair — the case every crate that builds today
+/// is in.
+#[test]
+fn a_satisfied_constraint_yields_no_repair() {
+    let add = repair(
+        "lexical_shape.rs",
+        &lexical_info(),
+        &["floats", "write-floats"],
+        false,
+        &["std"],
+    );
+    assert!(add.is_empty(), "expected no repair, got {:?}", add);
+}
+
+/// A repair that would have to re-enable a feature the no_std verdict turned off
+/// is no repair: the build is not worth the property the run exists to
+/// establish.
+#[test]
+fn a_forbidden_feature_is_never_offered_as_a_repair() {
+    let info = crate_info(&[("default", &["std"]), ("std", &[]), ("libm", &[])]);
+    let add = repair("std_or_libm_shape.rs", &info, &[], false, &["std", "libm"]);
+    assert!(
+        add.is_empty(),
+        "both disjuncts are forbidden; expected no repair, got {:?}",
+        add
+    );
+}
+
+/// The same shape with only `std` forbidden *is* repairable — the control that
+/// proves the test above fails for the stated reason and not because the
+/// fixture yields nothing.
+#[test]
+fn the_permitted_disjunct_is_offered() {
+    let info = crate_info(&[("default", &["std"]), ("std", &[]), ("libm", &[])]);
+    let add = repair("std_or_libm_shape.rs", &info, &[], false, &["std"]);
+    assert_eq!(add, vec!["libm".to_string()], "expected libm, got {:?}", add);
+}
+
+/// A `compile_error!` may test a cfg a build script emits (bucket I). Passing
+/// such a name to `--features` makes cargo error out, so it cannot be a repair.
+#[test]
+fn an_undeclared_feature_is_never_offered_as_a_repair() {
+    let info = crate_info(&[("default", &["std"]), ("std", &[])]);
+    let add = repair("bulletproofs_shape.rs", &info, &[], false, &["std"]);
+    assert!(
+        add.is_empty(),
+        "neither disjunct is declared in [features]; expected no repair, got {:?}",
+        add
+    );
+}
+
+/// Declared, and the repair appears — the control for the test above.
+#[test]
+fn a_declared_disjunct_is_offered() {
+    let info = crate_info(&[
+        ("default", &["std"]),
+        ("std", &[]),
+        ("blst", &[]),
+        ("rust", &[]),
+    ]);
+    let add = repair("bulletproofs_shape.rs", &info, &[], false, &["std"]);
+    assert_eq!(add.len(), 1, "expected one disjunct, got {:?}", add);
+}
+
+/// A crate with no `compile_error!` at all never reaches the solver.
+#[test]
+fn no_constraint_yields_no_repair() {
+    let info = crate_info(&[("default", &["std"])]);
+    assert!(repair("no_constraint.rs", &info, &[], false, &[]).is_empty());
+}
+
+// ---------------------------------------------------------------------------
 // Controls
 // ---------------------------------------------------------------------------
 

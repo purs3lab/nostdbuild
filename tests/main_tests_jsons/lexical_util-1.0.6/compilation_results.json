@@ -1,0 +1,22 @@
+[
+  {
+    "name": "lexical-util",
+    "version": "1.0.6",
+    "target": "x86_64-unknown-none",
+    "args": [
+      "+nightly",
+      "build",
+      "--release",
+      "--target",
+      "x86_64-unknown-none",
+      "--manifest-path",
+      "/evaldisk/sourag/downloads/lexical-util-1.0.6/Cargo.toml",
+      "--lib",
+      "--no-default-features",
+      "--features",
+      "floats,write-floats"
+    ],
+    "status": "Success",
+    "error": null
+  }
+]

@@ -924,23 +924,110 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    exchange.telemetry.final_features_length = final_features_len;
-
     // Verify the feature set we built actually satisfies the crate's own
     // `compile_error!` conditions. The stage-2 check inside `process_crate` leaves
     // unselected features free and so is trivially satisfiable; this one closes the
     // world. Runs on the emitted set, so a retry above is what gets checked.
-    let violated = parser::violated_compile_error_constraints(
-        &ctx,
-        &main_attributes,
-        &exchange.crate_info,
-        &combined_features
+    let emitted_features = |combined: &[String]| -> Vec<String> {
+        combined
             .iter()
             .flat_map(|s| s.split(','))
             .map(str::to_string)
-            .collect::<Vec<_>>(),
+            .collect()
+    };
+    let mut violated = parser::violated_compile_error_constraints(
+        &ctx,
+        &main_attributes,
+        &exchange.crate_info,
+        &emitted_features(&combined_features),
         !disable_default,
     );
+
+    // A violated `compile_error!` is not a warning about the build — it *is* the
+    // build failure: the compiler stops on the macro before anything else is
+    // reached. lexical-util 1.0.6 shipped `--features floats` against a
+    // `compile_error!` naming that exact case and lost all 26 targets, though
+    // `write-floats` compiles clean bare metal. The constraint stays out of the
+    // feature solve (`excluded_compile_error_eqs` — uom shows why), so the repair
+    // is applied here in the KI-11 shape instead: only after a build that failed
+    // everywhere, and kept only if the rebuild succeeds. A crate that builds today
+    // cannot reach this.
+    if no_std && !one_succeeded && !violated.is_empty() {
+        let additions = parser::compile_error_repair_features(
+            &ctx,
+            &main_attributes,
+            &exchange.crate_info,
+            &emitted_features(&combined_features),
+            !disable_default,
+            &disable,
+        );
+        if !additions.is_empty() {
+            let mut repaired = main_features.clone();
+            repaired.extend(additions.iter().cloned());
+            repaired.sort();
+            repaired.dedup();
+            let (repair_args, repair_combined, repair_len) =
+                assemble_final_args(disable_default, &repaired, &deps_args);
+            println!(
+                "Build failed for every target and the feature set violates {:?}; \
+                 retrying with compile_error repair {:?}: {:?}",
+                violated, additions, repair_args
+            );
+            let before_repair = compiler::mark_build_records(&stats, &exchange.telemetry);
+            let repair_succeeded = {
+                let t = timing::scope("verify_build", &exchange.name_with_version);
+                t.meta("attempt", "retry_with_compile_error_repair");
+                compiler::try_compile(
+                    &exchange.name_with_version,
+                    &target,
+                    &repair_args,
+                    &mut stats,
+                    &mut exchange.telemetry,
+                )?
+            };
+            if repair_succeeded {
+                compiler::discard_build_records(
+                    &mut stats,
+                    &mut exchange.telemetry,
+                    &before_build,
+                    &before_repair,
+                );
+                // Same reason as the retry above: the DB hands these features to
+                // every later build that depends on this crate.
+                for feat in &additions {
+                    if !enable.contains(feat) {
+                        enable.push(feat.clone());
+                    }
+                }
+                disable.retain(|feat| !additions.contains(feat));
+                exchange.telemetry.compile_error_repair_features = additions;
+                final_args = repair_args;
+                combined_features = repair_combined;
+                final_features_len = repair_len;
+                one_succeeded = true;
+                // Re-derived from the set that shipped rather than cleared by
+                // hand: whatever this reports is a statement about the emitted
+                // config, and only the check gets to make it.
+                violated = parser::violated_compile_error_constraints(
+                    &ctx,
+                    &main_attributes,
+                    &exchange.crate_info,
+                    &emitted_features(&combined_features),
+                    !disable_default,
+                );
+                println!("Final args after compile_error repair: {:?}", final_args);
+            } else {
+                compiler::rewind_build_records(
+                    &mut stats,
+                    &mut exchange.telemetry,
+                    &before_repair,
+                );
+            }
+        }
+    }
+
+    exchange.telemetry.final_features_length = final_features_len;
+
     if !violated.is_empty() {
         println!(
             "WARNING: final feature set for {} violates compile_error constraint(s): {:?}",
