@@ -1,0 +1,11 @@
+[package]
+name = "hostonly"
+description = "A plain std crate — the std-only optional dependency of the build_enabler_pair fixture"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+name = "hostonly"
+
+[workspace]

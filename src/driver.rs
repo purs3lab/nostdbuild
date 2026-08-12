@@ -51,6 +51,25 @@ static LAST_GOOD_TARGET: Mutex<Option<&'static str>> = Mutex::new(None);
 /// 20789-crate corpus carry a target-conditional `#![no_std]` at all.
 static HOST_NOT_NO_STD: Mutex<bool> = Mutex::new(false);
 
+/// Clear the process-global per-crate caches. **For tests only.**
+///
+/// `LAST_GOOD_TARGET` is documented above as safe to share because the tool
+/// analyses one main crate per process. That holds for the binary and not for a
+/// test binary, where several `analyze_crate` calls share one process: a fixture
+/// that compiles for a bare-metal target leaves the cache set, and every test
+/// running after it skips `discover_build_enablers` outright — the search is
+/// gated on the cache being empty. The suite then passes or fails on thread
+/// scheduling rather than on behaviour, which is how
+/// `the_trial_that_compiled_becomes_a_covering_run` came to fail under
+/// `--test-threads=1` while passing by default.
+///
+/// Callers must also serialise against each other; resetting the cache while
+/// another test is mid-analysis would take that test's target away.
+pub fn reset_target_cache() {
+    *LAST_GOOD_TARGET.lock().unwrap() = None;
+    *HOST_NOT_NO_STD.lock().unwrap() = false;
+}
+
 /// The `--target` the user pinned on the command line, if any. When set, the
 /// plugin record pass compiles *only* for this target (host as the genuine-std
 /// fallback) and never sweeps `TARGET_LIST` — a pinned target is the environment
@@ -2570,13 +2589,47 @@ const MAX_ENABLER_PROBES: usize = 16;
 /// reachable anyway.
 ///
 /// The search runs in the world the prober is trying to reach, not in an
-/// arbitrary model: every `AlwaysStd` gate is asserted *false* first, so a
-/// candidate that would switch a std gate back on is dropped before it costs a
-/// compile. totsu_core is why — `std = ["num-traits/std"]` and
-/// `libm = ["num-traits/libm"]` are both "features without which `Float` has no
-/// `sqrt`", and offering `std` as the fix is offering to give up. The bare-metal
-/// requirement is the second guard: a candidate that "fixes" the build only on the
-/// host is not a fix.
+/// arbitrary model, so that a candidate which would switch a std gate back on is
+/// dropped before it costs a compile. totsu_core is why — `std =
+/// ["num-traits/std"]` and `libm = ["num-traits/libm"]` are both "features
+/// without which `Float` has no `sqrt`", and offering `std` as the fix is
+/// offering to give up. The bare-metal requirement is the second guard: a
+/// candidate that "fixes" the build only on the host is not a fix.
+///
+/// ⚠ **That world is the crate's `no_std_condition`, NOT the negation of every
+/// `AlwaysStd` gate** — which is what this used to assert, and which is
+/// circular. `AlwaysStd` means "std in every covering run", and this search only
+/// runs when no covering run compiled for a bare-metal target: with no std-off
+/// run, *every* std span is `AlwaysStd` trivially. Their gates are then the
+/// crate's own no_std-path gates, and negating those forbids exactly the
+/// features that would have produced the std-off run.
+///
+/// proptest 1.6.0 is the crate that showed it. `src/arbitrary/mod.rs:39` reads
+///
+/// ```ignore
+/// #[cfg(any(feature = "std", feature = "alloc"))]
+/// mod _alloc;
+/// ```
+///
+/// so every span in `_alloc` carries the gate `std ∨ alloc`, whose negation is
+/// `¬std ∧ ¬alloc`. `alloc` was therefore UNSAT against the constraints and
+/// never even reached the candidate list — though `--no-default-features
+/// --features alloc,no_std` builds the crate clean on aarch64-unknown-none, and
+/// in that build `_alloc`'s spans resolve to `alloc::…` rather than to std. The
+/// search was being told to hold off a gate on the strength of a verdict that
+/// exists only because the search had not yet succeeded.
+///
+/// The no_std condition is the honest constraint in its place: it is derived
+/// from the crate's own `#![no_std]` and `extern crate std` structure rather
+/// than from a run, and it is the same condition the baseline no_std run is
+/// solved from. It still excludes `std` wherever `std` is what the crate's
+/// no_std-ness turns on, which is the case the old guard was written for.
+/// Nothing is lost on the std axis either way, because a configuration that
+/// links std cannot compile for a bare-metal target at all, and only a
+/// bare-metal success counts here (`allow_host_fallback = false`).
+///
+/// `avoid_gates` remains the fallback for a crate with no condition at all,
+/// where it is the only restraint available.
 ///
 /// Returns the empty vector when the base set already compiles, when no candidate
 /// set does, or when there are no candidates — i.e. this never manufactures a
@@ -2604,16 +2657,21 @@ pub fn discover_build_enablers<'a>(
     crate_name: &str,
     hard_constraints: &[Bool<'a>],
     avoid_gates: &[Bool<'a>],
+    no_std_conds: &[Bool<'a>],
 ) -> (Vec<String>, Option<CoveringRun>) {
     let declared = visitor::declared_features(manifest);
     if declared.is_empty() {
         return (Vec::new(), None);
     }
 
-    // The constraints the enabler has to live under: the crate's own, plus each
-    // std gate held off. Gates are added one at a time and skipped when they
-    // conflict — two spans can be gated by mutually exclusive features, and the
-    // prober negates one gate at a time rather than all at once.
+    // The constraints the enabler has to live under: the crate's own, plus the
+    // world the answer has to be valid in. That world is the crate's no_std
+    // condition when it has one — see the circularity note above — and the
+    // negation of each `AlwaysStd` gate only for a crate that has none.
+    //
+    // Either way they are added one at a time and skipped when they conflict:
+    // two spans can be gated by mutually exclusive features, and a crate can
+    // carry more than one no_std condition (one per entrypoint).
     let mut constraints: Vec<Bool<'a>> = hard_constraints.to_vec();
     {
         let probe = z3::Solver::new(ctx);
@@ -2624,15 +2682,20 @@ pub fn discover_build_enablers<'a>(
             debug!("[enablers] hard constraints are unsatisfiable; skipping discovery");
             return (Vec::new(), None);
         }
-        for gate in avoid_gates {
-            let negated = gate.not();
+        let restraints: Vec<Bool<'a>> = if no_std_conds.is_empty() {
+            debug!("[enablers] no no_std condition; falling back to negating the std gates");
+            avoid_gates.iter().map(|g| g.not()).collect()
+        } else {
+            no_std_conds.to_vec()
+        };
+        for c in restraints {
             probe.push();
-            probe.assert(&negated);
+            probe.assert(&c);
             let ok = probe.check() == z3::SatResult::Sat;
             probe.pop(1);
             if ok {
-                probe.assert(&negated);
-                constraints.push(negated);
+                probe.assert(&c);
+                constraints.push(c);
             }
         }
     }
@@ -2733,18 +2796,67 @@ pub fn discover_build_enablers<'a>(
         candidates
     } else {
         // All-on can fail for a reason unrelated to the enabler — two candidates
-        // that cannot be on together, or one that breaks the build by itself. Fall
-        // back to trying each alone; the shrink then has nothing left to do.
-        debug!("[enablers] every candidate on does not compile; trying them one at a time");
-        let single = candidates
+        // that cannot be on together, or one that breaks the build by itself.
+        //
+        // The commonest such reason is measurable from the manifest rather than
+        // guessed at: a candidate that links an OPTIONAL DEPENDENCY puts a new
+        // crate into the graph, and that crate has to compile bare-metal too. One
+        // std-only optional dep then vetoes the whole set. Retrying without them
+        // costs one probe and keeps every candidate that cannot introduce a crate.
+        //
+        // proptest 1.6.0 is the crate that needed it. Its no_std build is the PAIR
+        // `alloc` + `no_std` — `alloc` alone dies on `num_traits::float::Float`,
+        // `no_std` alone on `cannot find macro `vec``, so no one-at-a-time search
+        // can ever find it — while all-on drags in bit-vec, lazy_static,
+        // rusty-fork, tempfile and fnv. Dropping the dep-linking candidates leaves
+        // `[alloc, atomic64bit, no_std, unstable]`, which compiles, and the two
+        // passes below shrink that to `[alloc, no_std]`.
+        let dep_adding = std::fs::read_to_string(manifest)
+            .ok()
+            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+            .map(|toml| downloader::dep_adding_features(&toml, &declared))
+            .unwrap_or_default();
+        let no_new_crates: Vec<String> = candidates
             .iter()
-            .find(|c| compiles(std::slice::from_ref(*c)))
-            .cloned();
-        match single {
-            Some(c) => vec![c],
+            .filter(|c| !dep_adding.contains(*c))
+            .cloned()
+            .collect();
+        let without_deps = if no_new_crates.is_empty() || no_new_crates.len() == candidates.len() {
+            // Nothing to subtract — either every candidate links a dep or none
+            // does, and in both cases this probe would repeat the all-on trial.
+            None
+        } else {
+            debug!(
+                "[enablers] all-on failed; retrying without the {} candidate(s) that link an optional dep: {:?}",
+                candidates.len() - no_new_crates.len(),
+                candidates
+                    .iter()
+                    .filter(|c| dep_adding.contains(*c))
+                    .collect::<Vec<_>>()
+            );
+            compiles(&no_new_crates).then_some(no_new_crates)
+        };
+
+        match without_deps {
+            Some(set) => set,
             None => {
-                debug!("[enablers] no candidate makes the crate build for a bare-metal target");
-                return (Vec::new(), None);
+                // Fall back to trying each alone; the shrink then has nothing to do.
+                debug!(
+                    "[enablers] every candidate on does not compile; trying them one at a time"
+                );
+                let single = candidates
+                    .iter()
+                    .find(|c| compiles(std::slice::from_ref(*c)))
+                    .cloned();
+                match single {
+                    Some(c) => vec![c],
+                    None => {
+                        debug!(
+                            "[enablers] no candidate makes the crate build for a bare-metal target"
+                        );
+                        return (Vec::new(), None);
+                    }
+                }
             }
         }
     };
@@ -2946,7 +3058,14 @@ pub fn analyze_crate<'a>(
         let enabler_run;
         (build_enablers, enabler_run) = {
             let _t = timing::scope("build_enablers", crate_name);
-            discover_build_enablers(ctx, manifest, crate_name, &hard_constraints, &avoid_gates)
+            discover_build_enablers(
+                ctx,
+                manifest,
+                crate_name,
+                &hard_constraints,
+                &avoid_gates,
+                &no_std_conds,
+            )
         };
         for f in &build_enablers {
             println!(

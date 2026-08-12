@@ -1,0 +1,35 @@
+[package]
+name = "build_enabler_pair"
+description = "A crate whose bare-metal build needs a PAIR of features, next to a candidate that links a std-only optional dep"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "build_enabler_pair"
+
+# Stands in for num-traits: `sqrt` exists only once a backend is selected.
+[dependencies.mathshim]
+path = "mathshim"
+default-features = false
+
+# Stands in for proptest's `bit-set` / `lazy_static` / `rusty-fork` / `tempfile`:
+# an optional dependency that is plain std and therefore compiles nowhere on
+# bare metal. Turning it on is what makes the all-on trial fail.
+[dependencies.hostonly]
+path = "hostonly"
+optional = true
+
+[features]
+default = ["std"]
+std = ["mathshim/std"]
+# Neither of these gates any of this crate's *own* code by name, exactly as in
+# the `build_enabler_libm` fixture — and neither is sufficient alone.
+alloc = []
+nostd_math = ["mathshim/libm"]
+# The dep-linking candidate. `dep_adding_features` must recognise it through
+# the `dep:` marker so the retry drops it.
+hostdep = ["dep:hostonly"]
+
+[workspace]
+exclude = ["mathshim", "hostonly"]

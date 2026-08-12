@@ -128,3 +128,43 @@ fn control_rules_disagreeing_on_the_gate_are_rejected() {
         );
     });
 }
+
+#[test]
+fn control_multiplexing_transcriber_yields_no_gate() {
+    // proptest 1.6.0's `multiplex_alloc!`: the transcriber leads with
+    // `#[cfg(all(feature = "alloc", not(feature = "std")))]` and then emits a
+    // second `pub use` under `#[cfg(feature = "std")]`. Taking the leading gate
+    // for the whole expansion stamps `alloc ∧ ¬std` onto the records that came
+    // from the *std* branch — and negating that gate, as the enabler search does
+    // for every std gate it holds off, then forces `¬alloc` under a no_std
+    // condition and strikes `alloc` off the candidate list.
+    with_tree(|tree, lib, _| {
+        let span = span_in("lib.rs", lib, "::std::borrow::Cow");
+        let ancestors = ancestors_for_span(tree, &span);
+        let rendered = format!("{ancestors:?}");
+        assert!(
+            ancestors.is_none_or(|a| a.is_empty()),
+            "a transcriber that emits a second item under its own cfg is a \
+             multiplexer; its leading gate governs one branch and must not be \
+             named for the invocation, got {rendered}"
+        );
+    });
+}
+
+#[test]
+fn cfg_nested_inside_the_gated_item_keeps_the_gate() {
+    // The counterpart control. Here the leading `#[cfg(feature = "std")]` does
+    // govern everything the macro emits; the `#[cfg(feature = "extra")]` sits
+    // inside the gated item's own body, so it is a further restriction under the
+    // leading gate rather than a sibling. Rejecting on it would drop a real gate
+    // and read the items below it as unguarded std.
+    with_tree(|tree, lib, _| {
+        let span = span_in("lib.rs", lib, "std::sync::RwLock");
+        let rendered = format!("{:?}", ancestors_for_span(tree, &span));
+        assert!(
+            rendered.contains("std"),
+            "a cfg nested inside the gated item's body must not cost the macro \
+             its uniform gate, got: {rendered}"
+        );
+    });
+}

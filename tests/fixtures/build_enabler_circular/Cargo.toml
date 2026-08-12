@@ -1,0 +1,28 @@
+[package]
+name = "build_enabler_circular"
+description = "A crate whose no_std-path feature is also a disjunct in the gate of its std spans"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "build_enabler_circular"
+
+[dependencies.mathshim]
+path = "mathshim"
+default-features = false
+
+# No `default` entry: what is under test is which candidates the search is
+# ALLOWED to try, so the candidate list is kept to exactly the three features.
+[features]
+std = ["mathshim/std"]
+# The circularity: `alloc` gates the facade module, so it is a disjunct in the
+# gate of every span inside it — and it is also half of what the bare-metal
+# build needs.
+alloc = []
+# proptest's `no_std = ["num-traits/libm"]`: gates no code of the crate's own,
+# so no covering seed ever sets it and only the enabler search can find it.
+nostd_math = ["mathshim/libm"]
+
+[workspace]
+exclude = ["mathshim"]

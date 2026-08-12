@@ -17,6 +17,43 @@ macro_rules! disagreeing {
     (b $($i:item)*) => ($( #[cfg(feature = "alloc")] $i )*);
 }
 
+// A multiplexer (proptest's `multiplex_alloc!`): the transcriber leads with one
+// cfg and then emits a SECOND item under a different one. The leading gate
+// governs only the first branch, so no gate can be named for the invocation.
+macro_rules! multiplex {
+    ($($alloc:path, $std:path),*) => {
+        $(
+            #[cfg(all(feature = "alloc", not(feature = "std")))]
+            pub use $alloc;
+            #[cfg(feature = "std")]
+            pub use $std;
+        )*
+    };
+}
+
+// Control for the same rule: the leading gate DOES govern everything the macro
+// emits, and the cfg inside the item's own body is a further restriction under
+// it — not a sibling. The gate must survive.
+macro_rules! nested_cfg_inside {
+    ($($i:item)*) => ($(
+        #[cfg(feature = "std")]
+        mod wrapper {
+            #[cfg(feature = "extra")]
+            pub use std::io::Read;
+
+            $i
+        }
+    )*)
+}
+
+multiplex! {
+    alloc::borrow::Cow, ::std::borrow::Cow
+}
+
+nested_cfg_inside! {
+    use std::sync::RwLock;
+}
+
 if_std! {
     mod gated_mod;
 

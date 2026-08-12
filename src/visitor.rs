@@ -2815,6 +2815,36 @@ fn macro_rules_uniform_cfg(tokens: &TokenStream) -> Option<TokenStream> {
 /// usually wrapped in a `$( … )*` repetition (one expansion per captured item);
 /// after unwrapping that, the cfg must be the very first thing, so that it
 /// applies to each expanded item rather than to one arbitrary member of a list.
+///
+/// Leading is necessary and not sufficient: a transcriber that emits a *second*
+/// item under its own `#[cfg]` is a multiplexer, and the first gate governs only
+/// the first branch. proptest 1.6.0's `std_facade` is the shape —
+///
+/// ```ignore
+/// macro_rules! multiplex_alloc {
+///     ($($alloc: path, $std: path),*) => { $(
+///         #[cfg(all(feature = "alloc", not(feature = "std")))]
+///         pub use $alloc;
+///         #[cfg(feature = "std")]          // ← the leading gate governs neither
+///         pub use $std;                    //   this item nor the records it makes
+///     )* };
+/// }
+/// ```
+///
+/// — and taking the first gate for the whole expansion stamped
+/// `all(alloc, not(std))` onto records that came from `pub use ::std::…`. The
+/// damage is not only a mis-attributed span: an invocation carrying its own
+/// `#[cfg(feature = "std")]` then yielded the *unsatisfiable* gate
+/// `(and (or std) alloc (not std))`, and negating that gate — as
+/// `discover_build_enablers` does for every std gate it must hold off — forces
+/// `not alloc` under a no_std condition. `alloc` is thereby struck from the
+/// enabler candidate list: the one feature proptest's no_std build needs.
+///
+/// Only the transcriber's TOP level counts. A `#[cfg]` nested inside the gated
+/// item's own body (`#[cfg(a)] fn f() { #[cfg(b)] let x = …; }`) is a further
+/// restriction *under* the leading gate, which still holds for everything the
+/// macro emits; rejecting on it would drop a gate that is real and read the
+/// items below it as unguarded std.
 fn leading_cfg_attr(stream: &TokenStream) -> Option<TokenStream> {
     let outer: Vec<TokenTree> = stream.clone().into_iter().collect();
 
@@ -2840,12 +2870,31 @@ fn leading_cfg_attr(stream: &TokenStream) -> Option<TokenStream> {
         return None;
     }
 
+    if has_top_level_cfg_attr(&trees[2..]) {
+        return None;
+    }
+
     let mut ts = TokenStream::new();
     ts.extend([
         TokenTree::Punct(hash.clone()),
         TokenTree::Group(bracket.clone()),
     ]);
     Some(ts)
+}
+
+/// Whether `trees` contains a `#[cfg(...)]` at its own level — a sibling item
+/// with a gate of its own. Groups are not descended into (see
+/// `leading_cfg_attr`).
+fn has_top_level_cfg_attr(trees: &[TokenTree]) -> bool {
+    trees.windows(2).any(|w| match (&w[0], &w[1]) {
+        (TokenTree::Punct(p), TokenTree::Group(g)) => {
+            p.as_char() == '#'
+                && g.delimiter() == Delimiter::Bracket
+                && matches!(g.stream().into_iter().next(),
+                    Some(TokenTree::Ident(id)) if id == "cfg")
+        }
+        _ => false,
+    })
 }
 
 fn is_cfg_if_path(path: &syn::Path) -> bool {

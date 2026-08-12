@@ -669,6 +669,77 @@ pub fn optional_dep_enablers(
     out
 }
 
+/// The declared features that put a **new crate** into the dependency graph —
+/// directly (`dep:x`, the implicit same-name feature, a strong `optdep/feat`
+/// reference) or by enabling another feature that does.
+///
+/// The distinction the enabler search needs. A candidate that links an optional
+/// dependency brings in a crate that must itself compile for a bare-metal
+/// target; a candidate that is `[]`, or that only turns on features of crates
+/// already in the graph, cannot introduce a new compile failure of that kind.
+/// All-on conflates them, so a single std-only optional dep vetoes every
+/// feature the crate's no_std path actually needs — proptest 1.6.0 has five
+/// (`bit-set`→bit-vec, `lazy_static`, `regex-syntax`, `rusty-fork`, `tempfile`,
+/// `hardware-rng`→x86→fnv) against the two it needs, `alloc` and `no_std`.
+///
+/// Weak references (`dep?/feat`) are excluded: they turn on a feature of the
+/// dependency *if something else already enabled it*, and link nothing on their
+/// own — the same reading `optional_dep_feature_edges` takes.
+pub fn dep_adding_features(toml: &Value, declared: &HashSet<String>) -> HashSet<String> {
+    let optional_deps = optional_deps_in_manifest(toml);
+    let features = toml.get("features").and_then(Value::as_table);
+
+    // Seeds: a feature that names an optional dep itself.
+    let mut adding: HashSet<String> = optional_dep_enablers(toml, declared)
+        .into_iter()
+        .flat_map(|(_, enablers)| enablers)
+        .collect();
+
+    let mut local_refs: Vec<(String, Vec<String>)> = Vec::new();
+    if let Some(features) = features {
+        for (feat_name, values) in features {
+            let mut refs = Vec::new();
+            for v in values.as_array().into_iter().flatten().filter_map(Value::as_str) {
+                match v.split_once('/') {
+                    // `dep?/feat` links nothing; `dep/feat` on an optional dep does.
+                    Some((dep, _)) => {
+                        if !dep.ends_with('?') && optional_deps.contains(dep) {
+                            adding.insert(feat_name.clone());
+                        }
+                    }
+                    None => {
+                        if let Some(dep) = v.strip_prefix("dep:") {
+                            if optional_deps.contains(dep) {
+                                adding.insert(feat_name.clone());
+                            }
+                        } else {
+                            refs.push(v.to_string());
+                        }
+                    }
+                }
+            }
+            local_refs.push((feat_name.clone(), refs));
+        }
+    }
+
+    // A feature that enables a dep-adding feature is itself dep-adding.
+    loop {
+        let mut grew = false;
+        for (feat_name, refs) in &local_refs {
+            if adding.contains(feat_name) {
+                continue;
+            }
+            if refs.iter().any(|r| adding.contains(r)) {
+                adding.insert(feat_name.clone());
+                grew = true;
+            }
+        }
+        if !grew {
+            return adding;
+        }
+    }
+}
+
 fn index_path(name: &str) -> String {
     let lower = name.to_lowercase();
     match lower.len() {

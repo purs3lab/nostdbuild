@@ -1,0 +1,15 @@
+[package]
+name = "mathshim"
+description = "The two-backend math shim of the build_enabler_libm fixture (stands in for num-traits)"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+name = "mathshim"
+
+[features]
+std = []
+libm = []
+
+[workspace]

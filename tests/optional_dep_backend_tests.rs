@@ -334,3 +334,130 @@ fn optional_backend_gives_the_no_std_run_a_compiling_feature_set() {
         "expected a no_std condition once the ¬std configuration compiles"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `dep_adding_features` — which declared features put a NEW CRATE into the
+// graph. The enabler search subtracts them when its all-on trial fails, because
+// only they can bring in a crate that itself fails to build for a bare-metal
+// target (proptest 1.6.0: five such candidates against the two, `alloc` and
+// `no_std`, that its no_std build actually needs).
+// ---------------------------------------------------------------------------
+
+fn dep_adding(manifest: &str, declared: &[&str]) -> Vec<String> {
+    let toml: toml::Value = toml::from_str(manifest).expect("fixture manifest parses");
+    let declared: std::collections::HashSet<String> =
+        declared.iter().map(|s| s.to_string()).collect();
+    let mut out: Vec<String> =
+        nostd::downloader::dep_adding_features(&toml, &declared).into_iter().collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn a_feature_naming_dep_marker_adds_a_crate() {
+    let out = dep_adding(
+        r#"
+        [package]
+        name = "x"
+        version = "0.1.0"
+        [dependencies.bit-set]
+        version = "0.5"
+        optional = true
+        [features]
+        alloc = []
+        bit-set = ["dep:bit-set"]
+        "#,
+        &["alloc", "bit-set"],
+    );
+    assert_eq!(out, vec!["bit-set".to_string()], "`alloc = []` links nothing");
+}
+
+#[test]
+fn the_implicit_same_name_feature_adds_a_crate() {
+    // proptest's `lazy_static` / `tempfile` shape: no `[features]` entry at all,
+    // just the optional dep, so cargo synthesises the feature.
+    let out = dep_adding(
+        r#"
+        [package]
+        name = "x"
+        version = "0.1.0"
+        [dependencies.lazy_static]
+        version = "1"
+        optional = true
+        [features]
+        alloc = []
+        "#,
+        &["alloc", "lazy_static"],
+    );
+    assert_eq!(out, vec!["lazy_static".to_string()]);
+}
+
+#[test]
+fn a_feature_enabling_a_dep_adding_feature_adds_a_crate_too() {
+    // proptest's `attr-macro = ["proptest-macro"]`: the link is one hop away,
+    // through the implicit feature rather than through a `dep:` marker.
+    let out = dep_adding(
+        r#"
+        [package]
+        name = "x"
+        version = "0.1.0"
+        [dependencies.pm]
+        version = "1"
+        optional = true
+        [features]
+        alloc = []
+        attr-macro = ["pm"]
+        outer = ["attr-macro"]
+        "#,
+        &["alloc", "attr-macro", "outer", "pm"],
+    );
+    assert_eq!(
+        out,
+        vec!["attr-macro".to_string(), "outer".to_string(), "pm".to_string()],
+        "the closure must run to a fixpoint, not one level"
+    );
+}
+
+#[test]
+fn a_strong_dep_slash_feature_reference_adds_a_crate_but_a_weak_one_does_not() {
+    // `optdep/feat` enables `optdep`; `optdep?/feat` only turns on a feature of
+    // it if something else already did — the reading `optional_dep_feature_edges`
+    // takes.
+    let out = dep_adding(
+        r#"
+        [package]
+        name = "x"
+        version = "0.1.0"
+        [dependencies.serde]
+        version = "1"
+        optional = true
+        [features]
+        strong = ["serde/derive"]
+        weak = ["serde?/derive"]
+        "#,
+        &["strong", "weak"],
+    );
+    assert_eq!(out, vec!["strong".to_string()]);
+}
+
+#[test]
+fn a_feature_of_a_required_dependency_adds_nothing() {
+    // proptest's `no_std = ["num-traits/libm"]` — the crate is already in the
+    // graph, so turning one of its features on cannot introduce a new build.
+    // This is the case that MUST survive the subtraction: it is half the answer.
+    let out = dep_adding(
+        r#"
+        [package]
+        name = "x"
+        version = "0.1.0"
+        [dependencies.num-traits]
+        version = "0.2"
+        default-features = false
+        [features]
+        no_std = ["num-traits/libm"]
+        std = ["num-traits/std"]
+        "#,
+        &["no_std", "std"],
+    );
+    assert!(out.is_empty(), "no optional dep is named anywhere, got {out:?}");
+}

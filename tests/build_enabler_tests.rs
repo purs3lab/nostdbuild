@@ -20,7 +20,19 @@ use std::path::Path;
 use cargo_test_support::{Project, cargo_test, project};
 
 use nostd::Telemetry;
-use nostd::driver::analyze_crate;
+use nostd::driver::{analyze_crate, reset_target_cache};
+
+/// Serialises the tests and clears the caches `analyze_crate` shares through
+/// process globals. Without it a fixture that compiles for a bare-metal target
+/// leaves `LAST_GOOD_TARGET` set and every later test skips the enabler search
+/// silently — the suite then measures thread scheduling, not behaviour.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn isolated() -> std::sync::MutexGuard<'static, ()> {
+    let guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    reset_target_cache();
+    guard
+}
 
 /// Copy a whole fixture directory into a cargo test project — the fixture ships a
 /// path dependency, so Cargo.toml + lib.rs is not enough.
@@ -59,6 +71,7 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
 
 #[cargo_test]
 fn enabler_feature_is_found_and_makes_the_std_span_provable() {
+    let _serial = isolated();
     let (_p, manifest) = load_fixture("build_enabler_libm");
 
     let ctx = z3::Context::new(&z3::Config::new());
@@ -113,6 +126,7 @@ fn enabler_feature_is_found_and_makes_the_std_span_provable() {
 /// resolves all eight to `micromath::F32Ext` and holds no std record at all.
 #[cargo_test]
 fn the_trial_that_compiled_becomes_a_covering_run() {
+    let _serial = isolated();
     let (_p, manifest) = load_fixture("build_enabler_shim_method");
 
     let ctx = z3::Context::new(&z3::Config::new());
@@ -155,6 +169,7 @@ fn the_trial_that_compiled_becomes_a_covering_run() {
 /// in its ¬`use_std` configuration, which is exactly the condition that skips it.
 #[cargo_test]
 fn a_crate_that_already_builds_bare_metal_runs_no_search() {
+    let _serial = isolated();
     let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/test_extern_std_on_feature");
 
@@ -183,5 +198,118 @@ fn a_crate_that_already_builds_bare_metal_runs_no_search() {
         "no enabler search should run for a crate with a working bare-metal \
          configuration, got {:?}",
         telemetry.build_enabler_features
+    );
+}
+
+/// The answer can be a *pair*, and a one-at-a-time search can never find one.
+///
+/// proptest 1.6.0 is the case (O-10's probe): its bare-metal build needs
+/// `alloc` **and** `no_std` together — `alloc` alone dies on
+/// `num_traits::float::Float`, `no_std` alone on ``cannot find macro `vec` `` —
+/// while the all-on trial drags in bit-vec, lazy_static, rusty-fork, tempfile
+/// and fnv through five candidates that link optional dependencies. All-on
+/// fails, every single fails, and the search reported nothing.
+///
+/// The discriminator is the manifest, not another compile: a candidate that
+/// links an optional dep puts a new crate into the graph that must itself build
+/// bare metal; one that cannot do that cannot be the reason all-on failed.
+#[cargo_test]
+fn a_pair_of_features_is_found_when_all_on_fails_on_an_optional_dep() {
+    let _serial = isolated();
+    let (_p, manifest) = load_fixture("build_enabler_pair");
+
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut telemetry = Telemetry::default();
+
+    let (hard_spans, _condition, _coverage, _ce, _root, _records, unproven) =
+        analyze_crate(&ctx, &manifest, "build_enabler_pair", &mut telemetry);
+
+    let mut found = telemetry.build_enabler_features.clone();
+    found.sort();
+    assert_eq!(
+        found,
+        vec!["alloc".to_string(), "nostd_math".to_string()],
+        "the crate builds bare metal only with both `alloc` and `nostd_math`; \
+         `hostdep` links a std-only crate and must be dropped, not searched \
+         around"
+    );
+
+    // The payoff, as in the `libm` case: with the pair pinned the probe's
+    // compile succeeds and the `String` span behind `feature = "std"` is
+    // provably avoidable rather than unproven.
+    assert!(
+        hard_spans.is_empty(),
+        "the `String` use is behind `feature = \"std\"` and is avoidable: {hard_spans:?}"
+    );
+    assert!(
+        unproven.is_empty(),
+        "no span should be left unproven once the pair is found: {unproven:?}"
+    );
+    assert_eq!(telemetry.unproven_std_spans, 0);
+}
+
+/// The search must not be constrained by the verdicts it exists to overturn.
+///
+/// proptest 1.6.0 (O-10's probe). `src/arbitrary/mod.rs:39` is
+/// `#[cfg(any(feature = "std", feature = "alloc"))] mod _alloc;`, so every span
+/// in `_alloc` carries the gate `std ∨ alloc`. Those spans are `AlwaysStd` for
+/// one reason only — no covering run ever compiled std-off — and negating their
+/// gate gives `¬std ∧ ¬alloc`, which made `alloc` UNSAT against the constraints
+/// and kept it out of the candidate list entirely. `alloc` is half of the pair
+/// that builds the crate (`--no-default-features --features alloc,no_std`
+/// compiles clean on aarch64-unknown-none), so the search was forbidden from
+/// proposing the very thing it was looking for.
+///
+/// The crate's `no_std_condition` replaces that guard: derived from its own
+/// `#![no_std]` / `extern crate std` rather than from a run, and still enough to
+/// keep `std` off the table.
+#[cargo_test]
+fn a_feature_in_a_std_spans_gate_can_still_be_the_enabler() {
+    let _serial = isolated();
+    let (_p, manifest) = load_fixture("build_enabler_circular");
+
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut telemetry = Telemetry::default();
+
+    let (hard_spans, condition, _coverage, _ce, _root, _records, unproven) =
+        analyze_crate(&ctx, &manifest, "build_enabler_circular", &mut telemetry);
+
+    let mut found = telemetry.build_enabler_features.clone();
+    found.sort();
+    assert_eq!(
+        found,
+        vec!["alloc".to_string(), "nostd_math".to_string()],
+        "`alloc` is a disjunct in the gate of the `AlwaysStd` spans AND half of \
+         what the crate builds bare metal with; the first fact must not suppress \
+         the second"
+    );
+
+    // `std` is still not an acceptable answer — the no_std condition forbids it,
+    // and a build that links std cannot succeed for a bare-metal target anyway.
+    assert!(
+        !telemetry.build_enabler_features.iter().any(|f| f == "std"),
+        "`std` must never be offered as the way to make a no_std crate compile"
+    );
+    let condition = condition.expect("a no_std condition should have been proven");
+    let solver = z3::Solver::new(&ctx);
+    solver.assert(&condition);
+    solver.assert(&z3::ast::Bool::new_const(&ctx, "std"));
+    assert_eq!(
+        solver.check(),
+        z3::SatResult::Unsat,
+        "the proven condition must still exclude `std`, got {condition}"
+    );
+
+    // The payoff: with `alloc` found the trial compiles, it is adopted as a
+    // covering run, and `make()`'s `Thing` resolves to `core::cell::Cell` there
+    // — so the span that was `AlwaysStd` is not std at all.
+    assert!(
+        hard_spans.is_empty(),
+        "the facade span resolves to core in the configuration the search \
+         compiled: {hard_spans:?}"
+    );
+    assert!(
+        unproven.is_empty(),
+        "no span should be left unproven once the enabler is found: {unproven:?}"
     );
 }
