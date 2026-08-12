@@ -276,6 +276,26 @@ pub struct DepNoStdFailure {
     pub depth: u32,
 }
 
+/// A proc macro that injected `std` into a crate whose manifest has no edge to
+/// it, so the parking cannot turn its `std` feature off (**KI-22**).
+///
+/// The parking writes `default-features = false` on an edge of the consumer's
+/// own manifest; a macro two levels down is not such an edge. Reported instead
+/// of leaving the run to fail on `E0463 can't find crate for std` at a span the
+/// crate never wrote. See `driver::report_unreachable_proc_macro_injectors`.
+#[derive(Debug, Serialize)]
+pub struct UnreachableProcMacro {
+    /// The proc-macro crate the records were attributed to.
+    pub macro_crate: String,
+    /// `name:version` of the crate it injected std into.
+    pub consumer: String,
+    /// Downloaded crates that declare an edge to it — how it entered the graph.
+    /// Best effort: who *could* have brought it in, not who resolved it.
+    pub parents: Vec<String>,
+    /// How many std records the pass attributed to it.
+    pub records: usize,
+}
+
 /// A proc-macro dependency of the main crate, which the no_std walk skips and
 /// `driver::park_injecting_proc_macros` then examines for what it injects.
 ///
@@ -406,6 +426,12 @@ pub struct Telemetry {
     /// (a std record whose `expansion_crate` is the macro's). A superset of what
     /// was parked — the parking still has to compile.
     pub proc_macro_std_injectors: Vec<String>,
+    /// Injectors the parking cannot reach at all, because the manifest owns no
+    /// edge to them (KI-22). Not a superset or subset of the field above: those
+    /// are edges this crate has, these are macros it reaches only through
+    /// another dependency. Accumulates across the main crate and every
+    /// dependency analysed after it, so each entry names its own consumer.
+    pub proc_macro_std_unreachable_injectors: Vec<UnreachableProcMacro>,
     /// Injectors where no *default of the macro* was the switch: every trial either
     /// broke the macro's own build (needs_std, bebytes_derive) or left the injected
     /// std exactly where it was. The second is not always a dead end — when the

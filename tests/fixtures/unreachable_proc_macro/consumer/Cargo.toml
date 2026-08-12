@@ -1,0 +1,12 @@
+# KI-22 in miniature. The consumer's edges are `reexporter`, `direct-macro` and
+# `plain-helper`; `hidden-macro` is reached only through `reexporter`, so the
+# parking — which rewrites edges of THIS manifest — cannot turn its `std` off.
+[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reexporter = "1.0.0"
+direct-macro = "1.0.0"
+plain-helper = "1.0.0"

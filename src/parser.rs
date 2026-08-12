@@ -2666,6 +2666,136 @@ pub fn is_proc_macro(crate_name: &str, main_name: Option<&str>) -> bool {
     false
 }
 
+/// Every dependency this manifest declares an edge for, as crate names with
+/// `-`/`_` folded to `-`.
+///
+/// Covers the renamed form (`foo = { package = "bar" }` yields both, because a
+/// record can name either) and the target-specific and build sections, so
+/// "the manifest has no edge to this crate" means it over the whole manifest.
+/// Dev-dependencies count: they are edges the manifest owns even though the
+/// no_std build never uses them, and reporting one as unreachable would be
+/// wrong.
+pub fn declared_dependency_crate_names(manifest_toml: &toml::Value) -> HashSet<String> {
+    const SECTIONS: [&str; 3] = ["dependencies", "build-dependencies", "dev-dependencies"];
+    let mut names = HashSet::new();
+    let mut collect = |table: Option<&toml::Value>| {
+        let Some(table) = table.and_then(|t| t.as_table()) else {
+            return;
+        };
+        for (key, value) in table {
+            names.insert(key.replace('_', "-"));
+            if let Some(package) = value.get("package").and_then(|p| p.as_str()) {
+                names.insert(package.replace('_', "-"));
+            }
+        }
+    };
+    for section in SECTIONS {
+        collect(manifest_toml.get(section));
+    }
+    if let Some(targets) = manifest_toml.get("target").and_then(|t| t.as_table()) {
+        for cfg in targets.values() {
+            for section in SECTIONS {
+                collect(cfg.get(section));
+            }
+        }
+    }
+    names
+}
+
+/// The downloaded source directory of the crate named `krate`, whatever its
+/// version, looked up beside `manifest`.
+///
+/// Two layouts, because `analyze_crate` runs for the main crate and for every
+/// dependency: a main crate's own dependencies live in `<dir>_deps/`, and a
+/// dependency's siblings are its own parent directory. Both are tried, so the
+/// caller does not have to know which crate it is looking at.
+///
+/// The name is folded (`derive-new` the package is `derive_new` the crate) and
+/// the version suffix ignored, which is what makes this usable from a record —
+/// `PathRecord::expansion_crate` carries a crate name and no version.
+pub fn find_sibling_crate_dir(manifest: &str, krate: &str) -> Option<PathBuf> {
+    let wanted = krate.replace('_', "-");
+    let own_dir = Path::new(manifest).parent()?;
+    let deps_dir = PathBuf::from(format!("{}_deps", own_dir.display()));
+    let search_dirs = [deps_dir, own_dir.parent()?.to_path_buf()];
+
+    for dir in search_dirs {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().replace('_', "-");
+            // `<name>-<version>`: split at the last `-` so a hyphenated crate
+            // name survives.
+            let Some((stem, _version)) = name.rsplit_once('-') else {
+                continue;
+            };
+            if stem == wanted && entry.path().join("Cargo.toml").exists() {
+                return Some(entry.path());
+            }
+        }
+    }
+    None
+}
+
+/// Whether a downloaded crate directory holds a proc macro. The non-panicking,
+/// version-free counterpart to [`is_proc_macro`], which needs `name:version` and
+/// `unreachable!`s when the manifest is not where it expects.
+pub fn crate_dir_is_proc_macro(dir: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(dir.join("Cargo.toml")) else {
+        return false;
+    };
+    let Ok(toml) = toml::from_str::<toml::Value>(&text) else {
+        return false;
+    };
+    toml.get("lib")
+        .and_then(|lib| lib.get("proc-macro"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Which downloaded crates beside `manifest` declare an edge to `krate` — the
+/// dependencies through which an unreachable proc macro entered the graph.
+///
+/// Best effort by design: it answers "who could have brought this in", not
+/// "who resolved it", and a manifest that fails to parse is skipped rather than
+/// guessed at. Only ever called once a record has already proved the macro ran.
+pub fn crate_edge_owners(manifest: &str, krate: &str) -> Vec<String> {
+    let wanted = krate.replace('_', "-");
+    let Some(own_dir) = Path::new(manifest).parent() else {
+        return Vec::new();
+    };
+    let deps_dir = PathBuf::from(format!("{}_deps", own_dir.display()));
+    let search_dir = if deps_dir.is_dir() {
+        deps_dir
+    } else {
+        match own_dir.parent() {
+            Some(parent) => parent.to_path_buf(),
+            None => return Vec::new(),
+        }
+    };
+
+    let Ok(entries) = fs::read_dir(&search_dir) else {
+        return Vec::new();
+    };
+    let mut owners: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.path().join("Cargo.toml").exists())
+        .filter(|entry| {
+            let Ok(text) = fs::read_to_string(entry.path().join("Cargo.toml")) else {
+                return false;
+            };
+            let Ok(parsed) = toml::from_str::<toml::Value>(&text) else {
+                return false;
+            };
+            declared_dependency_crate_names(&parsed).contains(&wanted)
+        })
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect();
+    owners.sort();
+    owners
+}
+
 /// Every optional dependency declared anywhere in `manifest_toml`, named the way the
 /// manifest names it.
 ///

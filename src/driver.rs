@@ -1,6 +1,6 @@
 use log::{debug, warn};
 use proc_macro2::Span;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::{fs, process::Command};
@@ -1103,6 +1103,105 @@ pub fn injected_std_records(output: &FeatureRunOutput, krate: &str) -> usize {
                 .is_some_and(|c| c.replace('-', "_") == wanted)
         })
         .count()
+}
+
+/// Std this crate got from a proc macro the parking cannot reach: one the
+/// manifest has no edge to. **KI-22.**
+///
+/// `driver::park_injecting_proc_macros` turns a macro's injected std off by
+/// writing `default-features = false` on an edge of *this* crate's manifest.
+/// A proc macro two levels down — `sp-debug-derive` below `sp-core`,
+/// `displaydoc` below any of the 87 corpus crates that reach it only
+/// transitively — is not an edge this manifest owns, so it keeps its `std`
+/// feature and keeps injecting `extern crate std` at every invocation site. The
+/// same wall `recursive_dep_requirement_check` reports for ordinary
+/// dependencies: the tool cannot rewrite a manifest it does not emit.
+///
+/// So it is reported rather than silently failing a bare-metal build with
+/// `E0463 can't find crate for std` at a span the crate never wrote. The
+/// evidence is the compiler's: a std record whose `expansion_crate` names the
+/// macro is that macro putting std here, the same signal the parking itself
+/// decides on.
+///
+/// Runs on the default-features pass the coverage comparison already performs,
+/// so it costs no build. It runs *after* the parking, which means a direct
+/// injector that was successfully parked has no records left to find and what
+/// survives here is genuinely out of reach.
+///
+/// Three exclusions, all of which would otherwise be reported as unreachable:
+/// crates this manifest does have an edge to (the parking's own territory,
+/// whether or not it succeeded), the crate under analysis and the sysroot
+/// crates (`LOCAL`, `std`, `core`, `alloc` — a `std::println!` expansion is the
+/// crate's own std, not an injection), and any expansion crate that is not a
+/// proc macro, since a `macro_rules!` carries no feature of its own to turn off.
+pub fn report_unreachable_proc_macro_injectors(
+    output: &FeatureRunOutput,
+    manifest: &str,
+    crate_name: &str,
+    telemetry: &mut Telemetry,
+) {
+    let Ok(text) = fs::read_to_string(manifest) else {
+        return;
+    };
+    let Ok(manifest_toml) = toml::from_str::<toml::Value>(&text) else {
+        return;
+    };
+    let declared = parser::declared_dependency_crate_names(&manifest_toml);
+    let own = crate_name
+        .split(':')
+        .next()
+        .unwrap_or(crate_name)
+        .replace('_', "-");
+
+    let mut injected: BTreeMap<String, usize> = BTreeMap::new();
+    for record in &output.records {
+        if record.span.usage_crate.as_deref() != Some("std") {
+            continue;
+        }
+        let Some(expansion) = record.expansion_crate.as_deref() else {
+            continue;
+        };
+        let folded = expansion.replace('_', "-");
+        if folded == own
+            || declared.contains(&folded)
+            || consts::SYSROOT_CRATE_NAMES.contains(&expansion)
+            || expansion == "LOCAL"
+        {
+            continue;
+        }
+        *injected.entry(expansion.to_string()).or_default() += 1;
+    }
+
+    for (macro_crate, records) in injected {
+        let Some(dir) = parser::find_sibling_crate_dir(manifest, &macro_crate) else {
+            continue;
+        };
+        if !parser::crate_dir_is_proc_macro(&dir) {
+            continue;
+        }
+        let parents = parser::crate_edge_owners(manifest, &macro_crate);
+        println!(
+            "WARNING: proc macro `{}` injected {} std record(s) into {} and cannot be reached: \
+             {} has no dependency edge to it{}",
+            macro_crate,
+            records,
+            crate_name,
+            crate_name,
+            if parents.is_empty() {
+                String::new()
+            } else {
+                format!(" — it comes in through {:?}", parents)
+            }
+        );
+        telemetry
+            .proc_macro_std_unreachable_injectors
+            .push(crate::UnreachableProcMacro {
+                macro_crate,
+                consumer: crate_name.to_string(),
+                parents,
+                records,
+            });
+    }
 }
 
 fn outcome_summary(outcome: &PassOutcome) -> String {
@@ -3015,6 +3114,12 @@ pub fn analyze_crate<'a>(
             None
         }
     };
+
+    // KI-22, reported off this pass rather than a build of its own: a proc macro
+    // the manifest has no edge to keeps its `std` whatever the parking does.
+    if let Some(ref output) = default_features_output {
+        report_unreachable_proc_macro_injectors(output, manifest, crate_name, telemetry);
+    }
 
     let all_constraints = visitor::collect_all_items(&root, ctx);
 
