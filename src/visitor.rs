@@ -168,6 +168,61 @@ impl<'a> Visit<'a> for ItemExternCratesAll {
     }
 }
 
+/// The single constraint a `#[cfg(...)] compile_error!(...)` item states, as the
+/// `#[cfg(not(<cfg>))]` attribute every consumer of `compile_error_attrs`
+/// expects. `None` when the item carries no `#[cfg]` at all.
+///
+/// Stacked `#[cfg]`s are a logical **AND** on the item — rustc raises the error
+/// only when every one of them holds — so
+///
+/// ```ignore
+/// #[cfg(feature = "no_std")]
+/// #[cfg(feature = "wasm-bindgen")]
+/// compile_error!("`wasm-bindgen` cannot be used with `no-std`");
+/// ```
+///
+/// says `¬(no_std ∧ wasm-bindgen)`: one constraint for the item. Both collection
+/// sites used to read the attributes one at a time and disagree about the same
+/// declaration — the `ModCollector` half emitted one negation *per* attribute,
+/// `¬no_std ∧ ¬wasm-bindgen`, which is strictly stronger than anything the crate
+/// wrote, and the `Attributes` half took only the first with `.find`. In
+/// spo-rhai 1.17.2 and rhai 1.21.0 the surviving `¬no_std` is the negation of
+/// the crate's own no_std condition, so every std-off seed came back
+/// "unsatisfiable with hard constraints" (300 of them), the enabler search was
+/// skipped, no std-off run was ever compiled and all 273 spans landed
+/// `AlwaysStd`. Entirely self-inflicted — O-15.
+///
+/// Folding first is also what makes O-1's rule apply to the *fold*:
+/// `parser::compile_error_constraint` drops a constraint whose cfg names an atom
+/// policy G erases, and `ParsedAttr::constants` accumulates through the whole
+/// nested parse, so `#[cfg(target_family = "wasm")] #[cfg(feature = "no_std")]`
+/// now drops the **whole** constraint. Per attribute it dropped the
+/// `target_family` one and kept `¬no_std` alone — a fragment asserted where the
+/// rule says say nothing.
+pub fn negated_compile_error_cfg(attrs: &[Attribute]) -> Option<Attribute> {
+    let mut streams: Vec<TokenStream> = Vec::new();
+    for attr in attrs.iter().filter(|a| a.path().is_ident("cfg")) {
+        match &attr.meta {
+            Meta::List(list) => streams.push(list.tokens.clone()),
+            other => debug!("Unexpected meta type for compile_error cfg: {:?}", other),
+        }
+    }
+    match streams.len() {
+        // No `#[cfg]` on the item: an unconditional `compile_error!`, or one
+        // carrying only attributes this does not model. Nothing to negate.
+        0 => None,
+        // `all(X)` and `X` are the same condition; emitting the bare form keeps
+        // the single-attribute case — nearly the whole corpus — byte-identical
+        // to the attribute every other site in the tool builds, which matters
+        // because `Attributes::visit_attribute` compares these for equality.
+        1 => {
+            let tokens = &streams[0];
+            Some(syn::parse_quote!(#[cfg(not(#tokens))]))
+        }
+        _ => Some(syn::parse_quote!(#[cfg(not(all(#(#streams),*)))])),
+    }
+}
+
 /// Visit ExprBlocks of the form
 /// ```ignore
 /// #[cfg(feature = "use-locks")]
@@ -271,32 +326,20 @@ impl<'a> Visit<'a> for Attributes {
 
     fn visit_item_macro(&mut self, i: &syn::ItemMacro) {
         if i.mac.path.is_ident("compile_error") {
-            let attrs = i.attrs.clone();
-            if attrs.is_empty() {
-                debug!("No attributes found for compile_error macro");
+            // Every `#[cfg]` on the item, ANDed and negated once. Taking only
+            // the first (the old `.find(..).unwrap()`) read a stacked
+            // declaration as if the other attributes were not there, and
+            // panicked outright on a `compile_error!` carrying attributes none
+            // of which is a `cfg`. See `negated_compile_error_cfg` — O-15.
+            let Some(negated) = negated_compile_error_cfg(&i.attrs) else {
+                debug!("No cfg attribute found for compile_error macro");
                 return;
-            }
-            // Remove the attribute from the list which are
-            // compiler_error attributes.
-            let attr = attrs.iter().find(|a| a.path().is_ident("cfg")).unwrap();
-            self.attributes.retain(|a| a != attr);
-            // Negate the attrs[0] and add it to the attributes
-            match attr.meta.clone() {
-                Meta::List(meta_list) => {
-                    let path = meta_list.path.get_ident();
-                    if path.is_some() && path.unwrap() == "cfg" {
-                        let tokens = meta_list.tokens.clone();
-                        let negated: Attribute = syn::parse_quote!(
-                        #[cfg(not(#tokens))]
-                        );
-                        self.compile_error_attrs.push(negated.clone());
-                        self.attributes.push(negated);
-                    }
-                }
-                _ => {
-                    debug!("Unexpected meta type for compiler_error: {:?}", attr.meta);
-                }
-            }
+            };
+            // The positive forms are not gates of this crate's code; they are
+            // the condition it refuses to build under.
+            self.attributes.retain(|a| !i.attrs.contains(a));
+            self.compile_error_attrs.push(negated.clone());
+            self.attributes.push(negated);
         }
     }
 
@@ -2282,23 +2325,21 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
             self.visit_include_macro(&i.mac.tokens, own, own_externally_gated);
             return;
         } else if i.mac.path.is_ident("compile_error") {
-            let attrs = i.attrs.iter().filter(|a| a.path().is_ident("cfg"));
-            for attr in attrs {
-                match attr.meta.clone() {
-                    Meta::List(meta_list) => {
-                        let tokens = meta_list.tokens.clone();
-                        let negated: Attribute = syn::parse_quote!(
-                        #[cfg(not(#tokens))]
-                        );
-                        let constraint = parser::compile_error_constraint(&negated, self.ctx, self.known_features.as_deref());
-                        if let Some(c) = constraint {
-                            self.hard_constraints.push(c);
-                        }
-                    }
-                    _ => {
-                        debug!("Unexpected meta type for compiler_error: {:?}", attr.meta);
-                    }
-                }
+            // ONE constraint for the item, not one per attribute: stacked
+            // `#[cfg]`s are an AND, so `¬(A ∧ B)` is what the crate stated and
+            // `¬A ∧ ¬B` is strictly stronger than anything it wrote. This is the
+            // seed veto — a constraint here is what makes a covering seed
+            // "unsatisfiable with hard constraints" — so an over-strong one
+            // costs the crate every std-off run it has. See
+            // `negated_compile_error_cfg` — O-15.
+            if let Some(negated) = negated_compile_error_cfg(&i.attrs)
+                && let Some(c) = parser::compile_error_constraint(
+                    &negated,
+                    self.ctx,
+                    self.known_features.as_deref(),
+                )
+            {
+                self.hard_constraints.push(c);
             }
         } else {
             // The item's own `#[cfg]` (if any) ANDed with the gate its macro's

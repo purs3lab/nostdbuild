@@ -526,3 +526,143 @@ fn erased_atom_constraint_is_not_reported_as_violated() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// O-15 — stacked `#[cfg]`s are ANDed by rustc, so they are ONE constraint
+// ---------------------------------------------------------------------------
+//
+// `#[cfg(A)] #[cfg(B)] compile_error!(..)` fires only when both hold, so the
+// crate is saying `¬(A ∧ B)`. Both collection sites read the attributes one at a
+// time: `ModCollector` emitted a negation per attribute (`¬A ∧ ¬B`, strictly
+// stronger than anything the crate wrote) and `Attributes` took only the first.
+// In spo-rhai 1.17.2 and rhai 1.21.0 the `¬no_std` that falls out is the
+// negation of the crate's own no_std condition.
+
+/// Assert `constraint ∧ (each named feature at its given polarity)` is SAT.
+fn constraint_admits<'a>(
+    ctx: &'a z3::Context,
+    constraints: &[z3::ast::Bool<'a>],
+    assignment: &[(&str, bool)],
+) -> bool {
+    let solver = z3::Solver::new(ctx);
+    for c in constraints {
+        solver.assert(c);
+    }
+    for (feat, on) in assignment {
+        let var = z3::ast::Bool::new_const(ctx, *feat);
+        solver.assert(&if *on { var } else { var.not() });
+    }
+    solver.check() == z3::SatResult::Sat
+}
+
+/// The bug, at the entry point that fails crates. One constraint, not two — and
+/// crucially one that leaves the crate's no_std condition satisfiable.
+#[test]
+fn stacked_cfgs_yield_one_conjoined_constraint() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut collector = ModCollector::new(&ctx);
+    collector.collect(&fixture("stacked_shape.rs"), "lib");
+    assert_eq!(
+        collector.hard_constraints.len(),
+        1,
+        "the item states one constraint, got {:?}",
+        collector.hard_constraints
+    );
+    assert!(
+        constraint_admits(&ctx, &collector.hard_constraints, &[("no_std", true)]),
+        "`no_std` alone is not what the crate forbids; the std-off seeds must \
+         survive this constraint, got {:?}",
+        collector.hard_constraints
+    );
+}
+
+/// ...and it still forbids what the crate actually forbids. Without this the
+/// test above passes on a fix that simply threw the constraint away.
+#[test]
+fn the_conjoined_constraint_still_forbids_both_features_together() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut collector = ModCollector::new(&ctx);
+    collector.collect(&fixture("stacked_shape.rs"), "lib");
+    assert!(
+        !constraint_admits(
+            &ctx,
+            &collector.hard_constraints,
+            &[("no_std", true), ("wasm-bindgen", true)]
+        ),
+        "the crate refuses to build with both; got {:?}",
+        collector.hard_constraints
+    );
+}
+
+/// O-1's rule applies to the *fold*: an erased atom in any one of the stacked
+/// attributes drops the whole constraint. Per attribute it dropped the
+/// `target_family` half and left `¬no_std` asserted on its own.
+#[test]
+fn an_erased_atom_in_a_stacked_cfg_drops_the_whole_constraint() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut collector = ModCollector::new(&ctx);
+    collector.collect(&fixture("stacked_erased_shape.rs"), "lib");
+    assert!(
+        collector.hard_constraints.is_empty(),
+        "a negation over an erased atom cannot be modelled soundly, and a \
+         fragment of it is not a weaker version of it, got {:?}",
+        collector.hard_constraints
+    );
+}
+
+/// The other half of the tool, at its own entry point. `compile_error_attrs` is
+/// what `process_crate`, the violation check, the repair and the dependency-side
+/// check all read; `Attributes::visit_item_macro` took the first `#[cfg]` and
+/// dropped the rest, so it stated a different constraint from the one above
+/// about the same declaration.
+#[test]
+fn the_attributes_half_collects_the_same_conjoined_constraint() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let attrs = attrs_for("stacked_shape.rs");
+    let names = parser::compile_error_feature_names(&attrs, &ctx);
+    assert!(
+        names.contains("no_std") && names.contains("wasm-bindgen"),
+        "both stacked attributes name a feature of the constraint, got {names:?}"
+    );
+
+    let info = crate_info(&[("no_std", &[]), ("wasm-bindgen", &[]), ("std", &[])]);
+    let v = violations("stacked_shape.rs", &info, &["no_std"], false);
+    assert!(
+        v.is_empty(),
+        "`no_std` on its own is a configuration this crate supports; reporting \
+         it violated is what stopped the build, got {:?}",
+        v
+    );
+}
+
+/// Control for the above: the configuration the crate really refuses is still
+/// reported. `no_std` and `wasm-bindgen` together is the error it wrote.
+#[test]
+fn the_forbidden_combination_is_still_reported_as_violated() {
+    let info = crate_info(&[("no_std", &[]), ("wasm-bindgen", &[]), ("std", &[])]);
+    let v = violations("stacked_shape.rs", &info, &["no_std", "wasm-bindgen"], false);
+    assert_eq!(
+        v.len(),
+        1,
+        "expected the stacked constraint to be reported, got {:?}",
+        v
+    );
+}
+
+/// A `compile_error!` whose attributes contain no `#[cfg]` states no condition.
+/// Reaching for the first one and unwrapping panicked the whole parse.
+#[test]
+fn a_compile_error_without_a_cfg_contributes_nothing() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut collector = ModCollector::new(&ctx);
+    collector.collect(&fixture("uncfgd_shape.rs"), "lib");
+    assert!(
+        collector.hard_constraints.is_empty(),
+        "nothing to negate, got {:?}",
+        collector.hard_constraints
+    );
+    assert!(
+        parser::compile_error_feature_names(&attrs_for("uncfgd_shape.rs"), &ctx).is_empty(),
+        "an unconditional compile_error! names no features"
+    );
+}
