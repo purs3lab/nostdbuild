@@ -18,9 +18,22 @@
 //!   `ppv-lite86`), `digestible`, `informalsystems-prost`, `ceres-executor`,
 //!   `inkpad-executor`, `scale-serialization` (all renamed deps), `mfio-rt`,
 //!   `iconv-native` (target-gated deps).
+//! * **``feature `custom_no_std_feature_enabled` includes `hex-conservative/alloc`,
+//!   but `hex-conservative` is not a dependency``** — bucket R31-1, the third
+//!   producer and the one the two fixes above walked past: `update_feat_lists` parked
+//!   a dependency feature under the dependency's *package* name while the manifest
+//!   keys it by its rename. All 17 crates in the bucket are that one shape —
+//!   `chf`/`groestlcoin`/`groestlcoin_hashes` → `hex`, `serde-feature-hack` →
+//!   `real_serde`, `ovmi`/`hydra-dx-math` → `codec`, `ddc_bucket` → `scale`,
+//!   `sapio-bitcoin` → `secp256k1`, `kusama-runtime-constants` → `primitives`,
+//!   `noah-*-dalek` → `curve25519-dalek`, `xous-api-susres` → `log-server`, …
+
+use std::fs;
+use std::path::PathBuf;
 
 use nostd::parser::{
-    add_feats_to_custom_feature, features_reference_dep_explicitly, optional_dep_keys,
+    add_feats_to_custom_feature, declared_dep_keys, features_reference_dep_explicitly,
+    optional_dep_keys, update_feat_lists,
 };
 use nostd::solver::new_feats_to_add;
 use nostd::{CrateInfo, consts};
@@ -212,6 +225,9 @@ fn transitive_feature_values_never_reach_the_manifest() {
         name = "matchable"
         version = "0.1.1"
 
+        [dependencies.regex]
+        version = "1"
+
         [features]
         "#,
     );
@@ -237,7 +253,15 @@ fn transitive_feature_values_never_reach_the_manifest() {
 
 #[test]
 fn weak_dep_features_are_still_accepted() {
-    let mut manifest = toml_of("[features]\n");
+    let mut manifest = toml_of(
+        r#"
+        [dependencies.serde]
+        version = "1"
+        optional = true
+
+        [features]
+        "#,
+    );
     add_feats_to_custom_feature(
         &mut manifest,
         consts::CUSTOM_FEATURES_ENABLED,
@@ -246,5 +270,190 @@ fn weak_dep_features_are_still_accepted() {
     assert_eq!(
         feature_values(&manifest, consts::CUSTOM_FEATURES_ENABLED),
         vec!["serde?/alloc".to_string(), "dep:serde".to_string()],
+    );
+}
+
+#[test]
+fn declared_dep_keys_reads_every_table_cargo_resolves_against() {
+    let keys = declared_dep_keys(&toml_of(BLAKE_HASH));
+    assert!(
+        keys.contains("simd"),
+        "the key, not the package — got {keys:?}"
+    );
+    assert!(!keys.contains("ppv-lite86"), "got {keys:?}");
+    assert!(
+        keys.contains("block-buffer"),
+        "a non-optional dep is still a dep — got {keys:?}"
+    );
+
+    let keys = declared_dep_keys(&toml_of(MFIO_RT));
+    assert!(
+        keys.contains("io-uring") && keys.contains("mio"),
+        "got {keys:?}"
+    );
+
+    // Cargo accepts `<dev-dep>/<feat>` and `<build-dep>/<feat>` in a feature value,
+    // so dropping either would be dropping something that builds.
+    let keys = declared_dep_keys(&toml_of(
+        r#"
+        [build-dependencies.cc]
+        version = "1"
+
+        [dev-dependencies.criterion]
+        version = "0.5"
+        "#,
+    ));
+    assert!(
+        keys.contains("cc") && keys.contains("criterion"),
+        "got {keys:?}"
+    );
+}
+
+#[test]
+fn a_dep_the_manifest_does_not_declare_never_reaches_it() {
+    // chf 0.3.1's shape: the manifest keys `hex-conservative` as `hex`, so `hex` is
+    // the only name any feature value may use for it. The package name is
+    // well-formed and still fatal — cargo refuses to parse the manifest.
+    let mut manifest = toml_of(
+        r#"
+        [package]
+        name = "chf"
+        version = "0.3.1"
+
+        [dependencies.hex]
+        version = "0.2.0"
+        package = "hex-conservative"
+
+        [features]
+        "#,
+    );
+
+    add_feats_to_custom_feature(
+        &mut manifest,
+        consts::CUSTOM_FEATURES_ENABLED,
+        &[
+            "hex/alloc".to_string(),
+            "hex-conservative/alloc".to_string(),
+            "dep:hex-conservative".to_string(),
+        ],
+    );
+
+    assert_eq!(
+        feature_values(&manifest, consts::CUSTOM_FEATURES_ENABLED),
+        vec!["hex/alloc".to_string()],
+    );
+}
+
+/// A crate directory under `consts::DOWNLOAD_PATH`, which is where
+/// `parser::determine_manifest_file` looks for the main crate's manifest.
+struct Fixture {
+    name_with_version: String,
+    dir: PathBuf,
+}
+
+impl Fixture {
+    fn new(slug: &str, manifest: &str) -> Self {
+        let dir = PathBuf::from(consts::DOWNLOAD_PATH).join(format!("{slug}-0.0.0"));
+        fs::create_dir_all(&dir).expect("failed to create fixture crate dir");
+        fs::write(dir.join("Cargo.toml"), manifest).expect("failed to write fixture manifest");
+        Self {
+            name_with_version: format!("{slug}-0.0.0"),
+            dir,
+        }
+    }
+
+    fn manifest(&self) -> toml::Value {
+        toml_of(&fs::read_to_string(self.dir.join("Cargo.toml")).expect("fixture manifest reread"))
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+fn renamed_dep_is_parked_under_its_manifest_key() {
+    let fixture = Fixture::new(
+        "manifest-emission-renamed-dep",
+        r#"[package]
+name = "chf"
+version = "0.0.0"
+
+[dependencies.hex]
+version = "0.2.0"
+package = "hex-conservative"
+features = ["std"]
+
+[features]
+alloc = ["hex/alloc"]
+"#,
+    );
+
+    // What `final_feature_list_dep` passes: the *package* name, because that is all
+    // `CrateInfo` records. The manifest key comes from `crate_name_rename`.
+    update_feat_lists(
+        &fixture.name_with_version,
+        &"hex-conservative".to_string(),
+        &["std".to_string()],
+        &["alloc".to_string()],
+        &[("hex".to_string(), "hex-conservative".to_string())],
+    );
+
+    let manifest = fixture.manifest();
+    assert_eq!(
+        feature_values(&manifest, consts::CUSTOM_FEATURES_ENABLED),
+        vec!["hex/alloc".to_string()],
+        "parked under the package name, cargo refuses the whole manifest"
+    );
+    assert_eq!(
+        feature_values(&manifest, consts::CUSTOM_FEATURES_DISABLED),
+        vec!["hex/std".to_string()],
+    );
+    assert_eq!(
+        manifest
+            .get("dependencies")
+            .and_then(|d| d.get("hex"))
+            .and_then(|d| d.get("features"))
+            .and_then(|f| f.as_array())
+            .map(Vec::len),
+        Some(0),
+        "`std` had to come off the edge for the parking to mean anything"
+    );
+}
+
+#[test]
+fn unrenamed_dep_keeps_its_own_name() {
+    let fixture = Fixture::new(
+        "manifest-emission-plain-dep",
+        r#"[package]
+name = "plain"
+version = "0.0.0"
+
+[dependencies.serde]
+version = "1"
+features = ["std"]
+
+[features]
+"#,
+    );
+
+    update_feat_lists(
+        &fixture.name_with_version,
+        &"serde".to_string(),
+        &["std".to_string()],
+        &["alloc".to_string()],
+        &[("serde".to_string(), "serde".to_string())],
+    );
+
+    let manifest = fixture.manifest();
+    assert_eq!(
+        feature_values(&manifest, consts::CUSTOM_FEATURES_ENABLED),
+        vec!["serde/alloc".to_string()],
+    );
+    assert_eq!(
+        feature_values(&manifest, consts::CUSTOM_FEATURES_DISABLED),
+        vec!["serde/std".to_string()],
     );
 }

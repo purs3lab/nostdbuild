@@ -3488,14 +3488,24 @@ pub fn update_feat_lists(
         }
     });
 
+    // Prefix with the *manifest key*, never the package name. Cargo resolves a
+    // `<dep>/<feat>` value against the keys of the dependency tables, so a renamed
+    // dependency — `hex = { package = "hex-conservative" }` — can only ever be named
+    // `hex/alloc`; `hex-conservative/alloc` is *"feature `custom_no_std_feature_enabled`
+    // includes `hex-conservative/alloc`, but `hex-conservative` is not a dependency"*,
+    // and cargo refuses the whole manifest, so nothing about the analysis behind it is
+    // ever tested (bucket R31-1, 17 crates — every one of them a renamed dep:
+    // `chf`/`groestlcoin*` → `hex`, `serde-feature-hack` → `real_serde`, `ovmi`/
+    // `hydra-dx-math` → `codec`, `sapio-bitcoin` → `secp256k1`, …). `dep_name` is
+    // already the key the table lookup above used; the two lists just did not use it.
     let formatted_feats_to_move: Vec<String> = feats_to_move
         .iter()
-        .map(|f| format!("{}/{}", dep_original_name, f))
+        .map(|f| format!("{}/{}", dep_name, f))
         .collect();
 
     let formatted_feats_to_add: Vec<String> = feats_to_add
         .iter()
-        .map(|f| format!("{}/{}", dep_original_name, f))
+        .map(|f| format!("{}/{}", dep_name, f))
         .collect();
 
     add_feats_to_custom_feature(
@@ -3679,18 +3689,72 @@ fn is_own_feature_name(value: &str) -> bool {
     !value.contains('/') && !value.starts_with("dep:")
 }
 
-/// Whether cargo will accept `value` as an entry of a `[features]` array.
+/// Every dependency key the manifest declares, in every table cargo resolves a feature
+/// value against: `[dependencies]`, `[build-dependencies]`, `[dev-dependencies]` and
+/// the `[target.<cfg>]` form of each. Dev-dependencies are in the set because cargo
+/// accepts `<dev-dep>/<feat>` in a feature value — verified against cargo directly,
+/// not assumed.
 ///
-/// Cargo's grammar for a feature value is `feat`, `dep/feat`, `dep?/feat` or
-/// `dep:name` — at most one slash, and no `dep:` on the right of one. A value that
-/// breaks this is not a wrong-but-buildable choice: cargo rejects the manifest before
-/// resolving anything, so the emitted configuration is never even tried.
-fn is_valid_feature_value(value: &str) -> bool {
-    match value.split_once('/') {
-        None => true,
-        Some((dep, feat)) => {
-            !feat.contains('/') && !feat.is_empty() && !feat.starts_with("dep:") && !dep.is_empty()
+/// Keyed the way the manifest keys them, which is the only name a feature value may
+/// use: for `hex = { package = "hex-conservative" }` this yields `hex`.
+pub fn declared_dep_keys(manifest_toml: &toml::Value) -> HashSet<String> {
+    fn collect(table: Option<&toml::Value>, out: &mut HashSet<String>) {
+        let Some(table) = table.and_then(|t| t.as_table()) else {
+            return;
+        };
+        out.extend(table.keys().cloned());
+    }
+
+    const TABLES: [&str; 3] = ["dependencies", "build-dependencies", "dev-dependencies"];
+
+    let mut keys = HashSet::new();
+    for table in TABLES {
+        collect(manifest_toml.get(table), &mut keys);
+    }
+
+    if let Some(targets) = manifest_toml.get("target").and_then(toml::Value::as_table) {
+        for target_table in targets.values() {
+            for table in TABLES {
+                collect(target_table.get(table), &mut keys);
+            }
         }
+    }
+
+    keys
+}
+
+/// The dependency `value` names, if it names one: `dep/feat`, `dep?/feat` and
+/// `dep:name` all do, a bare feature name does not.
+fn feature_value_dep(value: &str) -> Option<&str> {
+    match value.split_once('/') {
+        Some((dep, _)) => Some(dep.strip_suffix('?').unwrap_or(dep)),
+        None => value.strip_prefix("dep:"),
+    }
+}
+
+/// Whether cargo will accept `value` as an entry of a `[features]` array of the
+/// manifest `declared_deps` was taken from.
+///
+/// Two independent ways to be refused, and neither is a wrong-but-buildable choice —
+/// cargo rejects the manifest before resolving anything, so the emitted configuration
+/// is never even tried:
+///
+/// * **Grammar.** A feature value is `feat`, `dep/feat`, `dep?/feat` or `dep:name` —
+///   at most one slash, and no `dep:` on the right of one.
+/// * **Reference.** The dependency a value names has to be one the manifest declares,
+///   under the key the manifest declares it by. This is the half the T3 fix left out,
+///   and it is what `custom_no_std_feature_enabled` was failing on: `hex-conservative`
+///   is a perfectly well-formed name for a dependency this manifest calls `hex`.
+fn is_valid_feature_value(value: &str, declared_deps: &HashSet<String>) -> bool {
+    if let Some((dep, feat)) = value.split_once('/')
+        && (feat.contains('/') || feat.is_empty() || feat.starts_with("dep:") || dep.is_empty())
+    {
+        return false;
+    }
+
+    match feature_value_dep(value) {
+        Some(dep) => declared_deps.contains(dep),
+        None => true,
     }
 }
 
@@ -3716,10 +3780,11 @@ pub fn add_feats_to_custom_feature(
     custom_feat: &str,
     feats_to_add: &[String],
 ) {
+    let declared_deps = declared_dep_keys(main_toml);
     let feats_to_add: Vec<String> = feats_to_add
         .iter()
         .filter(|f| {
-            if is_valid_feature_value(f) {
+            if is_valid_feature_value(f, &declared_deps) {
                 return true;
             }
             log::warn!(
