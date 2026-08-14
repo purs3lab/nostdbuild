@@ -1,0 +1,18 @@
+[package]
+name = "macros"
+description = "The bp-runtime stand-in of the host_only_macro_std fixture: exports a macro that writes std into its caller, and fails on bare metal itself"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+name = "macros"
+
+# bp-runtime's own table: `default = ["std"]`. A dependent that does not say
+# `default-features = false` gets the std build, and on a bare-metal target that
+# build fails before the dependent is ever compiled.
+[features]
+default = ["std"]
+std = []
+
+[workspace]

@@ -1,0 +1,25 @@
+[package]
+name = "host_only_macro_std"
+description = "A crate whose reported std was written by a dependency's macro, on a run that never left the host — bp-wococo's shape, with its own std alongside as the control"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "host_only_macro_std"
+
+# bp-wococo's `bp-runtime` edge. Nothing in this crate's `[features]` reaches the
+# macro crate, so it is built with its own `default = ["std"]` whatever is asked
+# of *this* crate, and every bare-metal target dies inside it before this crate
+# is compiled — which is what makes every covering run host-only.
+[dependencies.macros]
+path = "macros"
+
+[features]
+default = ["std"]
+std = []
+
+# `exclude` keeps the macro crate out of the workspace so `find_entrypoints` does
+# not analyse its lib as a second entrypoint.
+[workspace]
+exclude = ["macros"]

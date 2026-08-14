@@ -1618,8 +1618,25 @@ pub fn compile_failure_names_crate(stderr: &str, crate_name: &str) -> bool {
 /// that never left the host that distinction is the whole question: the shim
 /// under `io` was built with its own default `std` feature, so it answers `std`
 /// no matter what this crate asks for.
-pub fn crate_named_std_in_path(path_text: &str) -> bool {
-    path_text.split("::").any(|seg| seg.trim() == "std")
+///
+/// A path a *dependency's macro* wrote is not the crate's either, however
+/// std-looking the text reads — **O-16**. bp-wococo 0.3.0's whole source at the
+/// reported span is `decl_bridge_finality_runtime_apis!(wococo, grandpa);`, and
+/// the record there is `std::result::Result` with
+/// `expansion_crate: Some("bp_runtime")`: the compiler saying another crate put
+/// this here, which is the same thing the host-only rule already says about a
+/// shim's re-export. `expansion_crate` is `None` for the crate's own source *and*
+/// for its own macros (`expansion_def_crate` reports nothing for `LOCAL_CRATE`),
+/// so it is exactly the "this crate wrote it" test.
+///
+/// No carve-out for the sysroot's own macros, deliberately: a `println!` records
+/// `$crate::io::_print`, which has no `std` segment and so never reaches the
+/// expansion check. Measured over every probe candidate in the corpus logs — 83
+/// records with `expansion_crate: Some("std")` and 40 with `Some("core")`, and
+/// **not one** of them names `std` in its path text.
+pub fn crate_named_std_in_path(record: &PathRecord) -> bool {
+    record.expansion_crate.is_none()
+        && record.path_text.split("::").any(|seg| seg.trim() == "std")
 }
 
 /// The package name in a ``could not compile `X` `` line, if the line is one.
@@ -3621,9 +3638,11 @@ pub fn analyze_crate<'a>(
     // (`initial_ungated_results` short-circuits it to `StillStd` without
     // compiling), so it would still be reported on the strength of those runs
     // alone. Where the crate did not spell `std` itself, the std in the record
-    // came through a dependency's re-export, and that is the dependency's
-    // configuration talking: bitstream-io's residue is 30 × `writer.write_all(…)`
-    // against `W: io::Write`, where `io` is `core2::io`. Unproven, not hard.
+    // came through a dependency's re-export or a dependency's macro, and that is
+    // the dependency's configuration talking: bitstream-io's residue is 30 ×
+    // `writer.write_all(…)` against `W: io::Write`, where `io` is `core2::io`,
+    // and bp-wococo's is one `decl_bridge_finality_runtime_apis!(…)` that
+    // bp_runtime expands to `std::result::Result`. Unproven, not hard.
     //
     // Conditioned on *every* run being inconclusive, not on any of them being so.
     // A crate with even one bare-metal run has a real witness, and discounting
@@ -3634,11 +3653,17 @@ pub fn analyze_crate<'a>(
         let mut downgraded = 0usize;
         for result in hard_imports.iter_mut().chain(hard_usages.iter_mut()) {
             if matches!(result.decision, ProbeDecision::StillStd { .. })
-                && !crate_named_std_in_path(&result.target.analysis.exemplar.path_text)
+                && !crate_named_std_in_path(&result.target.analysis.exemplar)
             {
                 debug!(
-                    "'{}' at {:?} is std only in runs that never left the host; unproven, not hard",
-                    result.target.analysis.exemplar.path_text, result.target.analysis.span
+                    "'{}' at {:?}{} is std only in runs that never left the host; \
+                     unproven, not hard",
+                    result.target.analysis.exemplar.path_text,
+                    result.target.analysis.span,
+                    match result.target.analysis.exemplar.expansion_crate.as_deref() {
+                        Some(krate) => format!(" (written by `{krate}`'s macro)"),
+                        None => String::new(),
+                    }
                 );
                 result.decision = ProbeDecision::CompileFailed;
                 downgraded += 1;

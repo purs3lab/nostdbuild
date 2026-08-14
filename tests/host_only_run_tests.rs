@@ -32,6 +32,7 @@ use cargo_test_support::{Project, cargo_test, project};
 
 use nostd::Telemetry;
 use nostd::driver::{analyze_crate, compile_failure_names_crate};
+use nostd::types::ReadableSpan;
 
 /// Copy a whole fixture directory into a cargo test project — one of the
 /// fixtures ships a path dependency, so Cargo.toml + lib.rs is not enough.
@@ -119,6 +120,55 @@ fn a_crates_own_std_is_still_reported_when_only_the_host_compiles() {
          reported when only the host compiles"
     );
 }
+
+/// O-16: bp-wococo's shape, and the narrowing of the guard that holds the O-7
+/// weakening off. `crate_named_std_in_path` used to read the record's text
+/// alone, so `std::result::Result` counted as this crate naming std even when
+/// bp_runtime's macro is what wrote it. The control is in the same fixture,
+/// under the same host-only run: what the crate spelled itself must survive.
+#[cargo_test]
+fn std_a_dependencys_macro_wrote_is_not_this_crate_naming_std() {
+    let (_p, manifest) = load_fixture("host_only_macro_std");
+
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut telemetry = Telemetry::default();
+    let (hard_spans, _cond, _cov, _ce, _root, _records, unproven) =
+        analyze_crate(&ctx, &manifest, "host_only_macro_std", &mut telemetry);
+
+    assert!(
+        telemetry.std_inconclusive_runs > 0,
+        "expected every covering run to be host-only with the bare-metal attempts \
+         dying inside `macros`; none was flagged, so the rule under test never fires"
+    );
+
+    let macro_span = |s: &ReadableSpan| s.start_line == MACRO_CALL_LINE;
+    let own_span = |s: &ReadableSpan| s.start_line >= OWN_STD_LINE;
+
+    assert!(
+        !hard_spans.iter().any(macro_span),
+        "the crate's whole source at line {MACRO_CALL_LINE} is `macros::declare_api!(api);` \
+         — the `std::result::Result` in the record is text `macros` wrote, on a run that \
+         never left the host, so it is not evidence this crate cannot be no_std; \
+         got {hard_spans:?}"
+    );
+    assert!(
+        unproven.iter().any(macro_span),
+        "and it must not vanish either: unproven, not clean, got {unproven:?}"
+    );
+    assert!(
+        hard_spans.iter().any(own_span),
+        "the control must not move — `std::string::String` at line {OWN_STD_LINE} is this \
+         crate's own ungated text, and no covering run leaving the host says nothing about \
+         it (xous-ipc, xous-api-names); got {hard_spans:?}"
+    );
+}
+
+/// Lines in `tests/fixtures/host_only_macro_std/lib.rs`. The dependency's std is
+/// one invocation on one line; the crate's own is `label`, whose signature and
+/// body are the last thing in the file — so "at or after" separates the two
+/// without pinning which of the two lines the record keys on.
+const MACRO_CALL_LINE: usize = 20;
+const OWN_STD_LINE: usize = 25;
 
 /// The discriminator itself. Cargo names the package it gave up on, and stops
 /// there — so a line naming the crate proves it was reached and anything else
