@@ -3995,6 +3995,11 @@ fn is_implicit_optional_dep_feature(
 /// * `telemetry` - A mutable reference to the `Telemetry` struct for logging purposes.
 /// * `second_round` - A boolean indicating if this is the second set of calls made to
 ///   this function.
+/// * `deps_to_keep` - `driver::deps_pinned_by_active_use`: the optional dependencies
+///   the crate still *names* under a cfg that severing the enabler would leave true.
+///   Severing one of those is what R31-2 is — see below.
+/// * `features_forced_off` - Out: features this pass turned off in the manifest and
+///   that the caller must therefore drop from the command line too.
 /// # Returns
 /// A boolean indicating whether the dependency should be skipped.
 pub fn should_skip_dep(
@@ -4004,6 +4009,8 @@ pub fn should_skip_dep(
     enable_features: &[String],
     disable_default: bool,
     second_round: bool,
+    deps_to_keep: &HashSet<String>,
+    features_forced_off: &mut Vec<String>,
 ) -> bool {
     if is_proc_macro(name, Some(&exchange.name_with_version)) {
         debug!("Dependency {} is a proc-macro, skipping", name);
@@ -4088,8 +4095,48 @@ pub fn should_skip_dep(
                 "{}:{}",
                 exchange.crate_info.name, exchange.crate_info.version
             );
-            let severed = remove_feats_enabling_dep(main_name, &features_for_dependency, &dep_name);
-            if !severed.is_empty() {
+            // Severing takes the dependency out of the feature that enables it and
+            // leaves that feature *on*. Sound only while nothing the feature gates
+            // still names the dependency — and for a dependency in the pin set,
+            // something does: `bromberg_sl2-0.6.0` emitted `default = ["std"]`,
+            // `std = []` over `#[cfg(feature = "std")] use rayon::prelude::*`, i.e.
+            // `E0433 rayon` on all 26 targets (R31-2, 7 crates).
+            //
+            // The dependency cannot stay either — it is not no_std — so the feature
+            // that enables it is the thing that has to go off. Removing *it* from
+            // whatever enables it is the same edit one level up, and it takes the
+            // code that names the dependency out of the build along with the
+            // dependency itself. Nothing is deleted: the entry is parked in
+            // `custom_default_features` like every other, so a std build restores it.
+            let target = if deps_to_keep.contains(&dep_name) {
+                let leaf = features_for_dependency
+                    .iter()
+                    .find_map(|feat| {
+                        find_direct_dep_enabler(
+                            feat,
+                            &dep_name,
+                            &exchange.crate_info,
+                            &mut HashSet::new(),
+                        )
+                    })
+                    .unwrap_or_else(|| dep_name.clone());
+                debug!(
+                    "Dependency {} is still named under a cfg that severing would leave true; \
+                     turning off the feature that enables it ('{}') instead",
+                    dep_name, leaf
+                );
+                // The caller's `--features` list can name it directly (kitoken's
+                // `multiversion`), in which case there is no manifest entry to cut
+                // and dropping it from the command line is the whole edit.
+                features_forced_off.push(leaf.clone());
+                leaf
+            } else {
+                dep_name.clone()
+            };
+            let severed = remove_feats_enabling_dep(main_name, &features_for_dependency, &target);
+            // A feature named directly on the command line has no manifest entry to
+            // cut, so `severed` is empty and the edit is real all the same.
+            if !severed.is_empty() || target != dep_name {
                 // The manifest no longer links these features to this dep. Re-read it
                 // and drop the matching pairs so a later round sees that, rather than
                 // trying to sever a link that is already gone. Features that still

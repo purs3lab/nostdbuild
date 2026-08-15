@@ -81,6 +81,26 @@ fn assemble_final_args(
     (final_args, combined_features, final_features_len)
 }
 
+/// Drop the features `should_skip_dep` turned off from the lists that become the
+/// command line. Drains, so a second call after the retry loop only handles what
+/// that loop added.
+fn apply_forced_off(
+    forced_off: &mut Vec<String>,
+    main_features: &mut Vec<String>,
+    enable: &mut Vec<String>,
+) {
+    if forced_off.is_empty() {
+        return;
+    }
+    println!(
+        "Features turned off because they enable a dependency the crate still names: {:?}",
+        forced_off
+    );
+    main_features.retain(|f| !forced_off.contains(f));
+    enable.retain(|f| !forced_off.contains(f));
+    forced_off.clear();
+}
+
 fn process_dep_crate_wrapper(
     exchange: &mut nostd::DataExchange,
     dep: &mut Attributes,
@@ -719,6 +739,10 @@ fn main() -> anyhow::Result<()> {
     // To look at: watchface-0.4.0: optional dependency getting enabled/use lock file to get the dep version here, world_magnetic_model-0.2.0: dep feature not correct, uom-0.36.0: last crate uses this but this shows std usage when there is not one requires changes to ast visitor here (chrono-0.4.19 same issue here).
     let mut deps_args = Vec::new();
     let mut enabled_optional_deps: HashSet<String> = HashSet::new();
+    // Features `should_skip_dep` turned off because the dependency they enable is
+    // not no_std *and* the crate still names it under a cfg the sever would leave
+    // true (R31-2). The manifest edit is made there; the command line is here.
+    let mut features_forced_off: Vec<String> = Vec::new();
     for mut dep in deps_attrs {
         if consts::KNOWN_SYN_FAILURES.contains(&dep.crate_name.as_str()) {
             debug!(
@@ -735,6 +759,8 @@ fn main() -> anyhow::Result<()> {
             &main_features,
             disable_default,
             false,
+            &deps_to_keep,
+            &mut features_forced_off,
         ) {
             debug!("Dependency {} is optional, skipping", dep.crate_name);
             skipped.push(dep);
@@ -760,6 +786,12 @@ fn main() -> anyhow::Result<()> {
         )?;
     }
 
+    // A feature the pass above turned off in the manifest must leave the command
+    // line too, or cargo enables it anyway and the code it gates comes back —
+    // naming the dependency the same pass just unlinked (kitoken's `multiversion`
+    // is the shape: it rode in on `--features`, not through `default`).
+    apply_forced_off(&mut features_forced_off, &mut main_features, &mut enable);
+
     let mut temp_combined = deps_args.clone();
     temp_combined.sort();
     temp_combined.dedup();
@@ -774,6 +806,8 @@ fn main() -> anyhow::Result<()> {
             &temp_combined,
             disable_default,
             true,
+            &deps_to_keep,
+            &mut features_forced_off,
         ) {
             debug!(
                 "Dependency {} which was skipped previously is now required",
@@ -799,6 +833,8 @@ fn main() -> anyhow::Result<()> {
             )?;
         }
     }
+
+    apply_forced_off(&mut features_forced_off, &mut main_features, &mut enable);
 
     println!(
         "Dependecies that got enabled after processing skipped deps: {:?}",
