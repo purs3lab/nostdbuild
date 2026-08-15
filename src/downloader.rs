@@ -103,7 +103,11 @@ pub fn clone_from_crates(
 
     let crate_path = dir.join(format!("{}-{}", newname, ver));
     if crate_path.exists() {
-        if extraction_is_complete(&crate_path) {
+        // Complete *and* startable from the crate author's own manifest. A
+        // directory that is neither is deleted and fetched again below.
+        if extraction_is_complete(&crate_path)
+            && ensure_pristine_manifest(&crate_path) != PristineOutcome::Unrecoverable
+        {
             debug!("Crate with name {} already downloaded", newname);
             return Ok(format!("{}:{}", newname, ver));
         }
@@ -1100,7 +1104,137 @@ pub fn extract_crate_checked(
             e
         );
     }
+    // The manifest is the published one right now and will never be this again:
+    // take the copy every later run restores from (`ensure_pristine_manifest`).
+    if let Err(e) = fs::copy(
+        crate_path.join("Cargo.toml"),
+        crate_path.join(PRISTINE_MANIFEST),
+    ) {
+        debug!(
+            "Could not snapshot the pristine manifest of {}: {}",
+            crate_path.display(),
+            e
+        );
+    }
     Ok(())
+}
+
+/// Name of the untouched copy of `Cargo.toml` kept beside the one the tool edits.
+///
+/// The tool rewrites the manifest in place and `AllStats::dump` puts it back from
+/// `Cargo.toml.bak` — but that backup is taken by `gather_crate_info` from
+/// *whatever is on disk when the run starts*. A run that dies before `dump` (the
+/// eval's timeout, an OOM kill, a panic) therefore leaves its own output as the
+/// next run's starting manifest, and the next run backs that up as "the original".
+/// The damage compounds silently: `ab1024-ega-0.3.0` began a run with
+/// `graphics = []` and `custom_default_features = ["dep:embedded-graphics-core"]`
+/// already in place, so the pin set correctly refused to unlink the dependency and
+/// the build failed anyway on an edit no pass in that run had made. 348 crate
+/// directories were in this state; restoring this one file took `ab1024-ega` from
+/// 0/26 targets to 26/26 with no other change.
+pub const PRISTINE_MANIFEST: &str = "Cargo.toml.pristine";
+
+/// The `[features]` keys this tool synthesises. A manifest carrying one is this
+/// tool's *output*: whatever else it is, it is not what the crate published.
+const SYNTHETIC_FEATURE_KEYS: [&str; 3] = [
+    crate::consts::CUSTOM_FEATURES_DISABLED,
+    crate::consts::CUSTOM_FEATURES_ENABLED,
+    crate::consts::DEP_UNNECESSARY_FEATURES,
+];
+
+/// What `ensure_pristine_manifest` had to do to make the directory startable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PristineOutcome {
+    /// A pristine copy was already there and matched the manifest on disk.
+    AlreadyPristine,
+    /// No pristine copy existed; the manifest on disk was clean, so it became one.
+    Snapshotted,
+    /// A previous run's output was on disk; the pristine copy replaced it.
+    Restored,
+    /// A previous run's output was on disk and there is no pristine copy to undo
+    /// it with. The directory cannot be trusted and the caller must re-extract.
+    Unrecoverable,
+}
+
+/// Whether the manifest at `path` is the tool's own output rather than the
+/// crate's. Unreadable or unparseable ⇒ `false`: this decides whether to *discard*
+/// a directory, and a manifest we cannot read is not evidence for doing that.
+fn manifest_is_tool_output(path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(toml) = text.parse::<Value>() else {
+        return false;
+    };
+    toml.get("features")
+        .and_then(Value::as_table)
+        .is_some_and(|feats| {
+            SYNTHETIC_FEATURE_KEYS
+                .iter()
+                .any(|k| feats.contains_key(*k))
+        })
+}
+
+/// Put `crate_path`'s `Cargo.toml` back to the one the crate published, and make
+/// sure a copy of it survives this run.
+///
+/// Called where a directory that already exists is about to be reused, which is
+/// the one point that sees every crate — main and dependency alike — before
+/// anything edits it. Runs at most once per directory per process: the manifest
+/// is rewritten as the run proceeds, and a second restore would undo those edits.
+pub fn ensure_pristine_manifest(crate_path: &Path) -> PristineOutcome {
+    static ENSURED: LazyLock<std::sync::Mutex<HashSet<PathBuf>>> =
+        LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
+    if let Ok(mut seen) = ENSURED.lock()
+        && !seen.insert(crate_path.to_path_buf())
+    {
+        return PristineOutcome::AlreadyPristine;
+    }
+
+    let manifest = crate_path.join("Cargo.toml");
+    let pristine = crate_path.join(PRISTINE_MANIFEST);
+
+    if pristine.exists() {
+        // Byte-compare rather than trusting the last run to have cleaned up:
+        // `dump`'s restore may or may not have happened.
+        let same = match (fs::read(&pristine), fs::read(&manifest)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        if same {
+            return PristineOutcome::AlreadyPristine;
+        }
+        match fs::copy(&pristine, &manifest) {
+            Ok(_) => {
+                debug!(
+                    "Restored {} from {} — a previous run left its edits behind",
+                    manifest.display(),
+                    PRISTINE_MANIFEST
+                );
+                PristineOutcome::Restored
+            }
+            // Nothing was changed, so the manifest is exactly as unusable as it
+            // was; say so and let the caller re-extract.
+            Err(e) => {
+                debug!("Could not restore {}: {}", manifest.display(), e);
+                PristineOutcome::Unrecoverable
+            }
+        }
+    } else if manifest_is_tool_output(&manifest) {
+        debug!(
+            "{} carries this tool's synthetic features and there is no {} to undo it with",
+            manifest.display(),
+            PRISTINE_MANIFEST
+        );
+        PristineOutcome::Unrecoverable
+    } else {
+        // Best-effort: without the copy this directory is no worse off than every
+        // directory downloaded before this existed.
+        if let Err(e) = fs::copy(&manifest, &pristine) {
+            debug!("Could not snapshot {}: {}", manifest.display(), e);
+        }
+        PristineOutcome::Snapshotted
+    }
 }
 
 /// Is this already-present directory usable as-is?

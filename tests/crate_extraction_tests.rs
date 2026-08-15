@@ -14,10 +14,14 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use nostd::downloader::{EXTRACT_MARKER, extract_crate_checked, extraction_is_complete};
+use nostd::downloader::{
+    EXTRACT_MARKER, PRISTINE_MANIFEST, PristineOutcome, ensure_pristine_manifest,
+    extract_crate_checked, extraction_is_complete,
+};
 
-/// Build a `<name>-<version>/` crate tarball containing `src/lib.rs`, returning
-/// its path. `padding` inflates the archive so a truncation lands mid-stream.
+/// Build a `<name>-<version>/` crate tarball containing `src/lib.rs` and a
+/// `Cargo.toml`, returning its path. `padding` inflates the archive so a
+/// truncation lands mid-stream.
 fn write_tarball(dir: &Path, name: &str, padding: usize) -> PathBuf {
     let path = dir.join(format!("{name}.crate"));
     let file = fs::File::create(&path).unwrap();
@@ -29,16 +33,44 @@ fn write_tarball(dir: &Path, name: &str, padding: usize) -> PathBuf {
         header.set_size(body.len() as u64);
         header.set_mode(0o644);
         header.set_cksum();
-        tar.append_data(
-            &mut header,
-            format!("{name}/src/lib.rs"),
-            body.as_bytes(),
-        )
-        .unwrap();
+        tar.append_data(&mut header, format!("{name}/src/lib.rs"), body.as_bytes())
+            .unwrap();
+        let manifest = PUBLISHED_MANIFEST.as_bytes();
+        let mut header = tar::Header::new_gnu();
+        header.set_size(manifest.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, format!("{name}/Cargo.toml"), manifest)
+            .unwrap();
         tar.into_inner().unwrap().finish().unwrap();
     }
     path
 }
+
+/// The manifest as the crate author published it: `graphics` still carries the
+/// entry that links the optional dependency (`ab1024-ega-0.3.0`, shortened).
+const PUBLISHED_MANIFEST: &str = "\
+[package]
+name = \"demo\"
+version = \"1.0.0\"
+
+[features]
+default = [\"graphics\"]
+graphics = [\"dep:embedded-graphics-core\"]
+";
+
+/// The same manifest after a run: the entry has been moved into the tool's own
+/// synthetic feature, so `graphics` is enabled and links nothing.
+const TOOL_OUTPUT_MANIFEST: &str = "\
+[package]
+name = \"demo\"
+version = \"1.0.0\"
+
+[features]
+custom_default_features = [\"dep:embedded-graphics-core\"]
+default = [\"graphics\"]
+graphics = []
+";
 
 fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("nostd_extract_{tag}_{}", std::process::id()));
@@ -103,6 +135,118 @@ fn an_unmarked_directory_with_sources_is_still_accepted() {
     fs::write(crate_path.join("lib.rs"), b"pub fn f() {}\n").unwrap();
 
     assert!(extraction_is_complete(&root.join("legacy-1.0.0")));
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// Second half of this file: the *manifest* half of "is this directory usable".
+///
+/// A run that dies before `AllStats::dump` leaves the rewritten `Cargo.toml` on
+/// disk, and the next run's `gather_crate_info` backs *that* up as the original —
+/// so the tool's own output becomes the starting manifest and compounds. 348 crate
+/// directories were in that state; `ab1024-ega-0.3.0` went from 0/26 targets to
+/// 26/26 on the restore alone, because the entry linking its optional dependency
+/// had been moved out of `graphics` by a run that never got to put it back.
+#[test]
+fn extraction_snapshots_the_published_manifest() {
+    let root = scratch("pristine_snapshot");
+    let tarball = write_tarball(&root, "demo-1.0.0", 16);
+    let dest = root.join("out");
+    fs::create_dir_all(&dest).unwrap();
+    let crate_path = dest.join("demo-1.0.0");
+
+    extract_crate_checked(tarball.to_str().unwrap(), &dest, &crate_path).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(crate_path.join(PRISTINE_MANIFEST)).unwrap(),
+        PUBLISHED_MANIFEST,
+        "the copy every later run restores from is taken while the manifest is \
+         still the published one"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_leftover_manifest_is_restored_from_the_pristine_copy() {
+    let root = scratch("pristine_restore");
+    let crate_path = root.join("demo-1.0.0");
+    fs::create_dir_all(&crate_path).unwrap();
+    fs::write(crate_path.join(PRISTINE_MANIFEST), PUBLISHED_MANIFEST).unwrap();
+    // What a run killed before `dump` leaves behind.
+    fs::write(crate_path.join("Cargo.toml"), TOOL_OUTPUT_MANIFEST).unwrap();
+
+    assert_eq!(
+        ensure_pristine_manifest(&crate_path),
+        PristineOutcome::Restored
+    );
+    assert_eq!(
+        fs::read_to_string(crate_path.join("Cargo.toml")).unwrap(),
+        PUBLISHED_MANIFEST,
+        "the run must start from the crate's own manifest, not the last run's output"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_clean_manifest_without_a_copy_becomes_the_copy() {
+    // Every directory downloaded before the snapshot existed is in this state.
+    let root = scratch("pristine_adopt");
+    let crate_path = root.join("demo-1.0.0");
+    fs::create_dir_all(&crate_path).unwrap();
+    fs::write(crate_path.join("Cargo.toml"), PUBLISHED_MANIFEST).unwrap();
+
+    assert_eq!(
+        ensure_pristine_manifest(&crate_path),
+        PristineOutcome::Snapshotted
+    );
+    assert_eq!(
+        fs::read_to_string(crate_path.join(PRISTINE_MANIFEST)).unwrap(),
+        PUBLISHED_MANIFEST
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_leftover_manifest_with_no_copy_condemns_the_directory() {
+    // The 348 already on disk: nothing local says what the crate published, so
+    // the directory is discarded and fetched again rather than analysed.
+    let root = scratch("pristine_condemn");
+    let crate_path = root.join("demo-1.0.0");
+    fs::create_dir_all(&crate_path).unwrap();
+    fs::write(crate_path.join("Cargo.toml"), TOOL_OUTPUT_MANIFEST).unwrap();
+
+    assert_eq!(
+        ensure_pristine_manifest(&crate_path),
+        PristineOutcome::Unrecoverable
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_second_call_leaves_the_running_edits_alone() {
+    // The manifest is rewritten as the run proceeds. Restoring twice would undo
+    // the pass that made those edits.
+    let root = scratch("pristine_once");
+    let crate_path = root.join("demo-1.0.0");
+    fs::create_dir_all(&crate_path).unwrap();
+    fs::write(crate_path.join(PRISTINE_MANIFEST), PUBLISHED_MANIFEST).unwrap();
+    fs::write(crate_path.join("Cargo.toml"), PUBLISHED_MANIFEST).unwrap();
+
+    assert_eq!(
+        ensure_pristine_manifest(&crate_path),
+        PristineOutcome::AlreadyPristine
+    );
+    fs::write(crate_path.join("Cargo.toml"), TOOL_OUTPUT_MANIFEST).unwrap();
+
+    assert_eq!(
+        ensure_pristine_manifest(&crate_path),
+        PristineOutcome::AlreadyPristine,
+        "the second call must not touch the manifest"
+    );
+    assert_eq!(
+        fs::read_to_string(crate_path.join("Cargo.toml")).unwrap(),
+        TOOL_OUTPUT_MANIFEST,
+        "this run's own edits survive"
+    );
     let _ = fs::remove_dir_all(&root);
 }
 
