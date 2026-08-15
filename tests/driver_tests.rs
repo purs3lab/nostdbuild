@@ -660,6 +660,7 @@ mod import_to_use {
             children: vec![],
             is_inline: false,
             externally_gated: false,
+            path_roots: vec![],
         }
     }
 

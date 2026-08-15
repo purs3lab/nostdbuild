@@ -554,6 +554,30 @@ pub struct ModNode<'a> {
     /// std_items` and the like. Inherited down the subtree: everything under an
     /// externally gated module is itself externally gated.
     pub externally_gated: bool,
+    /// Crate roots this module's *code* names, as `(root, span)` — the paths
+    /// that reference a crate without importing it: `critical_section::with(…)`,
+    /// `icu_calendar_data::make_provider!(Baked)`,
+    /// `impl arbitrary::Arbitrary<'_> for ControlPlane`,
+    /// `#[cfg_attr(feature = "scale", derive(scale_info::TypeInfo))]`.
+    ///
+    /// `extern_roots` covers only `use` / `extern crate` items, which is the
+    /// wrong lower bound for the one question that has to be answered *before*
+    /// unlinking an optional dependency — does any live code still name it?
+    /// `mutex-1.0.0` names `critical_section` exactly once, as a call, and was
+    /// unlinked under a feature its own `default` turns on.
+    ///
+    /// Spans rather than conditions: the gate is whatever
+    /// [`ancestors_for_span`] resolves for the site, which is the same answer
+    /// gated std usage is classified by, and it costs nothing to compute for the
+    /// handful of roots that turn out to name an optional dependency. Roots are
+    /// collected per *file* and hung on that file's node; nesting is recovered
+    /// by the span lookup, which walks the whole tree.
+    ///
+    /// Read only by `driver::deps_pinned_by_active_use`. Deliberately *not* fed
+    /// to `collect_gated_extern_roots`: that drives solver edges, and a path is
+    /// weaker evidence than an import — it may name a local module that merely
+    /// shares a dependency's name.
+    pub path_roots: Vec<(String, ReadableSpan)>,
 }
 
 impl<'a> ModNode<'a> {
@@ -604,6 +628,16 @@ struct FileVisitor<'a> {
     children_stack: Vec<Vec<ModNode<'a>>>,
     /// Items collected at each nesting level.
     items_stack: Vec<Vec<LocalItem<'a>>>,
+    /// Crate roots named by paths in this file's code — see
+    /// [`ModNode::path_roots`]. Flat rather than a stack: the gate is recovered
+    /// from the span, so which nesting level a root was found at does not need
+    /// to be recorded here.
+    path_roots: Vec<(String, ReadableSpan)>,
+    /// `(root, line)` already in `path_roots`. Every multi-segment path in the
+    /// file reaches `record_path_root`, so the "have I seen this?" test has to
+    /// be a lookup — scanning the vector each time is quadratic in the size of
+    /// the file.
+    path_roots_seen: HashSet<(String, usize)>,
     hard_constraints: Vec<Bool<'a>>,
     /// Deferred `include!(concat!(env!("OUT_DIR"), …))` sites found in this file.
     pending_includes: Vec<PendingInclude<'a>>,
@@ -694,6 +728,8 @@ impl<'a> FileVisitor<'a> {
             externally_gated_stack: vec![inherited_externally_gated],
             children_stack: vec![vec![]],
             items_stack: vec![vec![]],
+            path_roots: vec![],
+            path_roots_seen: HashSet::new(),
             hard_constraints: vec![],
             pending_includes: vec![],
             no_std_condition: None,
@@ -922,6 +958,60 @@ impl<'a> FileVisitor<'a> {
     /// Add an item at the current nesting level.
     fn push_item(&mut self, item: LocalItem<'a>) {
         self.items_stack.last_mut().unwrap().push(item);
+    }
+
+    /// Record the leading segment of a multi-segment path as a crate root this
+    /// file's code names — see [`ModNode::path_roots`].
+    ///
+    /// A single-segment path names something in scope, never a crate, so it says
+    /// nothing about linkage. `crate` / `self` / `super` / `Self` are the paths
+    /// that *look* rooted at a crate and are not.
+    fn record_path_root(&mut self, path: &syn::Path, span: Span) {
+        if path.segments.len() < 2 {
+            return;
+        }
+        let root = path.segments[0].ident.to_string();
+        self.record_root_named(root, span);
+    }
+
+    /// One entry per `(root, line)`: a crate named twice on the same line is one
+    /// piece of evidence, and the gate is looked up per span.
+    fn record_root_named(&mut self, root: String, span: Span) {
+        if matches!(root.as_str(), "crate" | "self" | "super" | "Self") {
+            return;
+        }
+        let span = self.get_span(&span);
+        if self.path_roots_seen.insert((root.clone(), span.start_line)) {
+            self.path_roots.push((root, span));
+        }
+    }
+
+    /// Record every `a::b` root inside an opaque token stream.
+    ///
+    /// For the two positions syn hands over as tokens rather than as parsed
+    /// paths: a macro invocation's arguments, and the body of a `cfg_attr`
+    /// (`#[cfg_attr(feature = "scale", derive(scale_info::TypeInfo))]` — the
+    /// `pallet-*-uapi` family names `scale_info` nowhere else in the crate).
+    fn record_path_roots_in_tokens(&mut self, tokens: &TokenStream, span: Span) {
+        let trees: Vec<TokenTree> = tokens.clone().into_iter().collect();
+        for (i, tt) in trees.iter().enumerate() {
+            match tt {
+                TokenTree::Group(g) => self.record_path_roots_in_tokens(&g.stream(), span),
+                TokenTree::Ident(ident) => {
+                    // `ident :: …` — the `::` lexes as two joint puncts.
+                    let is_root = matches!(trees.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == ':')
+                        && matches!(trees.get(i + 2), Some(TokenTree::Punct(p)) if p.as_char() == ':');
+                    // Not a root when something already qualifies it: in
+                    // `a::b::c` only `a` names a crate.
+                    let is_qualified = i >= 2
+                        && matches!(trees.get(i - 1), Some(TokenTree::Punct(p)) if p.as_char() == ':');
+                    if is_root && !is_qualified {
+                        self.record_root_named(ident.to_string(), span);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Record a cfg-gated item as a `LocalItem` at the current nesting level.
@@ -1351,6 +1441,7 @@ impl<'a> FileVisitor<'a> {
                                 children: vec![],
                                 is_inline: false,
                                 externally_gated,
+                                path_roots: vec![],
                             });
                             i += 3;
                             continue;
@@ -1503,6 +1594,7 @@ impl<'a> FileVisitor<'a> {
             children: vec![],
             is_inline: false,
             externally_gated,
+            path_roots: vec![],
         });
     }
 
@@ -1521,6 +1613,7 @@ impl<'a> FileVisitor<'a> {
         Option<Bool<'a>>,
         Vec<PendingInclude<'a>>,
         StdExternFacts<'a>,
+        Vec<(String, ReadableSpan)>,
     ) {
         assert_eq!(self.condition_stack.len(), 1);
         let facts = StdExternFacts {
@@ -1530,6 +1623,7 @@ impl<'a> FileVisitor<'a> {
             any_extern_std: self.any_extern_std,
             non_feature_no_std_predicate: self.non_feature_no_std_predicate.take(),
         };
+        let path_roots = std::mem::take(&mut self.path_roots);
         (
             self.items_stack.pop().unwrap(),
             self.children_stack.pop().unwrap(),
@@ -1537,6 +1631,7 @@ impl<'a> FileVisitor<'a> {
             self.no_std_condition,
             self.pending_includes,
             facts,
+            path_roots,
         )
     }
 }
@@ -1835,6 +1930,10 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                     children,
                     is_inline: true,
                     externally_gated,
+                    // An inline mod's paths ride on its file's node: the gate is
+                    // recovered from the span, which the tree walk resolves
+                    // wherever the root is hung.
+                    path_roots: vec![],
                 };
                 self.push_child(node);
             }
@@ -1871,6 +1970,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                         children: vec![],
                         is_inline: false,
                         externally_gated,
+                        path_roots: vec![],
                     });
                 }
             }
@@ -1965,7 +2065,30 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
             }
         }
 
+        // An attribute's body is an opaque token stream, so the paths in
+        // `derive(scale_info::TypeInfo)` never reach `visit_path`. For an outer
+        // `cfg_attr` the item pushed just above spans these same tokens and
+        // carries the predicate, so the gate resolves to exactly the condition
+        // under which the derive — and the dependency it names — exists.
+        if let Meta::List(list) = &i.meta {
+            let span = i.span();
+            self.record_path_roots_in_tokens(&list.tokens.clone(), span);
+        }
+
         syn::visit::visit_attribute(self, i);
+    }
+
+    /// Every crate root named by a path in this file's code.
+    ///
+    /// The one hook: syn routes expression paths, type paths, trait bounds and a
+    /// macro invocation's own path all through `Path`, so
+    /// `critical_section::with(…)`, `impl arbitrary::Arbitrary<'_> for …`,
+    /// `foldhash::fast::RandomState` and `icu_calendar_data::make_provider!` are
+    /// all caught here. Recording is unconditional — the consumer filters to the
+    /// crate's declared optional dependencies, and no other reader exists.
+    fn visit_path(&mut self, i: &'_ syn::Path) {
+        self.record_path_root(i, i.span());
+        syn::visit::visit_path(self, i);
     }
 
     fn visit_variant(&mut self, i: &'_ syn::Variant) {
@@ -2270,6 +2393,11 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         // `#[cfg(...)]`-gated regions from them so gated std usage passed as a
         // macro argument isn't misclassified as unconditional.
         self.record_macro_cfg_segments(&i.tokens);
+        // …and the crate roots those tokens name, for the same reason: a path
+        // handed to a macro is a reference to that crate and reaches no
+        // `visit_path`. `tm1637-embedded-hal` names `embedded_hal_async` only
+        // inside a table its own macro consumes.
+        self.record_path_roots_in_tokens(&i.tokens, i.span());
         syn::visit::visit_macro(self, i);
     }
 
@@ -2547,7 +2675,7 @@ impl<'a> ModCollector<'a> {
             self.known_features.clone(),
         );
         visitor.visit_file(&syntax);
-        let (local_items, mut children, hard_constraints, no_std_cond, pending_includes, mut facts) =
+        let (local_items, mut children, hard_constraints, no_std_cond, pending_includes, mut facts, path_roots) =
             visitor.finish();
         self.hard_constraints.extend(hard_constraints);
         self.pending_includes.extend(pending_includes);
@@ -2624,6 +2752,7 @@ impl<'a> ModCollector<'a> {
             children,
             is_inline: false,
             externally_gated: false,
+            path_roots,
         }
     }
 
@@ -2679,8 +2808,9 @@ impl<'a> ModCollector<'a> {
                 known_features.clone(),
             );
             fv.visit_file(&syntax);
-            let (local_items, mut grandchildren, hard_constraints_child, _no_std_cond, pend, child_facts) =
+            let (local_items, mut grandchildren, hard_constraints_child, _no_std_cond, pend, child_facts, path_roots) =
                 fv.finish();
+            child.path_roots = path_roots;
             hard_constraints.extend(hard_constraints_child);
             pending_includes.extend(pend);
 
@@ -3563,6 +3693,24 @@ pub fn find_ancestors_for_span<'a>(
 
 pub fn ancestors_for_span<'a>(node: &ModNode<'a>, target: &ReadableSpan) -> Option<Vec<Bool<'a>>> {
     find_ancestors_for_span(node, target, &mut vec![])
+}
+
+/// Every crate root the tree's *code* names, as `(root, span)` — see
+/// [`ModNode::path_roots`].
+///
+/// The gate is not carried: it is whatever [`ancestors_for_span`] resolves for
+/// the span, which the caller computes only for the roots that turn out to name
+/// one of its optional dependencies.
+pub fn collect_path_roots(node: &ModNode<'_>) -> Vec<(String, ReadableSpan)> {
+    fn walk(node: &ModNode<'_>, out: &mut Vec<(String, ReadableSpan)>) {
+        out.extend(node.path_roots.iter().cloned());
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(node, &mut out);
+    out
 }
 
 /// Every `use` binding in the tree, as `(path segments, bound name, span)`.

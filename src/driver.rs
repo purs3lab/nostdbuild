@@ -1884,13 +1884,31 @@ fn manifest_declares_feature(manifest_toml: &toml::Value, name: &str) -> bool {
 /// pins it outright. Gates carrying non-`feature` cfgs keep those atoms free, which
 /// can only make an import look reachable — erring towards keeping the dep linked.
 ///
-/// When a dependency has **no** import at all but the covering runs recorded
-/// references to it, every reference is an inline path — aht20-driver-2.0.0 names
-/// `defmt` only as `defmt::debug!(…)`. There is no import to read a condition off,
-/// so the unlink cannot be shown safe and the dependency is pinned. (Resolving those
-/// spans against the module tree was tried and is not sound: a span the tree has no
-/// item for yields the same "no condition" answer as a genuinely ungated one, which
-/// pinned watchface's `chrono` and cost it its build.)
+/// An import is not the only way to name a crate, and for a whole family of
+/// crates it is not the way they do it: `mutex-1.0.0` writes
+/// `critical_section::with(|_| …)` and nothing else, the `icu_*` family writes
+/// `icu_calendar_data::make_provider!(Baked)`, the `pallet-*-uapi` family writes
+/// `#[cfg_attr(feature = "scale", derive(scale_info::TypeInfo))]`, and
+/// `rp-pico` writes `rp2040_boot2::BOOT_LOADER_W25Q080`. Those references are
+/// `visitor::collect_path_roots`, gated by whatever `ancestors_for_span`
+/// resolves at the site, and they are read here exactly like imports.
+///
+/// This is what `deps_pinned_by_active_use` used to miss: 24 of the 49 crates in
+/// bucket R31-2 name their dependency only this way, and `minimize` unlinked it
+/// under a feature the crate's own `default` turns on — `mutex-1.0.0` builds on
+/// all 26 targets with its published manifest untouched.
+///
+/// Resolving *plugin* spans this way was tried and is not sound, and this is not
+/// that: a HIR record's span may have no item in the tree, and the "no item"
+/// answer is indistinguishable from "genuinely ungated" (it pinned watchface's
+/// `chrono` and cost it its build). These spans come from the same syn pass that
+/// built the tree. watchface stays strippable because its only `chrono` mentions
+/// outside `#[cfg(feature = "chrono")]` are in doc comments, which are string
+/// literals and not paths.
+///
+/// When a dependency has no reference of either kind but the covering runs
+/// recorded one, the reference is in a position neither pass reads and the
+/// dependency is pinned outright — there is no condition to read anywhere.
 ///
 /// Only cargo's *synthesised* `D = ["dep:D"]` is pinned false: it is the one feature
 /// the edit can switch off. A feature the manifest declares itself survives the edit
@@ -1913,21 +1931,34 @@ pub fn deps_pinned_by_active_use<'a>(
         return HashSet::new();
     }
     let roots = visitor::collect_extern_roots_with_gates(root, ctx);
+    let path_roots = visitor::collect_path_roots(root);
 
     let mut pinned = HashSet::new();
     for dep in optional_deps {
         let dep_norm = dep.replace('-', "_");
-        let imports: Vec<&Option<Bool>> = roots
+        let mut references: Vec<Option<Bool>> = roots
             .iter()
             .filter(|(name, _)| *name == dep_norm)
-            .map(|(_, gate)| gate)
+            .map(|(_, gate)| gate.clone())
             .collect();
+        // Each path reference carries its site's gate — the module chain plus
+        // the innermost containing item's own `#[cfg]`, which for a `cfg_attr`
+        // derive is the predicate the attribute is applied under.
+        references.extend(
+            path_roots
+                .iter()
+                .filter(|(r, _)| *r == dep_norm)
+                .map(|(_, span)| {
+                    visitor::ancestors_for_span(root, span)
+                        .map(|conds| Bool::and(ctx, &conds.iter().collect::<Vec<_>>()))
+                }),
+        );
 
-        if imports.is_empty() {
+        if references.is_empty() {
             if records.iter().any(|record| record.dep == dep_norm) {
                 debug!(
-                    "Optional dep '{dep}' is referenced only by inline paths — no import to read \
-                     a condition off, so it must not be unlinked"
+                    "Optional dep '{dep}' is referenced only from a position neither pass reads \
+                     — no condition to read anywhere, so it must not be unlinked"
                 );
                 pinned.insert(dep);
             }
@@ -1952,7 +1983,7 @@ pub fn deps_pinned_by_active_use<'a>(
                 solver.assert(&var.not());
             }
         }
-        for gate in imports {
+        for gate in &references {
             let survives = match gate {
                 None => true,
                 Some(gate) => {
@@ -1965,7 +1996,7 @@ pub fn deps_pinned_by_active_use<'a>(
             };
             if survives {
                 debug!(
-                    "Optional dep '{dep}' is imported under a gate that stays true without it \
+                    "Optional dep '{dep}' is named under a gate that stays true without it \
                      ({gate:?}); it must not be unlinked"
                 );
                 pinned.insert(dep);

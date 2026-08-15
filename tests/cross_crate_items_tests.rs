@@ -65,6 +65,7 @@ fn gated_and_ungated_root<'a>(ctx: &'a z3::Context) -> ModNode<'a> {
         children: Vec::new(),
         is_inline: false,
         externally_gated: false,
+        path_roots: Vec::new(),
     }
 }
 

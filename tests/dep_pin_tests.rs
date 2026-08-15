@@ -33,12 +33,20 @@ version = "0.0.0"
 smol_str = { version = "0.2", optional = true }
 chrono = { version = "0.4", optional = true }
 embedded-hal-async = { version = "1", optional = true }
+critical-section = { version = "1", optional = true }
+icu_calendar_data = { version = "1", optional = true }
+scale-info = { version = "2", optional = true }
+yazi = { version = "0.1", optional = true }
+deflate = { version = "1", optional = true }
 
 [features]
 default = ["std", "smol_str"]
 std = ["chrono"]
 smol_str = ["dep:smol_str", "bevy_reflect/smol_str"]
 async = ["embedded-hal-async"]
+impl-critical-section = ["dep:critical-section"]
+compiled_data = ["dep:icu_calendar_data"]
+scale = ["dep:scale-info"]
 "#;
 
 fn set(names: &[&str]) -> HashSet<String> {
@@ -56,6 +64,28 @@ fn declared() -> HashSet<String> {
         "async",
         "chrono",
         "embedded-hal-async",
+        "impl-critical-section",
+        "compiled_data",
+        "scale",
+        // Implicit: named by no `[features]` entry and by no `dep:` spelling.
+        "yazi",
+        "deflate",
+    ])
+}
+
+/// Everything the crate could have on at once. Individual tests turn one thing
+/// off rather than restating the whole set.
+fn all_on() -> HashSet<String> {
+    set(&[
+        "default",
+        "std",
+        "smol_str",
+        "async",
+        "chrono",
+        "impl-critical-section",
+        "compiled_data",
+        "scale",
+        "yazi",
     ])
 }
 
@@ -116,5 +146,85 @@ fn declared_feature_that_is_off_does_not_pin_its_dep() {
         !pinned.contains("smol_str"),
         "with the `smol_str` feature off its import is not compiled, so the dep must \
          stay unlinkable, got {pinned:?}"
+    );
+}
+
+/// R31-2, the shape that carries the bucket: `mutex-1.0.0` names
+/// `critical_section` once, as a call, with no import in the crate. The gate is a
+/// declared feature its own `default` turns on, so the unlink left
+/// `critical_section::with(…)` compiling against a crate cargo no longer links —
+/// and the published manifest builds on all 26 targets untouched.
+#[test]
+fn a_call_path_pins_its_dep_when_the_gate_survives() {
+    let pinned = pins(&all_on());
+
+    assert!(
+        pinned.contains("critical-section"),
+        "`critical_section::with(…)` is a reference even though nothing imports it, \
+         got {pinned:?}"
+    );
+}
+
+/// The `icu_*` family: the only mention is the macro's own path.
+#[test]
+fn a_macro_invocation_path_pins_its_dep() {
+    let pinned = pins(&all_on());
+
+    assert!(
+        pinned.contains("icu_calendar_data"),
+        "`icu_calendar_data::make_provider!(Baked)` names the crate, got {pinned:?}"
+    );
+}
+
+/// The `pallet-*-uapi` family: the only mention is inside a `cfg_attr`, whose
+/// body syn never parses into paths.
+#[test]
+fn a_derive_path_inside_cfg_attr_pins_its_dep() {
+    let pinned = pins(&all_on());
+
+    assert!(
+        pinned.contains("scale-info"),
+        "`#[cfg_attr(feature = \"scale\", derive(scale_info::TypeInfo))]` names the \
+         crate, got {pinned:?}"
+    );
+}
+
+/// Control — the whole point of reading the gate rather than the mention. `yazi`
+/// is named by a path, but only under its own implicit feature, which the unlink
+/// turns off. Pin this and the pass stops unlinking anything.
+#[test]
+fn a_path_gated_only_by_the_implicit_feature_does_not_pin_its_dep() {
+    let pinned = pins(&all_on());
+
+    assert!(
+        !pinned.contains("yazi"),
+        "deleting the entry turns `feature = \"yazi\"` off, so the path is not compiled \
+         and the dep stays unlinkable, got {pinned:?}"
+    );
+}
+
+/// Control — a doc comment is a string literal. Resolving spans this way is what
+/// pinned watchface's `chrono` once before and cost it its build.
+#[test]
+fn a_dep_named_only_in_a_doc_comment_is_not_pinned() {
+    let pinned = pins(&all_on());
+
+    assert!(
+        !pinned.contains("deflate"),
+        "prose is not a reference, got {pinned:?}"
+    );
+}
+
+/// Control — the pin is still a property of the active set: with the gating
+/// feature off, the call is not compiled and the unlink is safe.
+#[test]
+fn a_call_path_under_a_feature_that_is_off_does_not_pin_its_dep() {
+    let mut active = all_on();
+    active.remove("impl-critical-section");
+    let pinned = pins(&active);
+
+    assert!(
+        !pinned.contains("critical-section"),
+        "with the gating feature off nothing names the dep, got {pinned:?}"
     );
 }
