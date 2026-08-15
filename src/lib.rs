@@ -138,6 +138,14 @@ pub struct DataExchange {
     /// Accumulated across finalize_dep_crate calls and consumed by
     /// move_unnecessary_dep_feats.
     pub protected_dep_features: HashSet<(String, String)>,
+    /// The polarity the *main* crate's own no_std condition forces on its
+    /// declared features: features it entails true, and features it entails
+    /// false. Written by `parser::process_crate` on the main path, where the
+    /// condition is fully assembled, and read by `bin/main.rs` — every pass
+    /// between the solve and the command line has to respect the same statement
+    /// the solve did. See `solver::no_std_forced_features` (R31-3).
+    pub main_no_std_required: Vec<String>,
+    pub main_no_std_forbidden: Vec<String>,
 }
 
 /// We store already resolved features for a crate
@@ -522,6 +530,12 @@ pub struct Telemetry {
     /// ever witnessed; see `phases::gate_satisfied_std_spans`. zeno 0.3.2's
     /// `eval` is the feature it exists to keep.
     pub conditions_refuted_by_gate_run: usize,
+    /// Whether the final selection had to be corrected to satisfy the crate's
+    /// own `#![cfg_attr(<cond>, no_std)]` — a feature the condition entails was
+    /// missing, or one it forbids was still on. Set by
+    /// `parser::enforce_no_std_polarity` (R31-3). A crate that never needed the
+    /// repair leaves this false, so it counts the bucket rather than the fix.
+    pub no_std_polarity_restored: bool,
     /// How many std spans share a source position with records from another
     /// crate *and* resolve to std in every covering run.
     ///

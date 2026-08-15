@@ -199,6 +199,85 @@ pub fn model_to_features(model: &Option<z3::Model>) -> DoubleTupleVecString {
     )
 }
 
+/// The polarity the crate's own no_std condition forces on each feature it names.
+///
+/// The condition is the author's statement of when this crate is `#![no_std]` —
+/// `#![cfg_attr(not(feature = "std"), no_std)]` says the crate is std whenever
+/// `std` is on, `#![cfg_attr(feature = "no-std", no_std)]` says it is std unless
+/// `no-std` is on. A model that satisfies the condition is not enough: the
+/// feature list that finally reaches cargo has to satisfy it too, and every pass
+/// between the solve and the command line is free to move a feature (R31-3, the
+/// `NO_STD_ATTR_NOT_ENABLED` bucket — 17 crates whose emitted config leaves the
+/// crate root evaluating to std, so rustc says `std is required by <crate>
+/// because it does not declare #![no_std]`).
+///
+/// Returns `(required, forbidden)`: the features the condition **entails** true
+/// and those it entails false. Entailment, not the model's assignment — a
+/// feature the condition merely mentions inside a disjunction it could satisfy
+/// either way is in neither list, so nothing here overrides a free choice the
+/// solve was entitled to make.
+///
+/// Only the crate's own declared features are considered. An atom that is not a
+/// declared feature cannot be turned on or off through cargo anyway
+/// (`integer_or_float`'s bare `#![cfg_attr(no_std, no_std)]` is the shape), and
+/// naming one in `--features` makes cargo reject the invocation outright.
+///
+/// That is also where this inherits policy G's optimism ([[non-feature-cfg-erasure]]):
+/// the target atoms are erased *before* the condition is built, so
+/// `any(windows, all(target_arch = "wasm32", feature = "web-encoding"))`
+/// (`iconv-native`) arrives as plain `web-encoding` and reads as entailed. The
+/// condition is then stronger than the source warrants — the same reading
+/// `driver`'s `no_std_switch` already takes of the same atoms — and the effect is
+/// bounded to turning on a feature the author's own condition names.
+pub fn no_std_forced_features<'a>(
+    ctx: &'a z3::Context,
+    equation: &Bool<'a>,
+    crate_info: &CrateInfo,
+) -> (Vec<String>, Vec<String>) {
+    // Atoms read off the s-expression and intersected with the declared set, the
+    // same exact split `driver::feature_atoms` uses: every feature is a Bool
+    // constant named after itself, and the membership test keeps the operators
+    // and any erased non-feature atom out.
+    let declared: HashSet<&str> = crate_info
+        .features
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let mut named: Vec<String> = equation
+        .to_string()
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ')')
+        .filter(|t| !t.is_empty())
+        .filter(|t| declared.contains(*t))
+        .map(str::to_string)
+        .collect();
+    named.sort();
+    named.dedup();
+
+    let mut required = Vec::new();
+    let mut forbidden = Vec::new();
+    for feat in named {
+        let var = Bool::new_const(ctx, feat.as_str());
+        let entails = |assumption: &Bool<'a>| {
+            let solver = z3::Solver::new(ctx);
+            solver.assert(equation);
+            solver.assert(assumption);
+            solver.check() == z3::SatResult::Unsat
+        };
+        if entails(&var.not()) {
+            required.push(feat);
+        } else if entails(&var) {
+            forbidden.push(feat);
+        }
+    }
+    if !required.is_empty() || !forbidden.is_empty() {
+        debug!(
+            "no_std condition {} requires {:?} and forbids {:?}",
+            equation, required, forbidden
+        );
+    }
+    (required, forbidden)
+}
+
 /// Given the crate info, the name of the dependency,
 /// the list of features to enable and disable,
 /// return the final feature list to pass to cargo for the dependency.
@@ -462,6 +541,12 @@ pub fn new_feats_to_add(
     }
 
     to_declare
+}
+
+/// `get_features_not_disabled` for callers outside the solve: the entries of
+/// `default` that survive turning `disable` off.
+pub fn features_not_disabled(crate_info: &CrateInfo, disable: &[String]) -> Vec<String> {
+    get_features_not_disabled(crate_info, disable)
 }
 
 fn get_features_not_disabled(crate_info: &CrateInfo, disable: &[String]) -> Vec<String> {

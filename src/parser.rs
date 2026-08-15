@@ -591,6 +591,25 @@ pub fn process_crate(
         }
     }
 
+    // The equation is complete here, so this is the last point at which the
+    // crate's own statement of when it is `#![no_std]` can be read as a
+    // statement rather than as one satisfying assignment. What it *entails* has
+    // to survive every pass after the solve: `minimize` drops a feature whose
+    // whole subtree only links optional deps, which is exactly the shape of
+    // `robust`'s `no_std = ["ieee754"]`, `utm`'s `no_std = ["num"]` and
+    // `lasso`'s `no-std` — the solve turned each on and minimize took it back
+    // off, and the crate compiled as std. Protecting them here is the same
+    // treatment `compile_error!`'s features already get two blocks above.
+    let (no_std_required, no_std_forbidden) = match &equation {
+        Some(eq) => solver::no_std_forced_features(ctx, eq, crate_info),
+        None => (Vec::new(), Vec::new()),
+    };
+    non_minimalizable_features.extend(no_std_required.iter().cloned());
+    if is_main {
+        exchange.main_no_std_required = no_std_required;
+        exchange.main_no_std_forbidden = no_std_forbidden;
+    }
+
     // Finally, we solve the equations
     let (model, len, depth, entailed_false) = {
         let t = crate::timing::scope("feature_solve", name_with_version);
@@ -2161,6 +2180,125 @@ pub fn close_over_local_features(
             return closed;
         }
     }
+}
+
+/// Does enabling `feat` turn on a feature the crate's no_std condition forbids?
+///
+/// Reachability, not membership. `dlopen-rs-0.7.3` never passes `std` on the
+/// command line — it passes `debug` and `tls`, and its own `[features]` table
+/// says `debug = ["std"]`, `tls = ["std"]`. A feature that turns `std` on is
+/// `std` as far as the crate root is concerned.
+pub fn reaches_forbidden_feature(
+    crate_info: &CrateInfo,
+    feat: &str,
+    forbidden: &[String],
+) -> bool {
+    if forbidden.is_empty() {
+        return false;
+    }
+    let closed = close_over_local_features(
+        &HashSet::from([feat.to_string()]),
+        &crate_info.features,
+    );
+    forbidden.iter().any(|f| closed.contains(f))
+}
+
+/// Make the emitted feature selection satisfy the crate's own no_std condition.
+///
+/// R31-3: a solve is not allowed to finish while the crate root still evaluates
+/// to std. `solver::no_std_forced_features` reads what the author's
+/// `#![cfg_attr(<cond>, no_std)]` *entails*; this applies it to the selection
+/// that is about to become the command line, after every pass that could have
+/// moved a feature since the solve:
+///
+/// * a **forbidden** feature comes off `main_features` and `enable`, and if it is
+///   reachable from `default` the defaults come off with it — leaving it in
+///   `default` while dropping it from `--features` turns nothing off. nuuid
+///   0.5.0 is the case: the solve chose `¬std`, then the first dependency pass
+///   recomputed "the default features this dep does not disable" from `default =
+///   ["getrandom", "std"]` and handed `std` straight back, so the crate built
+///   with `--features std` and rustc answered *`std` is required by `nuuid`
+///   because it does not declare `#![no_std]`*.
+/// * a **required** feature goes back on. It is the feature that carries the
+///   attribute — `lasso`'s `no-std`, `robust`/`utm`'s `no_std` — and without it
+///   the crate is std no matter what else the selection says.
+///
+/// Returns `(added, removed)`, both empty when the selection already agreed with
+/// the condition — which is the normal case, and the only case for a crate that
+/// builds today.
+///
+/// This runs after the dependency passes, so a feature added back here links an
+/// optional dependency nothing analysed. That is the deliberate trade: an
+/// unanalysed dependency *might* not build, a crate that is still std certainly
+/// does not. It should also be rare — the entailed-true features are
+/// non-minimalizable from `process_crate` onwards, so the ordinary path keeps
+/// them all the way here and this adds nothing.
+pub fn enforce_no_std_polarity(
+    crate_info: &CrateInfo,
+    main_features: &mut Vec<String>,
+    enable: &mut Vec<String>,
+    disable_default: &mut bool,
+    required: &[String],
+    forbidden: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let reaches_forbidden = |feat: &String| reaches_forbidden_feature(crate_info, feat, forbidden);
+
+    let mut removed: Vec<String> = main_features
+        .iter()
+        .chain(enable.iter())
+        .filter(|f| reaches_forbidden(f))
+        .cloned()
+        .collect();
+    removed.sort();
+    removed.dedup();
+    main_features.retain(|f| !reaches_forbidden(f));
+    enable.retain(|f| !reaches_forbidden(f));
+
+    // Cargo enables the whole `default` closure unless told otherwise, so a
+    // forbidden feature anywhere in it survives every list edit above.
+    if !*disable_default
+        && (solver::disable_in_default(crate_info, forbidden)
+            || solver::disable_in_default_indirect(crate_info, forbidden))
+    {
+        debug!(
+            "Turning defaults off: {:?} is reachable from `default` and the crate's no_std condition forbids it",
+            forbidden
+        );
+        *disable_default = true;
+        // The rest of `default` is not forbidden and was on until now; keep it.
+        for feat in solver::features_not_disabled(crate_info, forbidden) {
+            if !main_features.contains(&feat) {
+                main_features.push(feat);
+            }
+        }
+        // Report only what turning the defaults off actually took away, so the
+        // log line and `no_std_polarity_restored` name the real repair.
+        let default_closure = close_over_local_features(
+            &HashSet::from(["default".to_string()]),
+            &crate_info.features,
+        );
+        removed.extend(
+            forbidden
+                .iter()
+                .filter(|f| default_closure.contains(*f))
+                .cloned(),
+        );
+        removed.sort();
+        removed.dedup();
+    }
+
+    let mut added: Vec<String> = Vec::new();
+    for feat in required {
+        if !main_features.contains(feat) {
+            main_features.push(feat.clone());
+            added.push(feat.clone());
+        }
+        if !enable.contains(feat) {
+            enable.push(feat.clone());
+        }
+    }
+
+    (added, removed)
 }
 
 /// Check a concrete, final feature set against every `compile_error!` constraint

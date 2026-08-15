@@ -185,6 +185,26 @@ fn process_dep_crate_wrapper(
     previously_disabled.extend(to_disable.clone());
     temp_flexible.retain(|f| !previously_disabled.contains(f));
 
+    // What that call just re-derived is the main crate's `default` list, asked of
+    // a *dependency's* disable list — it is never told what the main solve
+    // decided, so it hands back every default feature the main solve had just
+    // turned off. nuuid 0.5.0 solved to `¬std` and its first dependency pass
+    // answered "`std` is a default feature rand_core does not disable"; the crate
+    // built with `--features std` (R31-3). Filtered here rather than by widening
+    // the call's disable list, which is a change in the other direction: a wider
+    // list makes `disable_in_default` true where it was false, and the call then
+    // re-derives `default` for a dependency it previously ignored. tarfs is what
+    // that costs — `default = ["std", "builtin_devices"]`, and `builtin_devices`
+    // (whose module uses std unconditionally) comes back as "a default feature
+    // this dependency does not disable". Subtracting only ever removes.
+    temp_flexible.retain(|f| {
+        !parser::reaches_forbidden_feature(
+            &exchange.crate_info,
+            f,
+            &exchange.main_no_std_forbidden,
+        )
+    });
+
     *disable_default = *disable_default || temp_disable_default;
     main_features.extend(temp_flexible);
     main_features.sort();
@@ -369,6 +389,8 @@ fn main() -> anyhow::Result<()> {
         valid_cross_crate_items: std::collections::HashSet::new(),
         main_enable: Vec::new(),
         protected_dep_features: std::collections::HashSet::new(),
+        main_no_std_required: Vec::new(),
+        main_no_std_forbidden: Vec::new(),
     };
 
     stats.crate_info = Some(exchange.crate_info.clone());
@@ -649,7 +671,7 @@ fn main() -> anyhow::Result<()> {
     // `enable` because a `#[cfg]` needs that dependency linked (caches: hashbrown, libm).
     // Membership in `enable`/`main_features` is what makes this deterministic: an enabler
     // the solve did not choose is never protected.
-    let non_minimalizable: HashSet<String> = main_features
+    let mut non_minimalizable: HashSet<String> = main_features
         .iter()
         .chain(enable.iter())
         .filter(|f| {
@@ -659,6 +681,14 @@ fn main() -> anyhow::Result<()> {
         })
         .cloned()
         .collect();
+    // The one addition not filtered through `main_features`/`enable`: a feature
+    // the crate's own `#![cfg_attr(<cond>, no_std)]` *entails*. It is protected
+    // whether or not the solve happened to put it in either list, because
+    // without it the crate is std by the author's own statement — and its usual
+    // shape (`no_std = ["ieee754"]`) is precisely the one minimize drops as
+    // "exists only to pull in a dep". R31-3; robust, utm and lasso all lost the
+    // feature that way.
+    non_minimalizable.extend(exchange.main_no_std_required.iter().cloned());
     debug!("Non-minimalizable main features: {:?}", non_minimalizable);
 
     // Optional dependencies `minimize` must leave linked. `non_minimalizable` cannot
@@ -861,6 +891,30 @@ fn main() -> anyhow::Result<()> {
         "Main crate arguments after processing deps: {:?}",
         main_features
     );
+
+    // Last check before the selection becomes a command line: does it still make
+    // the crate root `#![no_std]`? Everything above is free to move a feature —
+    // the dependency passes, three `minimize` calls, `should_skip_dep` — and a
+    // crate whose no_std is opt-in is std again the moment one of them moves the
+    // wrong one. Nothing here overrules a choice the condition left free; only
+    // what it entails is restored (R31-3).
+    {
+        let (added, removed) = parser::enforce_no_std_polarity(
+            &exchange.crate_info,
+            &mut main_features,
+            &mut enable,
+            &mut disable_default,
+            &exchange.main_no_std_required,
+            &exchange.main_no_std_forbidden,
+        );
+        if !added.is_empty() || !removed.is_empty() {
+            println!(
+                "Restoring the crate's own no_std condition: enabling {:?}, disabling {:?}",
+                added, removed
+            );
+            exchange.telemetry.no_std_polarity_restored = true;
+        }
+    }
 
     main_features.sort();
     main_features.dedup();
