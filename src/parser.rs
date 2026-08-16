@@ -5116,8 +5116,11 @@ fn parse_token_stream<'a>(
 ) -> Vec<Bool<'a>> {
     let mut was_feature = false;
     let mut was_filepath = false;
-    let mut current_expr: Option<Bool> = None;
     let mut group_items: Vec<Bool> = Vec::new();
+    // The entries of `group_items` that came from a nested group rather than
+    // from a bare `feature = "…"`. Each is already folded under the operator
+    // that introduced it, so the final fold below must not fold it again.
+    let mut folded_operands: Vec<Bool> = Vec::new();
     let mut curr_logic = Logic::Any;
 
     for token in tokens {
@@ -5156,10 +5159,26 @@ fn parse_token_stream<'a>(
                     Logic::Not => local_group_items.first().map(|first| first.not()),
                 };
 
+                // One operand of *this* level, beside any `feature = "…"` atom.
+                // What combines the operands is the operator of the level that
+                // owns them — `any` in
+                //
+                // ```ignore
+                // #[cfg(any(not(any(feature = "std", feature = "spin")),
+                //           all(feature = "std", feature = "spin")))]
+                // ```
+                //
+                // — and that operator lives one frame up, which is why the
+                // caller folds the returned list rather than this frame. ANDing
+                // the operands together here instead read mtxgroup 0.1.1's
+                // "exactly one of `std` and `spin`" as
+                // `¬(¬(std ∨ spin) ∧ std ∧ spin)`: a tautology, so the
+                // `compile_error!` it guards could never be violated and the
+                // crate shipped the one feature set it forbids. Sibling groups
+                // under `all` were right only because AND was the answer there.
                 if let Some(local) = local_expr {
-                    current_expr = Some(
-                        current_expr.map_or(local.clone(), |prev| Bool::and(ctx, &[&prev, &local])),
-                    );
+                    group_items.push(local.clone());
+                    folded_operands.push(local);
                 }
             }
             proc_macro2::TokenTree::Ident(i) => {
@@ -5212,9 +5231,21 @@ fn parse_token_stream<'a>(
         }
     }
 
-    if let Some(expr) = current_expr {
-        *equation = Some(expr.clone());
-        group_items.push(expr);
+    if !folded_operands.is_empty() {
+        // At least one operand came from a nested group, so `curr_logic` has
+        // already been spent folding it and must not be applied a second time —
+        // `not(feature = "std")` arrives here as `¬std`, and folding it under
+        // `Not` again would say `std`. Only the caller knows what combines the
+        // operands of *this* level, and it folds the list this function returns;
+        // `equation` is read by the top-level call alone, where a well-formed
+        // cfg is a single predicate. Conjunction for the rest, which is what
+        // this branch has always done.
+        let refs: Vec<&Bool> = folded_operands.iter().collect();
+        *equation = Some(if refs.len() == 1 {
+            refs[0].clone()
+        } else {
+            Bool::and(ctx, refs.as_slice())
+        });
     } else if !group_items.is_empty() {
         match curr_logic {
             Logic::And => {

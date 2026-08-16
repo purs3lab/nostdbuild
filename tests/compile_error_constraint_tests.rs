@@ -666,3 +666,80 @@ fn a_compile_error_without_a_cfg_contributes_nothing() {
         "an unconditional compile_error! names no features"
     );
 }
+
+// ---------------------------------------------------------------------------
+// mtxgroup shape — sibling groups under `any(...)` (R31-4)
+// ---------------------------------------------------------------------------
+//
+// `any(not(any(std, spin)), all(std, spin))` states "exactly one of the two".
+// Its outer operands are both groups, and `parse_token_stream` folded sibling
+// group results with AND whatever operator owned them — reading the cfg as
+// `¬(std ∨ spin) ∧ std ∧ spin`, which is false for every assignment. Negated
+// for the `compile_error!` that is a tautology: no feature set could ever
+// violate it, and mtxgroup shipped `--no-default-features` — the one
+// configuration the crate says it refuses.
+
+fn mtxgroup_info() -> CrateInfo {
+    crate_info(&[("default", &["std"]), ("std", &[]), ("spin", &[])])
+}
+
+/// The shipped configuration. Neither feature is on, so the crate's "exactly
+/// one" is unmet and the build dies on the macro.
+#[test]
+fn neither_side_of_an_exclusive_choice_violates_it() {
+    let v = violations("nested_group_shape.rs", &mtxgroup_info(), &[], false);
+    assert_eq!(
+        v.len(),
+        1,
+        "neither `std` nor `spin` is on; expected a violation, got {:?}",
+        v
+    );
+}
+
+/// The no_std arm: `spin` alone is exactly what the crate asks for.
+#[test]
+fn one_side_of_an_exclusive_choice_satisfies_it() {
+    let v = violations("nested_group_shape.rs", &mtxgroup_info(), &["spin"], false);
+    assert!(v.is_empty(), "`spin` alone is legal, got {:?}", v);
+}
+
+/// The other arm, so the check cannot be reading only the first disjunct.
+#[test]
+fn the_other_side_of_an_exclusive_choice_satisfies_it() {
+    let v = violations("nested_group_shape.rs", &mtxgroup_info(), &["std"], false);
+    assert!(v.is_empty(), "`std` alone is legal, got {:?}", v);
+}
+
+/// The second half of "exactly one": both together is refused as loudly as
+/// neither. A parse that kept only the `not(any(...))` operand would pass this
+/// set, so this is what distinguishes the fold from dropping an operand.
+#[test]
+fn both_sides_of_an_exclusive_choice_violate_it() {
+    let v = violations(
+        "nested_group_shape.rs",
+        &mtxgroup_info(),
+        &["std", "spin"],
+        false,
+    );
+    assert_eq!(
+        v.len(),
+        1,
+        "`std` and `spin` together is the other half of the constraint, got {:?}",
+        v
+    );
+}
+
+/// What the tool has to do with it: the repair names the feature that turns the
+/// shipped set into a legal one. `std` is forbidden — the no_std verdict turned
+/// it off — so `spin` is the only way out.
+#[test]
+fn an_exclusive_choice_is_repaired_by_the_no_std_arm() {
+    let add = repair(
+        "nested_group_shape.rs",
+        &mtxgroup_info(),
+        &[],
+        false,
+        &["std"],
+    );
+    assert_eq!(add, vec!["spin".to_string()], "expected `spin`, got {:?}", add);
+}
