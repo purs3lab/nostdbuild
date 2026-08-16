@@ -184,3 +184,81 @@ fn a_feature_the_edge_supplies_needs_no_constraint() {
         constraints
     );
 }
+
+// ---------------------------------------------------------------------------
+// The requirement the *feature solve* is handed — R31-4
+// ---------------------------------------------------------------------------
+//
+// The translation above only ever reached the covering runs, which decide which
+// feature sets get compiled for evidence. The edge a run finally emits is picked
+// by `process_crate`, and that solve had never seen it: ab_glyph 0.2.29 declares
+// `libm = ["owned_ttf_parser/no-std-float", …]` — exactly what ttf-parser's
+// `compile_error!` demands — owned_ttf_parser's own solve answered `enable: []`
+// because *it* compiles fine without the feature, and
+// `move_unnecessary_dep_feats` deleted the entry as one nobody asked for.
+
+fn requirement<'a>(ctx: &'a z3::Context, name: &str) -> Option<z3::ast::Bool<'a>> {
+    let manifest = fixture(name);
+    driver::dependency_feature_requirement(ctx, &manifest.display().to_string())
+}
+
+/// The consumer must be *told* something. Without a requirement there is nothing
+/// to keep its `libm` alive through the solve and the strip pass.
+#[test]
+fn a_dependencys_requirement_reaches_the_feature_solve() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let req = requirement(&ctx, "consumer");
+    assert!(req.is_some(), "expected a requirement for the consumer");
+    assert!(
+        !satisfiable(&ctx, &[req.unwrap()], &[], &["std", "libm", "math"]),
+        "with every enabler off the requirement must be unsatisfiable — that is \
+         what forces one of them on"
+    );
+}
+
+/// And it must be satisfiable the no_std way, or asserting it would cost the
+/// crate its solve entirely rather than fixing its edge.
+#[test]
+fn the_requirement_is_satisfied_by_the_no_std_arm() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let req = requirement(&ctx, "consumer").expect("requirement");
+    assert!(
+        satisfiable(&ctx, &[req], &["libm"], &["std"]),
+        "`libm` with std off is the configuration this exists to produce"
+    );
+}
+
+/// The implications are the half that keeps the model honest. `default` reaches
+/// the dependency's feature only *through* `float`, so a model naming `default`
+/// with `float` off is a set cargo cannot produce; the raw disjunction admits
+/// it, `default => float` does not.
+#[test]
+fn the_requirement_carries_the_feature_implications() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let req = requirement(&ctx, "implied").expect("requirement");
+    assert!(
+        !satisfiable(&ctx, &[req.clone()], &["default"], &["float"]),
+        "`default` enables `float`; a model may not have one without the other"
+    );
+    assert!(
+        satisfiable(&ctx, &[req], &["float"], &["std", "default"]),
+        "`float` alone is the no_std answer and must stay reachable"
+    );
+}
+
+/// A crate no dependency constrains is left exactly as it was — the requirement
+/// is `None`, not a vacuous `true` conjoined onto every solve.
+#[test]
+fn a_crate_no_dependency_constrains_gets_no_requirement() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    assert!(
+        requirement(&ctx, "pinned").is_none(),
+        "the edge already supplies the feature; nothing to require"
+    );
+    assert!(
+        requirement(&ctx, "unreachable").is_none(),
+        "an atom this crate cannot reach drops the constraint, and with it the \
+         requirement"
+    );
+}
+

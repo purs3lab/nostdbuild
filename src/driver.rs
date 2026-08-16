@@ -1808,6 +1808,46 @@ pub fn dependency_compile_error_constraints<'a>(
     constraints
 }
 
+/// What this crate's dependencies demand of *its* feature set, as one
+/// constraint the feature solve can be handed — R31-4.
+///
+/// [`dependency_compile_error_constraints`] already says it in this crate's
+/// feature names; what was missing is a consumer other than the covering runs.
+/// The covering runs decide which feature sets get *compiled for evidence*; the
+/// edge the run finally emits is decided by `process_crate`, and that solve
+/// never saw the constraint. ab_glyph 0.2.29 is the case: `libm =
+/// ["owned_ttf_parser/no-std-float", …]` is exactly what ttf-parser's
+/// `compile_error!` asks for, owned_ttf_parser's own solve answered `enable:
+/// []` because *it* is happy without the feature, and
+/// `move_unnecessary_dep_feats` then read the entry as a dep feature nobody
+/// asked for and moved it to `dep_unnecessary_features` — emitting `--features
+/// libm` with the one thing `libm` was for deleted out of it.
+///
+/// The feature implications ride along because the disjunction is otherwise
+/// free to be satisfied the expensive way: ttf-parser is equally happy with
+/// `std`, `default`, `gvar-alloc` or `no-std-float`, and nothing but
+/// `default => std` stops a model from picking `default` and turning std back
+/// on. They are statements about the crate's own `[features]` table, true in
+/// every configuration, so asserting them constrains nothing that was free.
+///
+/// `None` when no dependency constrains this crate, which is nearly all of
+/// them — the caller then leaves its hard constraints exactly as they were.
+pub fn dependency_feature_requirement<'a>(ctx: &'a Context, manifest: &str) -> Option<Bool<'a>> {
+    let manifest_toml = read_manifest_toml(manifest);
+    let dep_errors = dependency_compile_error_constraints(ctx, manifest, &manifest_toml);
+    if dep_errors.is_empty() {
+        return None;
+    }
+    let feat_map = downloader::read_local_features(&manifest_toml);
+    let mut parts = dep_errors;
+    parts.extend(solver::feature_implication_constraints(ctx, &feat_map));
+    parts.extend(solver::optional_dep_implication_constraints(
+        ctx,
+        &downloader::optional_dep_feature_edges(&manifest_toml),
+    ));
+    Some(Bool::and(ctx, &parts.iter().collect::<Vec<_>>()))
+}
+
 /// The `cfg => optional-dependency` edges for one crate: every gated
 /// `use`/`extern crate` in `root` paired with the features that link the
 /// dependency it names (bucket 11).

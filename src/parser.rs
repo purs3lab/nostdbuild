@@ -1593,6 +1593,29 @@ pub fn process_dep_crate(
         Some(&exchange.name_with_version),
         &mut exchange.telemetry,
     );
+
+    // What *this dependency's* dependencies demand of it (R31-4). Its own
+    // `compile_error!`s stay out of the solve for the reason `uom` documents —
+    // a wide disjunction of storage types is not the solver's to pick from —
+    // but a constraint arriving from one level down is not a choice this crate
+    // is offering: ttf-parser refuses to compile without `std` or
+    // `no-std-float`, so owned_ttf_parser answering "I need no features" is
+    // wrong, and the parent's `libm = ["owned_ttf_parser/no-std-float"]` is
+    // deleted as unnecessary on the strength of that answer.
+    //
+    // Conjoined with the probe-derived condition rather than replacing it: a
+    // feature forced on here also lands in `non_minimalizable_features` via the
+    // hard-constraint model, which is what keeps `minimize` from taking it back
+    // one pass later (R31-3).
+    let dep_manifest = determine_manifest_file(&dep_crate_name, Some(&main_name));
+    let dep_requirement = driver::dependency_feature_requirement(&ctx, &dep_manifest);
+    let hard_constraints = match (hard_constraints, dep_requirement) {
+        (Some(hard), Some(req)) => Some(Bool::and(&ctx, &[&hard, &req])),
+        (Some(hard), None) => Some(hard),
+        (None, Some(req)) => Some(req),
+        (None, None) => None,
+    };
+
     let (enable, disable, entailed_false) = process_crate(
         exchange,
         &ctx,

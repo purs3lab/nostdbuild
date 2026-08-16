@@ -1,0 +1,17 @@
+# ab_glyph's shape: the feature that reaches the dependency's requirement is
+# also what `default` turns on, so a model is free to satisfy the requirement by
+# naming `default` alone — a set Cargo cannot produce. The feature implications
+# that ride along with the requirement are what rule it out.
+[package]
+name = "implied"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.paired]
+version = "1.0.0"
+default-features = false
+
+[features]
+default = ["float"]
+float = ["paired/libm"]
+std = ["paired/std"]

@@ -455,6 +455,27 @@ fn main() -> anyhow::Result<()> {
         &mut exchange.telemetry,
     );
 
+    // What this crate's dependencies demand of its feature set (R31-4). The
+    // translation existed and only the covering runs read it: glamour 0.16.0's
+    // log says `Dependency glam's compile_error constrains this crate: (default
+    // ∨ std ∨ libm)` and it still shipped `--no-default-features` with none of
+    // the three, losing all 26 targets to "You must specify a math backend".
+    // Conjoined into the hard constraints so the feature solve answers it and
+    // `hard_constraint_features` below keeps `minimize` from taking the answer
+    // back. `None` for the crates no dependency constrains, which is most.
+    let hard_constraints = match (
+        hard_constraints,
+        driver::dependency_feature_requirement(
+            &ctx,
+            &parser::determine_manifest_file(&exchange.name_with_version, None),
+        ),
+    ) {
+        (Some(hard), Some(req)) => Some(z3::ast::Bool::and(&ctx, &[&hard, &req])),
+        (Some(hard), None) => Some(hard),
+        (None, Some(req)) => Some(req),
+        (None, None) => None,
+    };
+
     // A build enabler is load-bearing only through what it forwards. totsu_core's
     // `libm = ["num-traits/libm"]` is what gives `Float` a `sqrt`; num-traits
     // solves fine without its own `libm`, so `move_unnecessary_dep_feats` sees a
