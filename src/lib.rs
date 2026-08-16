@@ -24,7 +24,7 @@ pub mod visitor;
 pub mod hir_driver;
 
 use crate::types::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 lazy_static! {
     // This is a list of all dependencies for a crate.
@@ -138,6 +138,22 @@ pub struct DataExchange {
     /// Accumulated across finalize_dep_crate calls and consumed by
     /// move_unnecessary_dep_feats.
     pub protected_dep_features: HashSet<(String, String)>,
+    /// Per-dependency (`<name>:<version>`): the dependency's own features that
+    /// **must be off** if it is to be no_std — its `removable` set from
+    /// `finalize_dep_crate`, closed over the dependency's `[features]` table so
+    /// a feature that merely *reaches* a forbidden one counts too.
+    ///
+    /// This is the one notion of "this dep feature has to go" every writer
+    /// shares. `move_unnecessary_dep_feats` reads it instead of asking whether
+    /// the dependency's solve happened to *ask* for the feature: a feature the
+    /// solve had no reason to set is a don't-care, and deleting the main crate's
+    /// `<dep>/<feat>` on the strength of that is what emptied mtxgroup's
+    /// `spin = ["spin/mutex", "spin/spin_mutex"]` (R31-5). Same distinction as
+    /// F4/T4(a), applied to the third writer.
+    ///
+    /// Absent for a dependency whose analysis never ran (a DB-cache hit records
+    /// the `disable`-derived fallback that `finalize_dep_crate` uses there).
+    pub dep_forbidden_features: HashMap<String, HashSet<String>>,
     /// The polarity the *main* crate's own no_std condition forces on its
     /// declared features: features it entails true, and features it entails
     /// false. Written by `parser::process_crate` on the main path, where the

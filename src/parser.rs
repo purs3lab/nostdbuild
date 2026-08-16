@@ -1329,6 +1329,27 @@ pub fn finalize_dep_crate(
 
     let dep_original_name = dep.crate_name.split(":").next().unwrap_or("").to_string();
 
+    // Publish the same "must be off" verdict to the one writer that never had it.
+    // `move_unnecessary_dep_feats` edits the *main* crate's `[features]` table and
+    // decided there on "the dependency's solve did not ask for this", which is a
+    // don't-care and not a refusal (R31-5). Closed over the dependency's own
+    // `[features]` table because a value that merely reaches a forbidden feature
+    // turns it on just as surely — the reachability `reaches_forbidden_feature`
+    // already applies to the main crate's condition.
+    {
+        let dep_feats = downloader::read_local_features(&driver::read_manifest_toml(
+            &determine_manifest_file(&dep.crate_name, Some(&exchange.name_with_version)),
+        ));
+        let forbidden = features_that_must_be_off(&dep_feats, &removable);
+        debug!(
+            "Dependency {}: features that must stay off (closed): {:?}",
+            dep.crate_name, forbidden
+        );
+        exchange
+            .dep_forbidden_features
+            .insert(dep.crate_name.clone(), forbidden);
+    }
+
     let dep_crate_name_norm = exchange
         .crate_name_rename
         .iter()
@@ -1704,19 +1725,41 @@ pub fn process_dep_crate(
     )
 }
 
-/// Sometimes main might enable a feature that enables a dependency feature
-/// that is not required for no_std build and can cause build failure.
-/// If such a feature exists in a main feature which is not necessary
-/// for the main, it is dropped from the enabled features of main crate.
-/// If the feature is part of a fixed feature list, it is moved to a
-/// custom feature list called `dep-unnecessary-features`.
+/// A main-crate feature that forwards a dependency feature the dependency
+/// **cannot have** and still be no_std is a feature this build cannot enable:
+/// if the main crate needs it anyway it is dropped from the selection, and if it
+/// is fixed the offending value is deleted from its array and parked in
+/// `dep_unnecessary_features`.
+///
+/// **What "cannot have" means, and what it used to mean (R31-5).** The test was
+/// `the dependency's solve did not ask for this feature`. That is a don't-care,
+/// not a refusal — the same conflation F4/T4(a) removed from
+/// `finalize_dep_crate`'s two removal sites, still live in this third writer.
+/// mtxgroup 0.1.1 is the shape: spin's own solve answers `enable: []` because
+/// spin compiles perfectly well without `mutex`/`spin_mutex`, and it is
+/// *mtxgroup* that needs `spin::Mutex`, so `spin = ["spin/mutex",
+/// "spin/spin_mutex"]` was emptied and `spin` — the feature its own
+/// `compile_error!` demands — dropped from the command line as well. The test is
+/// now membership of `dep_forbidden_features`: the dependency's `removable` set
+/// (entailed-false where the analysis ran, `disable` on a DB-cache hit), closed
+/// over the dependency's `[features]` table so a value that only *reaches* a
+/// forbidden feature is caught too.
+///
+/// The consequence is that this pass removes nothing for a dependency whose
+/// no_std-ness constrains none of its features, which is the common case and the
+/// intended one — the author wrote those values and nothing has refuted them.
+///
 /// # Arguments
 /// * `main_name` - The name of the main crate
 /// * `fixed_main_args` - The fixed features of the main crate
 /// * `flexible_main_args` - The list of features whihc are not necessary for main
 /// * `dep_name` - The name of the dependency with the version
-/// * `deps_args` - The features required for the dependency. This is the list of features
-///   that are enabled for a dependency.
+/// * `deps_args` - The features the dependency's own solve asked for. No longer
+///   the removal test; it still marks the values worth re-parking under
+///   `custom_no_std_feature_enabled` when a whole feature has to be dropped.
+/// * `dep_forbidden` - The dependency features that must be off, from
+///   `DataExchange::dep_forbidden_features`. Empty when the dependency was never
+///   analysed, in which case this pass leaves the manifest alone.
 pub fn move_unnecessary_dep_feats(
     main_name: &str,
     fixed_main_args: &mut Vec<String>,
@@ -1726,6 +1769,7 @@ pub fn move_unnecessary_dep_feats(
     telemetry: &mut Telemetry,
     disable_default: bool,
     protected_dep_features: &std::collections::HashSet<(String, String)>,
+    dep_forbidden: &HashSet<String>,
 ) {
     let main_manifest = determine_manifest_file(main_name, None);
     let mut main_toml: toml::Value =
@@ -1790,6 +1834,16 @@ pub fn move_unnecessary_dep_feats(
     // one feature that has to be disabled.
     let mut needed_dropped: HashSet<String> = HashSet::new();
     let dep_norm = dep_name_only.replace('-', "_");
+
+    // The one test, applied identically by all three loops below. A value is
+    // deleted only when the dependency's own analysis says the feature it names
+    // must be off; `protected_dep_features` stays an override on top of that for
+    // the two writers that already honoured it.
+    let must_go = |key: &str| {
+        dep_forbidden.contains(key)
+            && !protected_dep_features.contains(&(dep_norm.clone(), key.to_string()))
+    };
+
     flexible_main_args.retain(|feature| {
         // A feature with no `[features]` array is Cargo's implicit per-optional-dep
         // feature (`hashbrown = ["dep:hashbrown"]`, synthesised, never written down).
@@ -1805,18 +1859,18 @@ pub fn move_unnecessary_dep_feats(
         for f in arr.iter().filter_map(|v| v.as_str()) {
             if f.starts_with(&prefix1) || f.starts_with(&prefix2) {
                 let key = extract_key(f);
-                if deps_args.contains(&key.to_string()) {
-                    local_needed_dropped.insert(f.to_string());
-                } else if !protected_dep_features.contains(&(dep_norm.clone(), key.to_string())) {
-                    // A protected value is one the *main* crate needs even though
-                    // the dep's own solve did not ask for it — totsu_core needs
-                    // `libm = ["num-traits/libm"]` to have a `sqrt` at all, while
-                    // num-traits alone is happy without it. Counting that as a
-                    // mismatch drops `libm` from the args, and the loop below then
-                    // empties the feature's array, so the emitted config has
-                    // neither. The removal loops below already honour this set;
-                    // this one did not.
+                if must_go(key) {
                     has_mismatch = true;
+                } else if deps_args.contains(&key.to_string()) {
+                    // Dropping the feature takes everything it forwards with it.
+                    // The values the dependency's own solve asked for are re-parked
+                    // under `custom_no_std_feature_enabled`, which the build
+                    // enables, so the dependency still gets them. Deliberately not
+                    // widened to every surviving value: parking one the dependency
+                    // never asked for turns a feature on off the back of a feature
+                    // being turned off, and F15 is the standing lesson that a pass
+                    // downstream of the solve should only ever subtract.
+                    local_needed_dropped.insert(f.to_string());
                 }
             }
         }
@@ -1835,16 +1889,11 @@ pub fn move_unnecessary_dep_feats(
             arr.retain(|v| {
                 if let Some(s) = v.as_str()
                     && (s.starts_with(&prefix1) || s.starts_with(&prefix2))
+                    && must_go(extract_key(s))
                 {
-                    let key = extract_key(s);
-                    if !deps_args.contains(&key.to_string()) {
-                        if protected_dep_features.contains(&(dep_norm.clone(), key.to_string())) {
-                            return true;
-                        }
-                        debug!("Removing unnecessary feature {} from main crate", s);
-                        removed.insert(s.to_string());
-                        return false;
-                    }
+                    debug!("Removing unnecessary feature {} from main crate", s);
+                    removed.insert(s.to_string());
+                    return false;
                 }
                 true
             });
@@ -1859,15 +1908,14 @@ pub fn move_unnecessary_dep_feats(
             arr.retain(|v| {
                 if let Some(s) = v.as_str()
                     && (s.starts_with(&prefix1) || s.starts_with(&prefix2))
+                    && must_go(extract_key(s))
                 {
-                    let key = extract_key(s);
-                    if !deps_args.contains(&key.to_string()) {
-                        if protected_dep_features.contains(&(dep_norm.clone(), key.to_string())) {
-                            return true;
-                        }
-                        removed.insert(s.to_string());
-                        return false;
-                    }
+                    debug!(
+                        "Removing unnecessary feature {} from main crate (indirect)",
+                        s
+                    );
+                    removed.insert(s.to_string());
+                    return false;
                 }
                 true
             });
@@ -2203,6 +2251,35 @@ pub fn close_over_local_features(
             return closed;
         }
     }
+}
+
+/// Every feature of a crate that enabling would turn on one of `removable` —
+/// `removable` itself plus everything that reaches it through the crate's own
+/// `[features]` table.
+///
+/// The set version of [`reaches_forbidden_feature`], over a raw feature table
+/// rather than a `CrateInfo`, so a *dependency's* verdict can be computed where
+/// its manifest is in hand and read later where it is not
+/// (`DataExchange::dep_forbidden_features` → `move_unnecessary_dep_feats`).
+///
+/// Empty in, empty out: a dependency whose no_std-ness constrains none of its
+/// features forbids none of them, and the reader edits nothing.
+pub fn features_that_must_be_off(
+    features: &[(String, TupleVec)],
+    removable: &[String],
+) -> HashSet<String> {
+    if removable.is_empty() {
+        return HashSet::new();
+    }
+    features
+        .iter()
+        .map(|(name, _)| name.clone())
+        .chain(removable.iter().cloned())
+        .filter(|feat| {
+            let closed = close_over_local_features(&HashSet::from([feat.clone()]), features);
+            removable.iter().any(|r| closed.contains(r))
+        })
+        .collect()
 }
 
 /// Does enabling `feat` turn on a feature the crate's no_std condition forbids?

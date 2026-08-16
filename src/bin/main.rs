@@ -225,6 +225,13 @@ fn process_dep_crate_wrapper(
         Some(deps_to_keep),
     );
 
+    // Empty for a dependency `finalize_dep_crate` never reached — the pass then
+    // has nothing proved against any of its features and edits nothing.
+    let dep_forbidden = exchange
+        .dep_forbidden_features
+        .get(&dep.crate_name)
+        .cloned()
+        .unwrap_or_default();
     parser::move_unnecessary_dep_feats(
         &exchange.name_with_version,
         enable,
@@ -234,6 +241,7 @@ fn process_dep_crate_wrapper(
         &mut exchange.telemetry,
         *disable_default,
         &exchange.protected_dep_features,
+        &dep_forbidden,
     );
     Ok(())
 }
@@ -389,6 +397,7 @@ fn main() -> anyhow::Result<()> {
         valid_cross_crate_items: std::collections::HashSet::new(),
         main_enable: Vec::new(),
         protected_dep_features: std::collections::HashSet::new(),
+        dep_forbidden_features: std::collections::HashMap::new(),
         main_no_std_required: Vec::new(),
         main_no_std_forbidden: Vec::new(),
     };
