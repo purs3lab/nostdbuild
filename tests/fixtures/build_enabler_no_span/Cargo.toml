@@ -1,0 +1,27 @@
+[package]
+name = "build_enabler_no_span"
+description = "euclid in miniature: unconditionally no_std, not one std span, and it still does not build bare metal without a feature"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "build_enabler_no_span"
+
+# `mathshim` stands in for num-traits: it only has a `sqrt` when one of its two
+# backends is selected, and nothing but the parent's feature table can select one.
+[dependencies.mathshim]
+path = "mathshim"
+default-features = false
+
+# euclid 0.22.11's shape exactly — `libm = ["num-traits/libm"]`, named by no
+# `#[cfg]` in the crate, so it is never a variable any solve has an opinion
+# about. `default` is empty, so nothing turns it on by accident either.
+[features]
+default = []
+libm = ["mathshim/libm"]
+
+# `exclude` keeps the shim out of the workspace so `find_entrypoints` does not
+# analyse its lib as a second entrypoint.
+[workspace]
+exclude = ["mathshim"]

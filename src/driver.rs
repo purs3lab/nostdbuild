@@ -3449,9 +3449,22 @@ pub fn analyze_crate<'a>(
     // for a bare-metal target — every record above came from the host fallback.
     // Probing from here is doomed: each probe compiles the same way and comes back
     // `CompileFailed`, so look for the feature the crate needs to build at all
-    // before spending them. Gated on there being an `AlwaysStd` span to probe,
-    // because those are the only ones a failed probe turns into `unproven` — a
-    // crate with nothing to prove has nothing to gain from the search.
+    // before spending them.
+    //
+    // It used to be gated on there also being an `AlwaysStd` span to probe, on the
+    // reasoning that those are the only spans a failed probe turns into `unproven`
+    // — a crate with nothing to prove has nothing to gain. True of the probing
+    // stage and false of the emission stage, which is the whole of R31-5's larger
+    // half. euclid 0.22.11 is `#![cfg_attr(not(test), no_std)]` with no `extern
+    // crate std` anywhere, so its no_std condition is `true` and it has not one std
+    // span; its `libm = ["num-traits/libm"]` gates no code of its own, so no
+    // covering set ever contains it, every run dies on `unresolved import
+    // num_traits::real`, and the crate shipped `--no-default-features` — while
+    // `--no-default-features --features libm` builds it clean on
+    // `aarch64-unknown-none`. What the search finds is not evidence about a span,
+    // it is a hard constraint on the feature solve, and that is worth having
+    // whether or not there is anything left to prove. 45 of R31-5's 48 crates are
+    // this shape (`libm`, `alloc`), none of them with a span to their name.
     //
     // Skipped outright for a crate that already has a good target, which is the
     // overwhelming majority. When it does run and fails, the cost is one probe's
@@ -3463,9 +3476,7 @@ pub fn analyze_crate<'a>(
     // no such feature emits it as `<dep>/libm` in `custom_no_std_feature_enabled`,
     // which cargo rejects outright (observed on totsu_core → `log/libm`).
     let mut build_enablers: Vec<String> = Vec::new();
-    if LAST_GOOD_TARGET.lock().unwrap().is_none()
-        && !(always_std_imports.is_empty() && always_std_others.is_empty())
-    {
+    if LAST_GOOD_TARGET.lock().unwrap().is_none() {
         // The gates the prober is about to negate. Passed in so the search never
         // proposes a feature that satisfies one of them — `std` is otherwise a
         // perfectly good answer to "what makes this crate compile".

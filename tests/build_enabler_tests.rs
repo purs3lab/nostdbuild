@@ -248,6 +248,54 @@ fn a_pair_of_features_is_found_when_all_on_fails_on_an_optional_dep() {
     assert_eq!(telemetry.unproven_std_spans, 0);
 }
 
+/// A crate with nothing to prove still has a configuration to find (R31-5).
+///
+/// The search used to require an `AlwaysStd` span, on the reasoning that a
+/// failed probe is the only thing it makes better. euclid 0.22.11 has no such
+/// span — `#![cfg_attr(not(test), no_std)]`, no `extern crate std`, no std
+/// anywhere — and no bare-metal build either: `num_traits::real` does not exist
+/// until `num-traits` gets `std` or `libm`, and euclid's own
+/// `libm = ["num-traits/libm"]` gates none of its code, so no covering set ever
+/// contains it. It shipped `--no-default-features` and lost all 26 targets while
+/// `--no-default-features --features libm` builds it clean. The search's answer
+/// is a constraint on the feature solve, not evidence about a span, so it is
+/// worth having either way. 45 of R31-5's 48 crates are this shape.
+#[cargo_test]
+fn a_crate_with_no_std_span_still_gets_the_configuration_that_builds() {
+    let _serial = isolated();
+    let (_p, manifest) = load_fixture("build_enabler_no_span");
+
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut telemetry = Telemetry::default();
+
+    let (hard_spans, condition, _coverage, _ce, _root, _records, unproven) =
+        analyze_crate(&ctx, &manifest, "build_enabler_no_span", &mut telemetry);
+
+    assert_eq!(
+        telemetry.build_enabler_features,
+        vec!["libm".to_string()],
+        "nothing in this crate is std, and `libm` is still the only way it builds \
+         for a bare-metal target"
+    );
+
+    // Nothing to prove, and nothing claimed either — the search must not invent a
+    // verdict about a crate it only compiled.
+    assert!(hard_spans.is_empty(), "{hard_spans:?}");
+    assert!(unproven.is_empty(), "{unproven:?}");
+
+    // The point of the whole exercise: the emitted selection is solved from this
+    // condition, so `libm` has to survive into it.
+    let condition = condition.expect("the enabler should have produced a condition");
+    let solver = z3::Solver::new(&ctx);
+    solver.assert(&condition);
+    solver.assert(&z3::ast::Bool::new_const(&ctx, "libm").not());
+    assert_eq!(
+        solver.check(),
+        z3::SatResult::Unsat,
+        "the condition must force `libm` on, got {condition}"
+    );
+}
+
 /// The search must not be constrained by the verdicts it exists to overturn.
 ///
 /// proptest 1.6.0 (O-10's probe). `src/arbitrary/mod.rs:39` is
