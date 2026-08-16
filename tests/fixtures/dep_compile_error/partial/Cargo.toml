@@ -1,0 +1,15 @@
+# bamboo-rs-core's shape: the dependency offers several ways out and this crate
+# forwards only some of them. One arm it cannot reach used to discard the whole
+# constraint, including the arm it can.
+[package]
+name = "partial"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.paired]
+version = "1.0.0"
+default-features = false
+
+[features]
+default = []
+libm = ["paired/libm"]

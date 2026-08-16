@@ -299,3 +299,26 @@ fn a_compile_error_below_the_crate_root_is_still_found() {
     );
 }
 
+/// bamboo-rs-core's shape. curve25519-dalek names five backends; ed25519-dalek
+/// forwards four of them and not `fiat_u32_backend`, and the fifth used to
+/// discard the constraint whole — so a crate that could have answered "no
+/// curve25519-dalek backend cargo feature enabled!" was never asked. An arm this
+/// crate cannot reach is `false` *here*, and the constraint survives as long as
+/// what is left of it can still be satisfied.
+#[test]
+fn an_arm_this_crate_cannot_reach_does_not_discard_the_others() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let constraints = constraints_for(&ctx, "partial");
+    assert!(
+        !constraints.is_empty(),
+        "`libm` is reachable and answers the constraint; only `std` is not"
+    );
+    assert!(
+        !satisfiable(&ctx, &constraints, &[], &["libm"]),
+        "with the one reachable arm off there is nothing left to satisfy it"
+    );
+    assert!(
+        satisfiable(&ctx, &constraints, &["libm"], &[]),
+        "`libm` must still satisfy it"
+    );
+}

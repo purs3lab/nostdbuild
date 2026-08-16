@@ -1766,7 +1766,7 @@ pub fn dependency_compile_error_constraints<'a>(
             };
             let (_, parsed) = parser::parse_main_attributes_direct(attr, ctx);
             let mut substitutions = Vec::new();
-            let mut translatable = true;
+            let mut unreachable_atom = false;
             for feat in &parsed.features {
                 let from = Bool::new_const(ctx, feat.as_str());
                 let to = if always_on.contains(feat) {
@@ -1775,40 +1775,49 @@ pub fn dependency_compile_error_constraints<'a>(
                     let enablers =
                         parser::local_features_enabling_dep_feature(manifest_toml, &dep_key, feat);
                     if enablers.is_empty() {
-                        // NOT `false`. No feature of this crate reaches it, but
-                        // the dependency walk rewrites dependency manifests and
-                        // can turn it on with no feature path from here at all —
-                        // the asymmetry that made O-12(b)'s sapling entry wrong
-                        // for a week. Reading it as `false` would make the whole
-                        // constraint unsatisfiable, and an unsat `all_hard`
-                        // costs the crate every covering run: no baseline, no
-                        // solved sets, `std_in_every_run` trivially true. That
-                        // is worse than the failing build this is meant to fix,
-                        // so an atom this crate cannot speak about is a reason
-                        // to say nothing about the constraint at all.
-                        translatable = false;
-                        break;
+                        // No feature of this crate reaches it, so it is not a way
+                        // *this* crate can answer the constraint — `false` is the
+                        // only reading available here. What that reading must not
+                        // do is turn the whole constraint unsatisfiable: the
+                        // dependency walk rewrites dependency manifests and can
+                        // turn such a feature on with no feature path from here
+                        // at all (the asymmetry that made O-12(b)'s sapling entry
+                        // wrong for a week), and an unsat `all_hard` costs the
+                        // crate every covering run — no baseline, no solved sets,
+                        // every span `AlwaysStd`. So it is substituted, and the
+                        // result is kept only if it is still satisfiable.
+                        unreachable_atom = true;
+                        Bool::from_bool(ctx, false)
+                    } else {
+                        let vars: Vec<Bool> = enablers
+                            .iter()
+                            .map(|f| Bool::new_const(ctx, f.as_str()))
+                            .collect();
+                        Bool::or(ctx, &vars.iter().collect::<Vec<_>>())
                     }
-                    let vars: Vec<Bool> = enablers
-                        .iter()
-                        .map(|f| Bool::new_const(ctx, f.as_str()))
-                        .collect();
-                    Bool::or(ctx, &vars.iter().collect::<Vec<_>>())
                 };
                 substitutions.push((from, to));
-            }
-            if !translatable {
-                debug!(
-                    "Dependency {}'s compile_error names a feature this crate cannot reach; \
-                     leaving its constraint out",
-                    package
-                );
-                continue;
             }
             let pairs: Vec<(&Bool, &Bool)> = substitutions.iter().map(|(f, t)| (f, t)).collect();
             let translated = eq.substitute(&pairs).simplify();
             if translated == Bool::from_bool(ctx, true) {
                 continue;
+            }
+            // One unreachable arm used to discard the constraint whole. bamboo-rs-core
+            // reaches four of curve25519-dalek's five backends through ed25519-dalek and
+            // not `fiat_u32_backend`, and lost "no curve25519-dalek backend cargo feature
+            // enabled!" — a requirement it could have met — to the fifth.
+            if unreachable_atom {
+                let solver = z3::Solver::new(ctx);
+                solver.assert(&translated);
+                if solver.check() != z3::SatResult::Sat {
+                    debug!(
+                        "Dependency {}'s compile_error can only be answered by a feature this \
+                         crate cannot reach; leaving its constraint out",
+                        package
+                    );
+                    continue;
+                }
             }
             debug!(
                 "Dependency {}'s compile_error constrains this crate: {:?}",
