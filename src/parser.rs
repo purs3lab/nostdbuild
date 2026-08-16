@@ -4372,9 +4372,39 @@ pub fn should_skip_dep(
                 dep_name.clone()
             };
             let severed = remove_feats_enabling_dep(main_name, &features_for_dependency, &target);
+            // Whatever `remove_feats_enabling_dep` could not cut, because there is no
+            // `[features]` entry to cut it out of: cargo's *implicit* feature for an
+            // optional dependency. `insecure-time-0.1.0` has `default = ["std", "clap"]`
+            // and no `[features] clap`, so severing found nothing to remove, the
+            // dependency was skipped as not-no_std all the same, and `clap` — re-added
+            // by `final_feature_list_main` as a surviving member of `default` — went out
+            // on the command line and linked std on all 26 targets. There is no manifest
+            // entry to park; dropping the feature from the build is the whole edit, the
+            // same conclusion the pin-set branch above already reaches by another road.
+            let mut forced_here: Vec<String> = features_for_dependency
+                .iter()
+                .filter(|feat| {
+                    !severed.contains(*feat)
+                        && !exchange
+                            .crate_info
+                            .features
+                            .iter()
+                            .any(|(name, _)| name == *feat)
+                })
+                .cloned()
+                .collect();
+            forced_here.retain(|feat| !features_forced_off.contains(feat));
+            if !forced_here.is_empty() {
+                debug!(
+                    "Dependency {} is enabled by its implicit feature(s) {:?}, which have no \
+                     manifest entry to sever; turning them off instead",
+                    dep_name, forced_here
+                );
+                features_forced_off.extend(forced_here.iter().cloned());
+            }
             // A feature named directly on the command line has no manifest entry to
             // cut, so `severed` is empty and the edit is real all the same.
-            if !severed.is_empty() || target != dep_name {
+            if !severed.is_empty() || target != dep_name || !forced_here.is_empty() {
                 // The manifest no longer links these features to this dep. Re-read it
                 // and drop the matching pairs so a later round sees that, rather than
                 // trying to sever a link that is already gone. Features that still
