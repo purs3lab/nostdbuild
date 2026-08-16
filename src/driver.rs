@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::{fs, process::Command};
 use uuid::Uuid;
+use walkdir::WalkDir;
 use which::which;
 use z3::ast::Ast;
 
@@ -1456,10 +1457,11 @@ pub fn run_rustc_plugin_pass_with(
             bare_metal_reached_crate = true;
         }
         debug!(
-            "cargo hir failed for {} on target [{}] (exit {})",
+            "cargo hir failed for {} on target [{}] (exit {}): {}",
             crate_name,
             target.unwrap_or("host"),
-            last_exit.unwrap_or(-1)
+            last_exit.unwrap_or(-1),
+            first_error_line(&last_stderr)
         );
     }
 
@@ -1588,6 +1590,22 @@ fn set_host_no_std_applicability(pred: Option<&target_cfg::CfgPred>, telemetry: 
         telemetry.no_std_predicate_targets =
             targets.iter().map(|t| t.to_string()).collect();
     }
+}
+
+/// The first line of a failing build's stderr that says what went wrong, for the
+/// log line that reports the failure.
+///
+/// A pass that fails on every target and the host logs 27 identical "cargo hir
+/// failed (exit 101)" lines and no reason, which is the state mtxgroup 0.1.1 was
+/// triaged in: the run looked like a target problem and was a `compile_error!`
+/// firing in the crate. Cargo's own summary line (`error: could not compile …`)
+/// is last and names no cause, so the first `error` line is the one to keep.
+fn first_error_line(stderr: &str) -> &str {
+    stderr
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("error"))
+        .unwrap_or("<no error line>")
 }
 
 /// Did this failing build get as far as compiling `crate_name` itself?
@@ -1730,18 +1748,12 @@ pub fn dependency_compile_error_constraints<'a>(
         let Some(dep_dir) = parser::find_sibling_crate_dir(manifest, &package) else {
             continue;
         };
-        let Some(entry) = parser::crate_entry_file(&dep_dir) else {
+        let files = compile_error_source_files(&dep_dir);
+        if files.is_empty() {
             continue;
-        };
-        // Reading the file is the prefilter: parsing every dependency of every
-        // analysed crate with syn is not worth doing for the crates that declare
-        // no `compile_error!` at all, which is nearly all of them.
-        match fs::read_to_string(&entry) {
-            Ok(text) if text.contains("compile_error!") => {}
-            _ => continue,
         }
 
-        let dep_attrs = parser::parse_crate(&package, false, None, &[], Some(&[entry]));
+        let dep_attrs = parser::parse_crate(&package, false, None, &[], Some(&files));
         if dep_attrs.compile_error_attrs.is_empty() {
             continue;
         }
@@ -1806,6 +1818,54 @@ pub fn dependency_compile_error_constraints<'a>(
         }
     }
     constraints
+}
+
+/// The files of a downloaded crate that contain a `compile_error!` at all —
+/// the prefilter for [`dependency_compile_error_constraints`], and the answer
+/// to "which files can hold one".
+///
+/// Reading is the prefilter: parsing every dependency of every analysed crate
+/// with syn is not worth doing for the crates that declare no `compile_error!`,
+/// which is nearly all of them. What this must not do is stop at the crate
+/// root. curve25519-dalek keeps
+/// ``compile_error!("no curve25519-dalek backend cargo feature enabled!")`` in
+/// `src/backend/mod.rs`, spin keeps its `mutex` one in `src/mutex.rs`, and
+/// reading only `lib.rs` found neither — six ed25519/x25519 crates and
+/// `forkable` shipped a config their dependency refuses to compile, with the
+/// constraint that says so never parsed.
+///
+/// `src/` only, and the declared `[lib] path` when it points elsewhere: a
+/// `build.rs` emitting a `compile_error!` into generated code (swiftness) is
+/// not a statement about this build's features, and `examples/` and `benches/`
+/// are not compiled by the dependency edge at all.
+///
+/// A `compile_error!` in a module the crate itself `#[cfg]`s out is read here
+/// as though the module were always compiled, since the `mod` declaration lives
+/// in another file. That is the same reading the main crate's own attributes
+/// get, and it errs towards *stating* a constraint the crate may not be under —
+/// which for the disjunctions this finds ("pick a backend") is the harmless
+/// direction, because the answer is a feature the consumer declares for exactly
+/// that purpose.
+fn compile_error_source_files(dep_dir: &Path) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = vec![dep_dir.join("src")];
+    if let Some(entry) = parser::crate_entry_file(dep_dir)
+        && !entry.starts_with(dep_dir.join("src"))
+    {
+        roots.push(entry);
+    }
+    let mut files = Vec::new();
+    for root in roots {
+        for entry in WalkDir::new(&root).into_iter().filter_map(Result::ok) {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            if fs::read_to_string(path).is_ok_and(|text| text.contains("compile_error!")) {
+                files.push(path.to_path_buf());
+            }
+        }
+    }
+    files
 }
 
 /// What this crate's dependencies demand of *its* feature set, as one

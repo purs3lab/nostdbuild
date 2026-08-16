@@ -262,3 +262,40 @@ fn a_crate_no_dependency_constrains_gets_no_requirement() {
     );
 }
 
+/// curve25519-dalek's shape: the crate root is silent and the requirement lives
+/// in `src/backend/mod.rs`. Reading only the entry file found nothing, so six
+/// ed25519/x25519 crates shipped `--no-default-features` against "no
+/// curve25519-dalek backend cargo feature enabled!" with no constraint in the
+/// solve to say otherwise.
+#[test]
+fn a_compile_error_below_the_crate_root_is_still_found() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let constraints = constraints_for(&ctx, "nested");
+    assert!(
+        !constraints.is_empty(),
+        "the dependency's requirement lives one file down and must still be read"
+    );
+    assert!(
+        !satisfiable(
+            &ctx,
+            &constraints,
+            &[],
+            &["u32_backend", "u64_backend", "default"]
+        ),
+        "with no backend forwarded the dependency refuses to compile"
+    );
+    assert!(
+        satisfiable(&ctx, &constraints, &["u64_backend"], &["std"]),
+        "one backend with std off is the configuration this must reach"
+    );
+    // `default` reaches `backend/u64_backend` too, so the raw disjunction is
+    // satisfied by leaving it on — which a std-off run cannot do, because
+    // `default` enables `std`. That is the implications' job, and the solve is
+    // handed the requirement, not the raw constraints.
+    let req = requirement(&ctx, "nested").expect("requirement");
+    assert!(
+        !satisfiable(&ctx, &[req], &[], &["std", "u32_backend", "u64_backend"]),
+        "with std off, `default` cannot stand in for a backend"
+    );
+}
+

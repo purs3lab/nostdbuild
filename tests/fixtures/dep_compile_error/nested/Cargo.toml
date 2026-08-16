@@ -1,0 +1,17 @@
+# ed25519-dalek-fiat in miniature: the consumer forwards to each of the
+# dependency's backends, and the dependency states its requirement one file
+# below its crate root.
+[package]
+name = "nested"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.backend]
+version = "1.0.0"
+default-features = false
+
+[features]
+default = ["std", "u64_backend"]
+std = []
+u32_backend = ["backend/u32_backend"]
+u64_backend = ["backend/u64_backend"]
