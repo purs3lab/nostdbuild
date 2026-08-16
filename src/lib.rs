@@ -635,6 +635,18 @@ pub struct Telemetry {
     /// reported no std usage at all, and none of those 55 produced a config that
     /// built — so the separation costs no crate that currently works.
     pub unproven_std_spans: usize,
+    /// Why each of those probes came back with nothing — the distinct
+    /// `ProbeDecision::CompileFailed` reasons behind `unproven_std_spans`,
+    /// deduplicated and in first-seen order.
+    ///
+    /// The count alone is what made `PROBE_SET_INFEASIBLE` (R31-6, 40 crates)
+    /// untriageable: every row read "every std span unproven, run aborts before
+    /// emitting" and nothing distinguished *the crate cannot compile with this
+    /// gate negated, whatever else is enabled* — which is the crate's problem and
+    /// not the tool's — from *the configuration the probe happened to carry does
+    /// not build*, which is. The compiler already answered that question in the
+    /// build the probe ran; this is where the answer is kept.
+    pub unproven_std_span_reasons: Vec<String>,
     /// Features `driver::discover_build_enablers` proved the crate cannot build
     /// for any bare-metal target without (bevy_input's `libm`).
     ///

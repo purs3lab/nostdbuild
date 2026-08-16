@@ -255,7 +255,20 @@ pub enum ProbeDecision {
         reason: String,
         alternate_crate: String,
     },
-    CompileFailed,
+    /// No configuration that negates the span's gate could be compiled, so the
+    /// probe returned no evidence either way.
+    ///
+    /// `reason` is why, in the compiler's own words: the first `error` line of
+    /// the last configuration tried. Without it the verdict is untriageable from
+    /// the outside — 40 crates spent run31 in `PROBE_SET_INFEASIBLE` labelled
+    /// "every std span unproven" and nothing else, and the answer for most of
+    /// them was sitting in the build the probe had already run (`error[E0412]:
+    /// cannot find type `Vec` in this scope` — the crate does not compile with
+    /// `std` off, whatever the gate says). Same argument as T5's attributed
+    /// `dep_not_no_std` exit: the run holds the evidence, so it should say it.
+    CompileFailed {
+        reason: String,
+    },
     /// The span is guarded, but by a cfg predicate naming no feature — e.g.
     /// `#[cfg(all(target_arch = "x86_64", target_os = "linux"))]`. Features are
     /// the axis this tool controls; the target is the consumer's choice, so such

@@ -556,10 +556,26 @@ fn main() -> anyhow::Result<()> {
             "ERROR: {} std span(s) in the main crate could not be proven avoidable",
             stats.unproven_std_usage_matches.len()
         );
-        reason = "Std usage in the main crate could not be proven avoidable";
+        // Attributed, like T5's `dep_not_no_std` exit: the probe compiled
+        // something and the compiler said why it failed, so the exit says it too.
+        // Unattributed, this verdict was the whole of `PROBE_SET_INFEASIBLE` —
+        // 40 crates that produced a count and nothing to act on, while the
+        // dominant answer ("`error[E0412]: cannot find type `Vec` in this scope`
+        // — the crate does not compile with `std` off") was already in hand and
+        // is not the tool's to fix.
+        let reasons = exchange.telemetry.unproven_std_span_reasons.clone();
+        let attributed = if reasons.is_empty() {
+            "Std usage in the main crate could not be proven avoidable".to_string()
+        } else {
+            format!(
+                "Std usage in the main crate could not be proven avoidable: {}",
+                reasons.join(" | ")
+            )
+        };
+        println!("ERROR: {attributed}");
         stats.telemetry = Some(exchange.telemetry);
         stats.dump(true);
-        return Err(anyhow::anyhow!(reason));
+        return Err(anyhow::anyhow!(attributed));
     }
 
     // Derive the file list from the resolved module tree rather than sweeping the

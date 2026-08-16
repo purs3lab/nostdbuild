@@ -415,6 +415,26 @@ fn initial_ungated_results<'a>(probe_targets: &[ProbeTarget<'a>]) -> Vec<ProbeRe
         .collect()
 }
 
+/// The sentence a failed probe reports as its `reason`.
+///
+/// `last_failure` is the first `error` line of the last configuration tried, and
+/// is what makes the verdict triageable: for the whole `PROBE_SET_INFEASIBLE`
+/// bucket it says outright whether the crate cannot be built with the gate
+/// negated (`error[E0412]: cannot find type Vec in this scope` — nothing a
+/// feature selection can fix) or whether some unrelated part of the
+/// configuration is what failed. `exhaustion` describes how the retries ended.
+fn compile_failed_reason(gate: &Bool, last_failure: &Option<String>, exhaustion: &str) -> String {
+    match last_failure {
+        Some(err) => format!(
+            "every configuration negating {gate} failed to compile ({exhaustion}); last failure: {err}"
+        ),
+        // No compile was ever attempted for this gate — the solver produced a
+        // model, and then nothing. Shape kept distinct so it cannot be read as
+        // a compiler verdict.
+        None => format!("no configuration negating {gate} was compiled ({exhaustion})"),
+    }
+}
+
 /// Returns a fingerprint for a gate ancestor sequence — used to group probe
 /// targets that will produce identical Z3 queries and compiles.
 fn gate_fingerprint(ancestors: &[Bool]) -> Vec<String> {
@@ -464,6 +484,10 @@ where
         gate_scope.meta("gate_index", index.to_string());
 
         let mut blocking: Vec<Bool<'a>> = vec![];
+        // Why the last configuration for *this* gate did not build, in the
+        // compiler's own words. The decision that comes out of a failed probe is
+        // only useful if it carries this: see `ProbeDecision::CompileFailed`.
+        let mut last_failure: Option<String> = None;
 
         // Each blocking clause eliminates exactly one Z3 assignment. With N boolean
         // feature variables there are 2^N models; without a cap a crate with many
@@ -473,7 +497,13 @@ where
         'retry: loop {
             if blocking.len() >= MAX_CEGAR_RETRIES {
                 debug!("CEGAR: hit retry cap for gate {} — CompileFailed", gate);
-                last_decision = ProbeDecision::CompileFailed;
+                last_decision = ProbeDecision::CompileFailed {
+                    reason: compile_failed_reason(
+                        &gate,
+                        &last_failure,
+                        "the configuration cap was reached",
+                    ),
+                };
                 index += 1;
                 break 'retry;
             }
@@ -510,7 +540,13 @@ where
                             "CEGAR: exhausted all models for gate {} — CompileFailed",
                             gate
                         );
-                        last_decision = ProbeDecision::CompileFailed;
+                        last_decision = ProbeDecision::CompileFailed {
+                            reason: compile_failed_reason(
+                                &gate,
+                                &last_failure,
+                                "no other configuration satisfies it",
+                            ),
+                        };
                     }
                     index += 1;
                     break 'retry;
@@ -525,23 +561,28 @@ where
                             // CEGAR: block this exact assignment and retry the same gate.
                             // The first error line is the only record of *why* a probe
                             // never compiled — without it a `CompileFailed` verdict is
-                            // untriageable from the log (bucket T2).
+                            // untriageable from the log (bucket T2). It is kept, not
+                            // just logged: when the retries run out it becomes the
+                            // decision's `reason` (R31-6).
+                            let first_error = crate::driver::first_error_line(&stderr).to_string();
                             debug!(
                                 "CEGAR: compile failed for {:?} ({}); blocking and retrying",
-                                features,
-                                stderr
-                                    .lines()
-                                    .find(|l| l.starts_with("error"))
-                                    .unwrap_or_else(|| stderr.lines().next().unwrap_or(""))
-                                    .trim()
+                                features, first_error
                             );
+                            last_failure = Some(first_error);
                             let block =
                                 solver::build_forbidden_constraint(ctx, &features, &disabled_feats);
+                            debug!("CEGAR: blocking clause {}", block);
                             blocking.push(block);
                             // continue 'retry
                         }
-                        PassOutcome::PluginMissingOutput { .. } => {
-                            last_decision = ProbeDecision::CompileFailed;
+                        PassOutcome::PluginMissingOutput { expected_path } => {
+                            last_decision = ProbeDecision::CompileFailed {
+                                reason: format!(
+                                    "the plugin wrote no output at {expected_path:?} for the \
+                                     configuration negating {gate}"
+                                ),
+                            };
                             index += 1;
                             break 'retry;
                         }
@@ -573,7 +614,13 @@ where
                                      hardness",
                                     reason
                                 );
-                                decision = ProbeDecision::CompileFailed;
+                                decision = ProbeDecision::CompileFailed {
+                                    reason: format!(
+                                        "the configuration negating {gate} compiled only on the \
+                                         host — every bare-metal attempt failed inside a dependency, \
+                                         so '{reason}' is that dependency's configuration talking"
+                                    ),
+                                };
                             }
                             let is_nonstd = matches!(decision, ProbeDecision::NonStd { .. });
                             last_decision = decision.clone();
@@ -709,7 +756,7 @@ fn decision_name(d: &ProbeDecision) -> &'static str {
     match d {
         ProbeDecision::NonStd { .. } => "NonStd",
         ProbeDecision::StillStd { .. } => "StillStd",
-        ProbeDecision::CompileFailed => "CompileFailed",
+        ProbeDecision::CompileFailed { .. } => "CompileFailed",
         ProbeDecision::ExternallyGated { .. } => "ExternallyGated",
     }
 }

@@ -1600,7 +1600,7 @@ fn set_host_no_std_applicability(pred: Option<&target_cfg::CfgPred>, telemetry: 
 /// triaged in: the run looked like a target problem and was a `compile_error!`
 /// firing in the crate. Cargo's own summary line (`error: could not compile …`)
 /// is last and names no cause, so the first `error` line is the one to keep.
-fn first_error_line(stderr: &str) -> &str {
+pub fn first_error_line(stderr: &str) -> &str {
     stderr
         .lines()
         .map(str::trim)
@@ -3816,7 +3816,14 @@ pub fn analyze_crate<'a>(
                         None => String::new(),
                     }
                 );
-                result.decision = ProbeDecision::CompileFailed;
+                result.decision = ProbeDecision::CompileFailed {
+                    reason: format!(
+                        "'{}' is std only in runs that never left the host — no covering run \
+                         compiled for a bare-metal target, and this crate's own source does not \
+                         name std here",
+                        result.target.analysis.exemplar.path_text
+                    ),
+                };
                 downgraded += 1;
             }
         }
@@ -3833,7 +3840,7 @@ pub fn analyze_crate<'a>(
         .iter()
         .chain(hard_usages.iter())
         .chain(conditional_results.iter())
-        .filter(|a| matches!(a.decision, ProbeDecision::CompileFailed))
+        .filter(|a| matches!(a.decision, ProbeDecision::CompileFailed { .. }))
         .count();
     if compile_failed_spans > 0 {
         debug!(
@@ -3856,16 +3863,32 @@ pub fn analyze_crate<'a>(
     let unproven: Vec<ReadableSpan> = hard_imports
         .iter()
         .chain(hard_usages.iter())
-        .filter(|a| matches!(a.decision, ProbeDecision::CompileFailed))
+        .filter(|a| matches!(a.decision, ProbeDecision::CompileFailed { .. }))
         .map(|a| a.target.analysis.span.clone())
         .collect();
+    // Why, in the compiler's own words, deduplicated: one gate's failure covers
+    // every span behind it, and a crate with 300 spans behind two gates has two
+    // things to say, not 300. Kept in first-seen order so the first line is the
+    // first thing the probing found.
+    let mut unproven_reasons: Vec<String> = Vec::new();
+    for result in hard_imports.iter().chain(hard_usages.iter()) {
+        if let ProbeDecision::CompileFailed { reason } = &result.decision
+            && !unproven_reasons.contains(reason)
+        {
+            unproven_reasons.push(reason.clone());
+        }
+    }
     if !unproven.is_empty() {
         debug!(
             "{} std span(s) could not be proven avoidable: every feature set negating their gate failed to compile",
             unproven.len()
         );
+        for reason in &unproven_reasons {
+            debug!("  unproven because: {}", reason);
+        }
     }
     telemetry.unproven_std_spans = unproven.len();
+    telemetry.unproven_std_span_reasons = unproven_reasons;
 
     let all_hard: Vec<ReadableSpan> = hard_imports
         .into_iter()

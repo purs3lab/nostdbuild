@@ -1,0 +1,15 @@
+[package]
+name = "probe_failure_attribution"
+description = "R31-6: negating the only gate leaves code that cannot compile, so the probe returns no evidence — and must say why"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+path = "main.rs"
+name = "probe_failure_attribution"
+
+[features]
+default = ["std"]
+std = []
+
+[workspace]
