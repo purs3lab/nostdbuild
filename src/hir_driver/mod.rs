@@ -708,6 +708,45 @@ pub struct PluginArgs {
     cargo_args: Vec<String>,
 }
 
+/// A plugin pass is an *analysis* compile, so the crate's own lint levels must not
+/// decide its no_std verdict.
+///
+/// A probe negates a feature gate, which deletes code, which makes other code dead.
+/// In a crate that writes `#![deny(warnings)]` — or `deny(unused_imports)`, or
+/// `deny(dead_code)` — that is a hard error, so every probe fails and every std span
+/// comes back unproven over a diagnostic that says nothing about std.
+/// `agnostic-lite-0.5.5` is the case: 74 probe compiles, all of them
+/// `error: struct `JoinError` is never constructed`, 114 spans unproven, nothing
+/// emitted. `--cap-lints` caps lints only, so a real `E0463` still fails the probe.
+///
+/// The cap belongs here and not in `RUSTFLAGS`: `RUSTFLAGS=--cap-lints=allow` on the
+/// `cargo hir` invocation breaks cargo's target-information probe under the plugin's
+/// rustc wrapper (`output of --print=file-names missing when learning about
+/// target-specific information from rustc` — 78 occurrences on `bitwrap_extra-2.0.6`
+/// with the flag, 0 without, on the first plugin pass for every bare-metal target).
+/// It does not degrade the analysis, it deletes it. Setting `RUSTFLAGS` process-wide
+/// measures the same. Here, cargo's probe is not involved.
+///
+/// The verification build in `compiler.rs` deliberately does *not* cap: a
+/// configuration that trips the crate's lints really does fail to build, and that
+/// failure is the crate's, filed under `DENY_LINT_FALLOUT`.
+///
+/// Left alone when cargo has already passed a cap. Cargo caps registry dependencies
+/// itself, and this filter runs over `CrateFilter::AllCrates`; honouring an existing
+/// `--cap-lints` means we never *raise* a dependency's cap, and the only crate this
+/// reaches is the workspace crate cargo left uncapped.
+fn cap_lints_for_analysis(mut compiler_args: Vec<String>) -> Vec<String> {
+    let already_capped = compiler_args
+        .iter()
+        .any(|arg| arg == "--cap-lints" || arg.starts_with("--cap-lints="));
+
+    if !already_capped {
+        compiler_args.push("--cap-lints=warn".to_string());
+    }
+
+    compiler_args
+}
+
 impl RustcPlugin for Plugin {
     type Args = PluginArgs;
 
@@ -740,6 +779,7 @@ impl RustcPlugin for Plugin {
             macro_imports: Vec::new(),
             macro_cfg_map: HashMap::new(),
         };
+        let compiler_args = cap_lints_for_analysis(compiler_args);
         rustc_driver::run_compiler(&compiler_args, &mut callbacks);
         Ok(())
     }

@@ -1,0 +1,15 @@
+[package]
+name = "deny_lint_probe"
+description = "R34-12 / KI-26: negating a gate deletes code, dead code is a warning, and the crate's own deny(warnings) turns that warning into the verdict"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+name = "deny_lint_probe"
+
+[features]
+default = ["std"]
+std = []
+
+[workspace]
