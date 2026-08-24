@@ -2729,7 +2729,37 @@ pub fn determine_manifest_file(name_with_version: &str, main_name: Option<&str>)
     )
 }
 
+/// The `[target.<cfg>]` sub-tables the emitted manifest drops. Cargo permits
+/// exactly three there — `dependencies`, `build-dependencies`, `dev-dependencies`
+/// — and only the dev half is unwanted: nothing the tool builds is a test or a
+/// bench, while a build script deprived of its own build-dependency is broken on
+/// every target, no_std or not.
+///
+/// This was an allowlist of `dependencies` alone, which differs from the denylist
+/// in exactly one case and severed the platform-gated build deps with the dev
+/// ones. `mp3lame-sys-0.1.8` declares
+/// `[target.'cfg(unix)'.build-dependencies] autotools = "0.2.6"` and names it once,
+/// at `build.rs:7`, as `autotools::Config::new(LAME_DIR)`; the emitted manifest
+/// lost the entry and failed `E0433` on all 26 targets *and* on
+/// `x86_64-unknown-linux-gnu`, where the no_std question does not arise (R34-19).
+/// Top-level `[build-dependencies]` was never scrubbed, so only the target-gated
+/// ones were reachable by this. Keeping them adds nothing to the no_std walk —
+/// the worklist is built from top-level `[dependencies]` alone
+/// (`downloader::gather_crate_info`) — and cargo resolves a `cfg` build dep
+/// against the host triple, which is where a build script runs.
+///
+/// Paired with the same list in `remove_features_of_deps`: a table kept here whose
+/// `dep:` reference is stripped there leaves cargo refusing the manifest with
+/// "optional dependency is not included in any feature". The two must name the
+/// same set.
+const TARGET_SUBTABLES_TO_REMOVE: [&str; 1] = ["dev-dependencies"];
+
 /// Remove a table from the Cargo.toml file.
+///
+/// `target` is the one key not removed outright: `[target.<cfg>]` holds the
+/// platform-specific halves of three different tables and only the dev half is
+/// unwanted, so the sub-tables are filtered instead. What comes out is
+/// `dev-dependencies` and nothing else — see [`TARGET_SUBTABLES_TO_REMOVE`].
 /// # Arguments
 /// * `key` - The key of the table to remove
 /// * `toml` - The TOML value to modify
@@ -2756,7 +2786,7 @@ pub fn remove_table_from_toml(
                 if let toml::Value::Table(inner_table) = inner_value {
                     let to_remove: Vec<String> = inner_table
                         .keys()
-                        .filter(|&k| k != "dependencies")
+                        .filter(|k| TARGET_SUBTABLES_TO_REMOVE.contains(&k.as_str()))
                         .cloned()
                         .collect();
 
@@ -2818,7 +2848,12 @@ pub fn remove_features_of_deps(
     if key == "target" {
         table.iter().for_each(|(_, value)| {
             if let toml::Value::Table(table) = value {
-                for dep_type in ["dev-dependencies", "build-dependencies"] {
+                // Exactly the sub-tables `remove_table_from_toml` is about to
+                // delete. Harvesting `build-dependencies` here as well used to be
+                // harmless because that table went out too; now that it stays, a
+                // stripped `dep:<build dep>` would leave an optional dependency
+                // enabled by no feature and cargo would refuse the manifest.
+                for dep_type in TARGET_SUBTABLES_TO_REMOVE {
                     if let Some(inner_deps) = table.get(dep_type).and_then(toml::Value::as_table) {
                         for (dep_name, _) in inner_deps.iter() {
                             debug!("Found dependency: {}", dep_name);
