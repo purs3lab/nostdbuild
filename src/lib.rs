@@ -434,6 +434,14 @@ pub struct Telemetry {
     /// What were the new features that we added to the main crate features list for dependencies
     /// This is the dependency equivalent of `new_feats_added_to_main_list` field
     pub custom_features_added_list: Vec<(String, Vec<String>)>,
+    /// Feature atoms the solve set true that the crate cannot actually be asked
+    /// for: named by a `#[cfg(feature = "…")]` in its source, absent from its
+    /// `[features]` table and not cargo's implicit feature for an optional
+    /// dependency. Dropped before emission (R34-2, R34-14) and recorded here,
+    /// because a crate whose only `#![no_std]` switch is such an atom cannot be
+    /// made no_std through cargo at all and should be triaged, not silently
+    /// emitted without it. Each entry is `(name:version, atoms)`.
+    pub undeclared_feature_atoms: Vec<(String, Vec<String>)>,
     /// Did we have to modify the default features that main set for any of its dependencies
     pub default_list_modified: Vec<(String, bool)>,
     /// Did we change the default-features to false for any dependency

@@ -632,6 +632,47 @@ pub fn process_crate(
         (enable, disable) = solver::model_to_features(&model);
     }
 
+    // The model carries one Bool per `feature = "…"` atom the crate's *source*
+    // mentions, and a crate can name a feature its manifest never declares — a
+    // vestige the author left behind (`bitcoin 0.32` dropped `no-std` from the
+    // manifest and kept the cfgs), a package that ships more source than it
+    // builds (the wTools monorepo), or a gate that was never wired up at all.
+    // Z3 assigns such a free atom arbitrarily and a `true` used to reach the
+    // emitted configuration, where cargo refuses it: as `<dep>/<atom>` in
+    // `custom_no_std_feature_enabled` (R34-2), or, on the main crate, declared
+    // into existence by `new_feats_to_add` and passed on the command line
+    // (R34-14). Filtering the list here covers both, because this list *is* the
+    // argv for the main crate and the `not_found` input for a dependency.
+    //
+    // Nothing about the genuine forwarding gap changes: a feature the dependency
+    // really has and the main crate cannot reach is selectable, so it stays.
+    //
+    // What is dropped is recorded, because the atom is evidence and not noise.
+    // `kwap-common 0.6.4` has no `[features]` table at all and a crate root of
+    // `#![cfg_attr(all(not(test), feature = "no_std"), no_std)]`, so it can never
+    // be no_std through cargo; dropping the request without saying so would turn
+    // a loud resolve error into a quiet wrong answer. The deeper repair is to
+    // erase these atoms when the condition is *built*, the way
+    // `driver`'s `ModCollector::with_known_features` already does for the module
+    // tree — `parse_attributes` here is the path that still has no such filter.
+    let selectable = solver::selectable_features(
+        crate_info,
+        &driver::read_manifest_toml(&determine_manifest_file(name_with_version, main_name)),
+    );
+    let unselectable = solver::retain_selectable_features(&mut enable, &selectable);
+    if !unselectable.is_empty() {
+        println!(
+            "[process_crate] {}: dropped {:?} from the enable list — the source names \
+             these features, the manifest does not declare them, and cargo has no way \
+             to turn them on",
+            name_with_version, unselectable
+        );
+        exchange
+            .telemetry
+            .undeclared_feature_atoms
+            .push((name_with_version.to_string(), unselectable));
+    }
+
     // Stage 2: verify that the solved feature set satisfies excluded compile_error constraints.
     // These constraints were not added to the solver because they share no features with the
     // main no_std condition. A failure here means the compile_error requirement is not met by

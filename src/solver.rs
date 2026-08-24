@@ -199,6 +199,92 @@ pub fn model_to_features(model: &Option<z3::Model>) -> DoubleTupleVecString {
     )
 }
 
+/// Every feature name cargo will accept for this crate: the `[features]` table
+/// plus the implicit feature cargo creates for each optional dependency.
+///
+/// Read from `crate_info` **and** the manifest because neither is complete on
+/// its own. `crate_info.features` is the parsed table, but
+/// `crate_info.deps_and_features` stores *package* names and skips target-gated
+/// and build dependencies — which is why `parser::optional_dep_keys` exists —
+/// and the implicit features appear in no `[features]` table at all. That last
+/// omission is the trap every feature reader in this codebase has fallen into:
+/// `glam`'s and `euclid`'s `libm` is an optional dependency, so a check built on
+/// the declared table alone re-misses it on the day it lands.
+pub fn selectable_features(
+    crate_info: &CrateInfo,
+    manifest_toml: &toml::Value,
+) -> HashSet<String> {
+    let mut selectable: HashSet<String> = crate_info
+        .features
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    if let Some(table) = manifest_toml.get("features").and_then(|f| f.as_table()) {
+        selectable.extend(table.keys().cloned());
+    }
+
+    selectable.extend(
+        crate_info
+            .deps_and_features
+            .iter()
+            .filter(|(dep, _)| dep.optional)
+            .map(|(dep, _)| dep.name.clone()),
+    );
+    selectable.extend(parser::optional_dep_keys(manifest_toml));
+
+    selectable
+}
+
+/// Take out of `enable` every atom cargo has no way to turn on, and return them.
+///
+/// `model_to_enabled_features` reports each `Bool` the model set true, and the
+/// model carries one `Bool` per `feature = "…"` atom the crate's **source**
+/// mentions — which is not the set its manifest declares. Crates ship cfgs for
+/// features they never published: `sp-weights 23.0.0` gates `weight_v2.rs:406`
+/// on `feature = "runtime-benchmarks"` and declares four features, none of them
+/// that one; `bitcoin 0.32` dropped `no-std` from the manifest and left the
+/// cfgs standing; the wTools packages ship the whole monorepo, so `impls_index`
+/// carries files naming `many` and `meta_former`. Such an atom is free — the
+/// solve has no reason to set it either way — and Z3's arbitrary `true` used to
+/// travel all the way to the emitted configuration:
+///
+/// * as `<dep>/<atom>` in `custom_no_std_feature_enabled`, where cargo refuses
+///   the whole manifest before compiling anything — *"package
+///   `kusama-runtime-constants` depends on `sp-weights` with feature
+///   `runtime-benchmarks` but `sp-weights` does not have that feature"*
+///   (R34-2, 17 crates);
+/// * as a bare feature on the main crate, declared into existence by
+///   `new_feats_to_add` — `morse-nostd 0.1.2` publishes no features at all and
+///   was emitted `[features] alloc = []` plus `--features alloc`, which turns on
+///   a second `extern crate alloc` and fails `E0259` (R34-14).
+///
+/// This is the rule `no_std_forced_features` already applies to the same atoms:
+/// one that is not a declared feature cannot be turned on or off through cargo,
+/// so it is not something to ask cargo for. It is **not** the genuine forwarding
+/// gap `final_feature_list_dep`'s `not_found` exists to repair — that one is a
+/// feature the dependency really has and the main crate offers no way to reach,
+/// and it still travels. Corpus-wide, 73 of the 2629 emitted `<dep>/<feat>`
+/// pairs are of the kind dropped here.
+///
+/// The caller records what came out rather than discarding it, because the atom
+/// is evidence in its own right — see `parser::process_crate`.
+pub fn retain_selectable_features(
+    enable: &mut Vec<String>,
+    selectable: &HashSet<String>,
+) -> Vec<String> {
+    let mut dropped = Vec::new();
+    enable.retain(|feat| {
+        if selectable.contains(feat) {
+            true
+        } else {
+            dropped.push(feat.clone());
+            false
+        }
+    });
+    dropped
+}
+
 /// The polarity the crate's own no_std condition forces on each feature it names.
 ///
 /// The condition is the author's statement of when this crate is `#![no_std]` —
