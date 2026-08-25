@@ -381,10 +381,45 @@ pub fn process_crate(
 
         let items = parse_item_extern_crates(name_with_version, main_name);
 
-        // This case implies that the crate is no_std without any feature requirements.
-        if items.itemexterncrates.is_empty() {
+        // No `extern crate` item carries a `#[cfg]`, so the syn side has nothing to
+        // say about when this crate links std. That is not the same as the crate
+        // having no feature requirements, and returning here threw away the one
+        // thing that did know. `hard_constraints` is the probe's answer
+        // (`driver`'s `final_condition`): a gate whose negation was *compiled* and
+        // shown to remove every std record, together with whatever
+        // `discover_build_enablers` proved the crate cannot build without. It is
+        // read at `hard_constraint_vec` a hundred lines below, and this return
+        // never reached it.
+        //
+        // Everything lands here that does not write the `#[cfg]` on the `extern
+        // crate std` item itself: `ItemExternCrates` keeps an item only when it
+        // carries an attribute, and `ModCollector` reads the gate only at a file's
+        // top level. So a `cfg_if!` body (bitreader 0.3.11), an inline `#[cfg] mod`
+        // (parc 1.0.1, pewter 0.0.3), a gated `mod x;` file (stalloc 0.5.4, asynx
+        // 0.1.0) and a gated `fn` body (wait 0.2.6) are all invisible to it. Each of
+        // those crates is `#![no_std]` with `default = ["std"]`; each came out of
+        // here with an empty `disable` list, so `final_feature_list_main` found
+        // nothing in the default list to turn off, emitted no
+        // `--no-default-features`, and cargo turned `std` back on — `E0463 can't
+        // find crate for std` on every target in the list, against a crate whose std
+        // the probe had already compiled away. That is R34-13, and it is not the manifest
+        // rewrite that entry described: no rewrite was attempted, because the tool
+        // had nothing to say.
+        //
+        // Falling through solves `(None, [], [hard])`. `filtered` is empty on this
+        // path — `parsed_attr` is still `default()`, so `filter_equations` keeps
+        // nothing — which leaves the model the hard constraint's and nothing else.
+        // With no hard constraint the return stands exactly as it did: of the 5575
+        // crates in the corpus that reach it, 5519 have no probe condition at all.
+        if items.itemexterncrates.is_empty() && hard_constraints.is_none() {
             debug!("No extern crates found for the crate");
             return Ok((Vec::new(), Vec::new(), Vec::new()));
+        }
+        if items.itemexterncrates.is_empty() {
+            debug!(
+                "No extern crates found for {}, but the probe left a condition; solving from it",
+                name_with_version
+            );
         }
         let std_attrs = get_item_extern_std(&items);
         if !std_attrs.is_empty() {

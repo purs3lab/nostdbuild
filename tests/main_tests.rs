@@ -281,3 +281,47 @@ fn test_dfu_core() {
 fn test_lexical_util() {
     run_main_test("lexical-util", "1.0.6", "x86_64-unknown-none");
 }
+
+/// R34-13: the probe's condition was thrown away before it could be solved from.
+///
+/// bitreader is `#![no_std]` with `default = ["std"]` and writes its `extern crate
+/// std` inside a `cfg_if::cfg_if!` body. The probe handles that shape and settles it
+/// with a compile — `Negating gate: (not (or std))`, then a run with no features that
+/// yields zero std spans — so `hard_constraints` arrives at `process_crate` holding
+/// `¬std`. It never got read: `parse_item_extern_crates` finds no `#[cfg]`-carrying
+/// `extern crate` item, and the early return that fact triggers sits a hundred lines
+/// above `hard_constraint_vec`. With an empty `disable` list
+/// `final_feature_list_main` sees nothing in the default list to turn off, emits no
+/// `--no-default-features`, and cargo turns `std` back on — `E0463 can't find crate
+/// for std` on all 26 targets. The golden is the one flag, which is the whole repair:
+/// no manifest surgery, the existing solver emits it once the condition survives.
+#[cargo_test]
+fn test_bitreader() {
+    run_main_test("bitreader", "0.3.11", "x86_64-unknown-none");
+}
+
+/// The same defect through a different gate shape, which is why both are here.
+/// bitreader hides the declaration in a macro body; parc writes a plain `#[cfg(feature
+/// = "std")] mod imports { extern crate std; … }`. Neither is visible to the syn side:
+/// `ItemExternCrates` keeps an item only when the attribute is on the item itself, and
+/// `ModCollector` reads the gate only at a file's top level. A fix tested on one shape
+/// alone would not have shown that it is the *return* that is wrong rather than either
+/// reader.
+#[cargo_test]
+fn test_parc() {
+    run_main_test("parc", "1.0.1", "x86_64-unknown-none");
+}
+
+/// The other direction of the same change: a crate that must keep emitting nothing.
+///
+/// dilate reaches the identical early return — `#![no_std]`, no `#[cfg]`-carrying
+/// `extern crate` item — and builds on all 26 targets today with an empty argv. Its
+/// probe leaves no condition, so `hard_constraints` is `None` and the return still
+/// stands. That is the common case by a wide margin: of the 5575 crates in the corpus
+/// that reach this return, 5519 have no probe condition, and a fix that fell through
+/// unconditionally would have put every one of them through a solve they never needed.
+/// The golden is deliberately unchanged from before the fix.
+#[cargo_test]
+fn test_dilate() {
+    run_main_test("dilate", "0.6.3", "x86_64-unknown-none");
+}

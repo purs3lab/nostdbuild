@@ -1,0 +1,19 @@
+[
+  {
+    "name": "dilate",
+    "version": "0.6.3",
+    "target": "x86_64-unknown-none",
+    "args": [
+      "+nightly",
+      "build",
+      "--release",
+      "--target",
+      "x86_64-unknown-none",
+      "--manifest-path",
+      "/evaldisk/sourag/downloads/dilate-0.6.3/Cargo.toml",
+      "--lib"
+    ],
+    "status": "Success",
+    "error": null
+  }
+]
