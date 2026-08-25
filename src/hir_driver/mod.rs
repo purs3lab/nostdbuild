@@ -17,7 +17,7 @@ use rustc_interface::interface;
 use rustc_middle::ty::{ResolverAstLowering, TyCtxt, TypeckResults};
 use rustc_span::hygiene::ExpnKind;
 use rustc_span::source_map::SourceMap;
-use rustc_span::{FileNameDisplayPreference, Span, Symbol};
+use rustc_span::{Span, Symbol};
 
 use std::collections::HashMap;
 
@@ -35,7 +35,7 @@ use crate::consts;
 use crate::types::*;
 
 struct PathResolver<'r, 'tcx> {
-    resolver: &'r ResolverAstLowering,
+    resolver: &'r ResolverAstLowering<'tcx>,
     tcx: TyCtxt<'tcx>,
     records: Vec<PathRecord>,
     current_context: PathContext,
@@ -164,7 +164,7 @@ impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
                         .unwrap_or(span);
                     let source_file = self.tcx.sess.source_map().span_to_filename(root_callsite);
                     self.macro_module_imports.push((
-                        source_file.prefer_local().to_string(),
+                        source_file.prefer_local_unconditionally().to_string(),
                         ident.name.to_string(),
                     ));
                 }
@@ -430,7 +430,11 @@ impl MethodResolver<'_, '_> {
         let parent = self.tcx.parent(def_id);
         let owner = match self.tcx.def_kind(parent) {
             rustc_hir::def::DefKind::Impl { .. } => {
-                let self_ty = self.tcx.type_of(parent).instantiate_identity();
+                let self_ty = self
+                    .tcx
+                    .type_of(parent)
+                    .instantiate_identity()
+                    .skip_norm_wip();
                 match self_ty.ty_adt_def() {
                     Some(adt) => self.tcx.item_name(adt.did()).to_string(),
                     // Primitives, references, slices — no item name to bind.
@@ -567,11 +571,7 @@ fn get_readable_span(tcx: &TyCtxt, span: Span, usage_crate: &str) -> ReadableSpa
     let end_loc = source_map.lookup_char_pos(span.hi());
 
     ReadableSpan {
-        file: loc
-            .file
-            .name
-            .display(FileNameDisplayPreference::Local)
-            .to_string(),
+        file: loc.file.name.prefer_local_unconditionally().to_string(),
         start_line: loc.line,
         start_col: loc.col.0,
         end_line: end_loc.line,
@@ -603,8 +603,14 @@ impl rustc_driver::Callbacks for MyCompilerCalls {
         }
 
         let (records, macro_imports) = {
-            let resolver_wrapper = tcx.resolver_for_lowering().borrow();
-            let (resolver, krate) = &*resolver_wrapper;
+            // `resolver_for_lowering` used to hand back one `Steal` over the
+            // `(resolver, krate)` pair; it now hands back a `Steal` for each, so
+            // the two are borrowed separately. Both guards have to outlive the
+            // visit — HIR lowering steals them afterwards — hence the two `let`s
+            // rather than borrowing inline.
+            let resolver_steal = tcx.resolver_for_lowering().0.borrow();
+            let krate_steal = tcx.resolver_for_lowering().1.borrow();
+            let (resolver, krate) = (&*resolver_steal, &*krate_steal);
 
             // Pre-scan all macro_rules! definitions to collect #[cfg(…)] attribute
             // strings from their bodies, keyed by macro name. Recurses through

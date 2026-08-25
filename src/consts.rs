@@ -4,11 +4,11 @@ pub const STATIC_CRATES_IO: &str = "https://static.crates.io";
 pub const DB_FILE_NAME: &str = "db.bin";
 pub const RESULTS_PATH: &str = "/evaldisk/sourag/results/";
 
-pub const TARGET_LIST: [&str; 26] = [
+pub const TARGET_LIST: [&str; 24] = [
     "aarch64-unknown-none",
     "aarch64-unknown-none-softfloat",
-    "armebv7r-none-eabi",
-    "armebv7r-none-eabihf",
+    // "armebv7r-none-eabi",
+    // "armebv7r-none-eabihf",
     "armv7a-none-eabi",
     "armv7r-none-eabi",
     "armv7r-none-eabihf",
