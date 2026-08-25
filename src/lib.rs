@@ -507,6 +507,16 @@ pub struct Telemetry {
     /// dependency that turned out to be unusable for the target (KI-11), which
     /// no dependency-level check can predict — the retry is the evidence.
     pub optional_dep_features_dropped: Vec<String>,
+    /// The injected `<dep>/<feat>` pairs dropped from the emitted set after the
+    /// first build failed on every target and a retry without them succeeded
+    /// (R34-11). Each was parked in `custom_no_std_feature_enabled` because a
+    /// dependency's own isolated solve asked for it and no feature of the main
+    /// crate reached it; that solve cannot see the rest of the graph, so the pair
+    /// can be a legal feature of the dependency and still skew a sibling or select
+    /// a target-incompatible path. Only a build says which, and the retry is the
+    /// evidence. Empty when nothing was injected, or when the retry failed too —
+    /// the emitted set then still carries the injection.
+    pub injected_dep_features_dropped: Vec<String>,
     /// Dependencies whose chosen feature assignment makes an optional-dep
     /// enabler mandatory, where that enabler is *not* in the feature list we
     /// emit for the dependency (KI-12).

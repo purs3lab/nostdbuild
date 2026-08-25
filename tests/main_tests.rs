@@ -126,6 +126,20 @@ fn test_lazy_exclusive() {
     run_main_test("lazy-exclusive", "1.0.5", "x86_64-unknown-none");
 }
 
+/// The R34-11 case: `tstr`'s own isolated solve asks for `cmp_traits` and
+/// `const_generics` to be no_std, no feature of `repr_offset` reaches either, and
+/// both are parked in `custom_no_std_feature_enabled` and enabled. They are real
+/// features of `tstr` — nothing about the *manifest* is wrong, so no pre-write
+/// check finds this — but `const_generics` selects a `&'static str` const generic
+/// parameter that the compiler has since forbidden, and the build dies on it. The
+/// per-dep solve cannot see that; only the build can. The failed build triggers a
+/// retry with the injected set dropped, which succeeds, and the golden records the
+/// retry's config: no `--features` at all.
+#[cargo_test]
+fn test_repr_offset() {
+    run_main_test("repr_offset", "0.2.2", "x86_64-unknown-none");
+}
+
 #[cargo_test]
 fn test_elfloader() {
     run_main_test("elfloader", "0.16.0", "x86_64-unknown-none");

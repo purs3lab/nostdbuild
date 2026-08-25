@@ -890,6 +890,50 @@ pub fn deps_only_enable_features(
     candidates
 }
 
+/// The emitted dependency arguments with this tool's own injected set left out.
+///
+/// `custom_no_std_feature_enabled` is not a feature the crate published. It is
+/// the key `solver::final_feature_list_dep` parks a `<dep>/<feat>` pair in when a
+/// dependency's *isolated* solve says it needs that feature to be no_std and no
+/// feature of the main crate reaches it. That solve has no view of the rest of the
+/// graph, so the pair can name a feature the dependency really has and still be
+/// wrong where it lands: `encointer-primitives/full_crypto` resolves to
+/// `sp-core/full_crypto`, which makes `sp_core::Pair::sign` a *required* trait item
+/// while `app_crypto!` emits `fn sign` only when sp-application-crypto has the same
+/// feature — cargo's per-crate unification does the rest, and 26 targets fail on
+/// `E0046 not all trait items implemented, missing: sign`. `sp-io/with-tracing`
+/// selects a path that does not exist off wasm (R34-11).
+///
+/// That the pair is *legal* is what keeps this out of `solver::retain_selectable_features`,
+/// which drops the names cargo cannot accept at all (R34-2). Only the combination
+/// with the graph is wrong, and only a build sees it: 847 crates that build today
+/// carry an injected set, so this is a candidate to retry after a build that failed
+/// on every target, never a name to withhold at write time.
+///
+/// Dropping the key from the command line is exactly emptying it, which is the arm
+/// the A/B evidence was produced on — nothing else enables it. Of the 7185 emitted
+/// manifests in the corpus that carry the key, it appears as a value inside another
+/// feature 0 times and in a `default` list 0 times.
+///
+/// `None` when the key is not on the command line. An empty injected set is never
+/// put there (`final_feature_list_dep` pushes the key only for a non-empty
+/// `not_found`), so its absence means there is nothing to retry.
+pub fn without_injected_dep_features(deps_args: &[String]) -> Option<Vec<String>> {
+    if !deps_args
+        .iter()
+        .any(|feat| feat == consts::CUSTOM_FEATURES_ENABLED)
+    {
+        return None;
+    }
+    Some(
+        deps_args
+            .iter()
+            .filter(|feat| *feat != consts::CUSTOM_FEATURES_ENABLED)
+            .cloned()
+            .collect(),
+    )
+}
+
 /// Returns `true` if `feat_name` and every feature reachable from it transitively
 /// serves no purpose other than enabling features of optional deps that are NOT in
 /// `enabled_optional_deps`. If a dep/feat entry points to a dep that IS enabled, or

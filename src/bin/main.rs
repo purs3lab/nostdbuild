@@ -1014,27 +1014,20 @@ fn main() -> anyhow::Result<()> {
                 "Build failed for every target; retrying without optional-dep-only feature(s) {:?}: {:?}",
                 droppable, retry_args
             );
-            let before_retry = compiler::mark_build_records(&stats, &exchange.telemetry);
-            let retry_succeeded = {
-                let t = timing::scope("verify_build", &exchange.name_with_version);
-                t.meta("attempt", "retry_without_optional_dep_feats");
-                compiler::try_compile(
-                    &exchange.name_with_version,
-                    &target,
-                    &retry_args,
-                    &mut stats,
-                    &mut exchange.telemetry,
-                )?
-            };
-            if retry_succeeded {
-                // The retry is the emitted config now, so the failed attempt's rows
-                // are dropped — one feature set per target in the results.
-                compiler::discard_build_records(
-                    &mut stats,
-                    &mut exchange.telemetry,
-                    &before_build,
-                    &before_retry,
-                );
+            // No scout target. This retry drops features of the *main* crate, which
+            // can be load-bearing for one target and free on another, so the whole
+            // list is the question it asks. R34-11's below is the case a single
+            // target settles.
+            if compiler::try_alternative(
+                &exchange.name_with_version,
+                &target,
+                &retry_args,
+                "retry_without_optional_dep_feats",
+                &before_build,
+                None,
+                &mut stats,
+                &mut exchange.telemetry,
+            )? {
                 // The DB hands this crate's chosen features to any later build that
                 // depends on it, so a feature the retry just proved unbuildable has
                 // to change sides there too, not only in `final_args`.
@@ -1050,13 +1043,60 @@ fn main() -> anyhow::Result<()> {
                 final_features_len = retry_len;
                 one_succeeded = true;
                 println!("Final args after retry: {:?}", final_args);
-            } else {
-                compiler::rewind_build_records(
-                    &mut stats,
-                    &mut exchange.telemetry,
-                    &before_retry,
-                );
             }
+        }
+    }
+
+    // R34-11: `custom_no_std_feature_enabled` holds the `<dep>/<feat>` pairs a
+    // dependency's own isolated solve asked for and no feature of the main crate
+    // could reach. Every name in it is a real feature of the dependency it names —
+    // that is what separates it from the atoms `solver::retain_selectable_features`
+    // refuses to emit at all — and it is the *combination with the rest of the
+    // graph* that is wrong: `encointer-primitives/full_crypto` unifies onto
+    // `sp-core` and makes `Pair::sign` required of a sibling that never emits it;
+    // `sp-io/with-tracing` selects a path that exists only on wasm. A per-dep solve
+    // cannot see either, so this lands here rather than at the write site: 847
+    // crates that build today carry an injected set, and a build that failed on
+    // every target is the only evidence that this one was not free.
+    //
+    // Judged on one target first (`compiler::scout_target`). The A/B this repair
+    // comes from was itself a single-target test, 89 of 93 rows on
+    // `thumbv7em-none-eabi`, and the whole 26 cost 24.6 h across the corpus rows
+    // that would reach this.
+    if no_std
+        && !one_succeeded
+        && let Some(reduced_deps) = parser::without_injected_dep_features(&deps_args)
+    {
+        let (retry_args, retry_combined, retry_len) =
+            assemble_final_args(disable_default, &main_features, &reduced_deps);
+        let injected: Vec<String> = exchange
+            .telemetry
+            .custom_features_added_list
+            .iter()
+            .flat_map(|(dep, feats)| feats.iter().map(move |feat| format!("{dep}/{feat}")))
+            .collect();
+        println!(
+            "Build failed for every target; retrying without the injected feature(s) {:?}: {:?}",
+            injected, retry_args
+        );
+        let scout = compiler::scout_target(&stats, &before_build);
+        if compiler::try_alternative(
+            &exchange.name_with_version,
+            &target,
+            &retry_args,
+            "retry_without_injected_dep_feats",
+            &before_build,
+            scout.as_deref(),
+            &mut stats,
+            &mut exchange.telemetry,
+        )? {
+            exchange.telemetry.injected_dep_features_dropped = injected;
+            deps_args = reduced_deps;
+            final_args = retry_args;
+            combined_features = retry_combined;
+            final_features_len = retry_len;
+            one_succeeded = true;
+            println!("Final args after dropping the injected features: {:?}", final_args);
         }
     }
 
@@ -1109,25 +1149,19 @@ fn main() -> anyhow::Result<()> {
                  retrying with compile_error repair {:?}: {:?}",
                 violated, additions, repair_args
             );
-            let before_repair = compiler::mark_build_records(&stats, &exchange.telemetry);
-            let repair_succeeded = {
-                let t = timing::scope("verify_build", &exchange.name_with_version);
-                t.meta("attempt", "retry_with_compile_error_repair");
-                compiler::try_compile(
-                    &exchange.name_with_version,
-                    &target,
-                    &repair_args,
-                    &mut stats,
-                    &mut exchange.telemetry,
-                )?
-            };
-            if repair_succeeded {
-                compiler::discard_build_records(
-                    &mut stats,
-                    &mut exchange.telemetry,
-                    &before_build,
-                    &before_repair,
-                );
+            // No scout target: a violated `compile_error!` stops the compiler
+            // before anything target-specific is reached, so one target says
+            // nothing the other 25 do not.
+            if compiler::try_alternative(
+                &exchange.name_with_version,
+                &target,
+                &repair_args,
+                "retry_with_compile_error_repair",
+                &before_build,
+                None,
+                &mut stats,
+                &mut exchange.telemetry,
+            )? {
                 // Same reason as the retry above: the DB hands these features to
                 // every later build that depends on this crate.
                 for feat in &additions {
@@ -1152,12 +1186,6 @@ fn main() -> anyhow::Result<()> {
                     !disable_default,
                 );
                 println!("Final args after compile_error repair: {:?}", final_args);
-            } else {
-                compiler::rewind_build_records(
-                    &mut stats,
-                    &mut exchange.telemetry,
-                    &before_repair,
-                );
             }
         }
     }
