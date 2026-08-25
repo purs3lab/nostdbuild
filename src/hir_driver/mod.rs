@@ -346,10 +346,7 @@ fn expansion_def_crate(tcx: TyCtxt<'_>, span: Span) -> Option<String> {
     Some(tcx.crate_name(def_id.krate).to_string())
 }
 
-fn call_site_span(
-    span: Span,
-    macro_cfg_map: &HashMap<Symbol, Vec<String>>,
-) -> (Span, Vec<String>) {
+fn call_site_span(span: Span, macro_cfg_map: &HashMap<Symbol, Vec<String>>) -> (Span, Vec<String>) {
     if !span.from_expansion() {
         return (span, vec![]);
     }

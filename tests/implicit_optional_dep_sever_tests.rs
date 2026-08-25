@@ -92,8 +92,9 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
-        let _ =
-            fs::remove_dir_all(PathBuf::from(DOWNLOAD_PATH).join(format!("{}-0.0.0_deps", self.slug)));
+        let _ = fs::remove_dir_all(
+            PathBuf::from(DOWNLOAD_PATH).join(format!("{}-0.0.0_deps", self.slug)),
+        );
     }
 }
 

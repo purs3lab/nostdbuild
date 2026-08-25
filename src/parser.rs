@@ -41,7 +41,14 @@ pub fn parse_item_extern_crates(crate_name: &str, main_name: Option<&str>) -> It
         itemexterncrates: Vec::new(),
     };
 
-    if let Err(err) = visit(&mut itemexterncrates, crate_name, true, false, main_name, None) {
+    if let Err(err) = visit(
+        &mut itemexterncrates,
+        crate_name,
+        true,
+        false,
+        main_name,
+        None,
+    ) {
         debug!(
             "Failed to parse crate {} with error:{}. Will continue...",
             crate_name, err
@@ -281,7 +288,13 @@ pub fn parse_deps_crate(
         let ctx = z3::Context::new(&z3::Config::new());
         let (all_hard, _, _, _, _, _, _) =
             driver::analyze_crate_wrapper(&ctx, &dep.clone(), Some(main_name), telemetry);
-        attributes.push(parse_crate(&dep.clone(), true, Some(main_name), &all_hard, None));
+        attributes.push(parse_crate(
+            &dep.clone(),
+            true,
+            Some(main_name),
+            &all_hard,
+            None,
+        ));
     }
     drop(deps_lock);
     attributes
@@ -860,15 +873,19 @@ pub fn deps_only_enable_features(
     }
 
     let dep_enablers = features_for_optional_deps_with(crate_info, &optional_deps);
-    let via_default: HashSet<String> =
-        if default_features_on && crate_info.features.iter().any(|(name, _)| name == "default") {
-            close_over_local_features(
-                &HashSet::from(["default".to_string()]),
-                &crate_info.features,
-            )
-        } else {
-            HashSet::new()
-        };
+    let via_default: HashSet<String> = if default_features_on
+        && crate_info
+            .features
+            .iter()
+            .any(|(name, _)| name == "default")
+    {
+        close_over_local_features(
+            &HashSet::from(["default".to_string()]),
+            &crate_info.features,
+        )
+    } else {
+        HashSet::new()
+    };
 
     let mut candidates: Vec<String> = enable
         .iter()
@@ -1936,7 +1953,10 @@ pub fn move_unnecessary_dep_feats(
         // — the question this retain asks does not apply. Dropping it on a `None` was
         // what removed `hashbrown`/`libm` from caches-0.3.0's args after the solver had
         // put them there, emitting a config that fails with `can't find crate hashbrown`.
-        let Some(arr) = main_features.get_mut(feature).and_then(|f| f.as_array_mut()) else {
+        let Some(arr) = main_features
+            .get_mut(feature)
+            .and_then(|f| f.as_array_mut())
+        else {
             return true;
         };
         let mut has_mismatch = false;
@@ -2373,18 +2393,12 @@ pub fn features_that_must_be_off(
 /// command line — it passes `debug` and `tls`, and its own `[features]` table
 /// says `debug = ["std"]`, `tls = ["std"]`. A feature that turns `std` on is
 /// `std` as far as the crate root is concerned.
-pub fn reaches_forbidden_feature(
-    crate_info: &CrateInfo,
-    feat: &str,
-    forbidden: &[String],
-) -> bool {
+pub fn reaches_forbidden_feature(crate_info: &CrateInfo, feat: &str, forbidden: &[String]) -> bool {
     if forbidden.is_empty() {
         return false;
     }
-    let closed = close_over_local_features(
-        &HashSet::from([feat.to_string()]),
-        &crate_info.features,
-    );
+    let closed =
+        close_over_local_features(&HashSet::from([feat.to_string()]), &crate_info.features);
     forbidden.iter().any(|f| closed.contains(f))
 }
 
@@ -2715,7 +2729,10 @@ pub fn compile_error_repair_features(
     if !violated_compile_error_constraints(ctx, attrs, crate_info, &repaired, default_features_on)
         .is_empty()
     {
-        debug!("Candidate compile_error repair {:?} does not clear the check", additions);
+        debug!(
+            "Candidate compile_error repair {:?} does not clear the check",
+            additions
+        );
         return Vec::new();
     }
     additions
@@ -3214,9 +3231,10 @@ pub fn local_features_enabling_dep_feature(
             let Some(arr) = values.as_array() else {
                 continue;
             };
-            let hit = arr.iter().filter_map(|v| v.as_str()).any(|entry| {
-                entry == target || (!entry.contains('/') && reaching.contains(entry))
-            });
+            let hit = arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .any(|entry| entry == target || (!entry.contains('/') && reaching.contains(entry)));
             if hit && reaching.insert(name.clone()) {
                 grew = true;
             }
@@ -3344,7 +3362,10 @@ pub fn optional_dep_keys(manifest_toml: &toml::Value) -> HashSet<String> {
 /// it, a reference to `<dep_key>` only resolves if the manifest declares the feature
 /// itself.
 pub fn features_reference_dep_explicitly(manifest_toml: &toml::Value, dep_key: &str) -> bool {
-    let Some(features) = manifest_toml.get("features").and_then(toml::Value::as_table) else {
+    let Some(features) = manifest_toml
+        .get("features")
+        .and_then(toml::Value::as_table)
+    else {
         return false;
     };
     let spelling = format!("dep:{}", dep_key);
@@ -5462,7 +5483,9 @@ fn parse_token_stream<'a>(
                     // `target_os = "…"` atom, which both excuses the gate and
                     // keeps X out of the `--features` lists we hand to cargo.
                     if known_features.is_some_and(|known| !known.contains(&feature_str)) {
-                        debug!("cfg names undeclared feature {feature_str:?}; treating as external");
+                        debug!(
+                            "cfg names undeclared feature {feature_str:?}; treating as external"
+                        );
                         parsed.constants.push(feature_str);
                         continue;
                     }

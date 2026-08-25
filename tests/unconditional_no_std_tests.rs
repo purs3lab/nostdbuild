@@ -74,8 +74,9 @@ fn is_tautology(ctx: &z3::Context, cond: &Bool<'_>) -> bool {
 #[test]
 fn gated_root_extern_std_becomes_the_no_std_condition() {
     let ctx = z3::Context::new(&z3::Config::new());
-    let cond = no_std_condition(&ctx, "orchard_shape.rs")
-        .expect("an unconditional #![no_std] crate with a gated `extern crate std` has a condition");
+    let cond = no_std_condition(&ctx, "orchard_shape.rs").expect(
+        "an unconditional #![no_std] crate with a gated `extern crate std` has a condition",
+    );
     assert!(
         is_negation_of(&ctx, &cond, "std"),
         "expected the negation of `feature = \"std\"`, got {cond}"

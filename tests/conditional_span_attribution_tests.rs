@@ -155,8 +155,14 @@ fn an_ambiguous_pair_falls_back_to_the_probe() {
 fn a_merely_correlated_feature_is_rejected() {
     let runs = vec![
         run(&["triomphe"], vec![as_std(42)]),
-        run(&["triomphe", "parking_lot"], vec![record("parking_lot::Mutex", "parking_lot", 42)]),
-        run(&["parking_lot"], vec![record("parking_lot::Mutex", "parking_lot", 42)]),
+        run(
+            &["triomphe", "parking_lot"],
+            vec![record("parking_lot::Mutex", "parking_lot", 42)],
+        ),
+        run(
+            &["parking_lot"],
+            vec![record("parking_lot::Mutex", "parking_lot", 42)],
+        ),
     ];
 
     let a = only(classify_spans(&runs));
@@ -179,7 +185,10 @@ fn a_merely_correlated_feature_is_rejected() {
 fn a_feature_whose_absence_brings_std_is_left_to_the_probe() {
     let runs = vec![
         run(&[], vec![as_std(42)]),
-        run(&["parking_lot"], vec![record("parking_lot::Mutex", "parking_lot", 42)]),
+        run(
+            &["parking_lot"],
+            vec![record("parking_lot::Mutex", "parking_lot", 42)],
+        ),
     ];
 
     assert_eq!(feature_explaining_std(&only(classify_spans(&runs))), None);

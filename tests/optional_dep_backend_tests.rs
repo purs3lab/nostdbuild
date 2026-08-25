@@ -347,8 +347,9 @@ fn dep_adding(manifest: &str, declared: &[&str]) -> Vec<String> {
     let toml: toml::Value = toml::from_str(manifest).expect("fixture manifest parses");
     let declared: std::collections::HashSet<String> =
         declared.iter().map(|s| s.to_string()).collect();
-    let mut out: Vec<String> =
-        nostd::downloader::dep_adding_features(&toml, &declared).into_iter().collect();
+    let mut out: Vec<String> = nostd::downloader::dep_adding_features(&toml, &declared)
+        .into_iter()
+        .collect();
     out.sort();
     out
 }
@@ -369,7 +370,11 @@ fn a_feature_naming_dep_marker_adds_a_crate() {
         "#,
         &["alloc", "bit-set"],
     );
-    assert_eq!(out, vec!["bit-set".to_string()], "`alloc = []` links nothing");
+    assert_eq!(
+        out,
+        vec!["bit-set".to_string()],
+        "`alloc = []` links nothing"
+    );
 }
 
 #[test]
@@ -413,7 +418,11 @@ fn a_feature_enabling_a_dep_adding_feature_adds_a_crate_too() {
     );
     assert_eq!(
         out,
-        vec!["attr-macro".to_string(), "outer".to_string(), "pm".to_string()],
+        vec![
+            "attr-macro".to_string(),
+            "outer".to_string(),
+            "pm".to_string()
+        ],
         "the closure must run to a fixpoint, not one level"
     );
 }
@@ -459,5 +468,8 @@ fn a_feature_of_a_required_dependency_adds_nothing() {
         "#,
         &["no_std", "std"],
     );
-    assert!(out.is_empty(), "no optional dep is named anywhere, got {out:?}");
+    assert!(
+        out.is_empty(),
+        "no optional dep is named anywhere, got {out:?}"
+    );
 }

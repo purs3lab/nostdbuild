@@ -43,7 +43,12 @@ fn constraints_for<'a>(ctx: &'a z3::Context, name: &str) -> Vec<z3::ast::Bool<'a
 }
 
 /// Is `assumption ∧ <every constraint>` satisfiable?
-fn satisfiable(ctx: &z3::Context, constraints: &[z3::ast::Bool], on: &[&str], off: &[&str]) -> bool {
+fn satisfiable(
+    ctx: &z3::Context,
+    constraints: &[z3::ast::Bool],
+    on: &[&str],
+    off: &[&str],
+) -> bool {
     let solver = z3::Solver::new(ctx);
     for c in constraints {
         solver.assert(c);

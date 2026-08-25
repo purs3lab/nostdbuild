@@ -198,11 +198,7 @@ fn process_dep_crate_wrapper(
     // (whose module uses std unconditionally) comes back as "a default feature
     // this dependency does not disable". Subtracting only ever removes.
     temp_flexible.retain(|f| {
-        !parser::reaches_forbidden_feature(
-            &exchange.crate_info,
-            f,
-            &exchange.main_no_std_forbidden,
-        )
+        !parser::reaches_forbidden_feature(&exchange.crate_info, f, &exchange.main_no_std_forbidden)
     });
 
     *disable_default = *disable_default || temp_disable_default;
@@ -495,10 +491,15 @@ fn main() -> anyhow::Result<()> {
     //
     // Read off telemetry here and not later: dependency analyses share this
     // `Telemetry` and append their own enablers to the same list.
-    let build_enablers: HashSet<String> =
-        exchange.telemetry.build_enabler_features.iter().cloned().collect();
+    let build_enablers: HashSet<String> = exchange
+        .telemetry
+        .build_enabler_features
+        .iter()
+        .cloned()
+        .collect();
     if !build_enablers.is_empty() {
-        let closed = parser::close_over_local_features(&build_enablers, &exchange.crate_info.features);
+        let closed =
+            parser::close_over_local_features(&build_enablers, &exchange.crate_info.features);
         for (feat_name, values) in &exchange.crate_info.features {
             if !closed.contains(feat_name) {
                 continue;
@@ -1096,7 +1097,10 @@ fn main() -> anyhow::Result<()> {
             combined_features = retry_combined;
             final_features_len = retry_len;
             one_succeeded = true;
-            println!("Final args after dropping the injected features: {:?}", final_args);
+            println!(
+                "Final args after dropping the injected features: {:?}",
+                final_args
+            );
         }
     }
 

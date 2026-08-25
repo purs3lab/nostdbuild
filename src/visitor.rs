@@ -821,7 +821,11 @@ impl<'a> FileVisitor<'a> {
             .iter()
             .filter(|a| a.path().is_ident("cfg"))
             .any(|attr| {
-                let (equation, parsed) = parser::parse_main_attributes_direct_with(attr, self.ctx, self.known_features.as_deref());
+                let (equation, parsed) = parser::parse_main_attributes_direct_with(
+                    attr,
+                    self.ctx,
+                    self.known_features.as_deref(),
+                );
                 // A pure non-feature gate (`#[cfg(unix)]`, `#[cfg(has_std)]`):
                 // no feature became a Bool, but a constant proves a gate exists.
                 let pure = equation.is_none() && !parsed.constants.is_empty();
@@ -839,7 +843,10 @@ impl<'a> FileVisitor<'a> {
                 // no unsoundness beyond what G already accepts for the pure form.
                 let any_mixed = equation.is_some()
                     && !parsed.constants.is_empty()
-                    && matches!(parsed.logic.first(), Some(parser::Logic::Any | parser::Logic::Or));
+                    && matches!(
+                        parsed.logic.first(),
+                        Some(parser::Logic::Any | parser::Logic::Or)
+                    );
                 pure || any_mixed
             })
     }
@@ -894,7 +901,11 @@ impl<'a> FileVisitor<'a> {
             .iter()
             .filter(|a| a.path().is_ident("cfg_attr"))
             .filter_map(|attr| {
-                let (b, parsed) = parser::parse_main_attributes_direct_with(attr, self.ctx, self.known_features.as_deref());
+                let (b, parsed) = parser::parse_main_attributes_direct_with(
+                    attr,
+                    self.ctx,
+                    self.known_features.as_deref(),
+                );
                 parsed.filepath.map(|fp| ModSource {
                     path: source_dir.join(&fp),
                     condition: b,
@@ -906,10 +917,14 @@ impl<'a> FileVisitor<'a> {
     fn does_cfg_attr_override_path(&self, attrs: &[syn::Attribute]) -> bool {
         attrs.iter().any(|a| {
             a.path().is_ident("cfg_attr")
-                && parser::parse_main_attributes_direct_with(a, self.ctx, self.known_features.as_deref())
-                    .1
-                    .filepath
-                    .is_some()
+                && parser::parse_main_attributes_direct_with(
+                    a,
+                    self.ctx,
+                    self.known_features.as_deref(),
+                )
+                .1
+                .filepath
+                .is_some()
         })
     }
 
@@ -1137,10 +1152,7 @@ impl<'a> FileVisitor<'a> {
                 // Synthesise `#[cfg(...)]` from the bare `cfg(...)` tokens and
                 // reuse the attribute cfg parser.
                 let mut bracket_inner = TokenStream::new();
-                bracket_inner.extend([
-                    TokenTree::Ident(id.clone()),
-                    TokenTree::Group(g.clone()),
-                ]);
+                bracket_inner.extend([TokenTree::Ident(id.clone()), TokenTree::Group(g.clone())]);
                 let bracket = Group::new(Delimiter::Bracket, bracket_inner);
                 let mut ts = TokenStream::new();
                 ts.extend([
@@ -1191,7 +1203,9 @@ impl<'a> FileVisitor<'a> {
                 TokenTree::Punct(hash.clone()),
                 TokenTree::Group(group.clone()),
             ]);
-            if let Some(cfg_bool) = parse_attr_stream_cfg(&ts, self.ctx, self.known_features.as_deref()) {
+            if let Some(cfg_bool) =
+                parse_attr_stream_cfg(&ts, self.ctx, self.known_features.as_deref())
+            {
                 result = Self::and_conditions(self.ctx, result, Some(cfg_bool));
             }
             idx += 2;
@@ -1227,8 +1241,7 @@ impl<'a> FileVisitor<'a> {
                     // Expect `#` `[ .. ]` forming the cfg attribute, then a brace group.
                     let pred = match (trees.get(idx + 1), trees.get(idx + 2)) {
                         (Some(TokenTree::Punct(hash)), Some(TokenTree::Group(attr)))
-                            if hash.as_char() == '#'
-                                && attr.delimiter() == Delimiter::Bracket =>
+                            if hash.as_char() == '#' && attr.delimiter() == Delimiter::Bracket =>
                         {
                             let mut ts = TokenStream::new();
                             ts.extend([
@@ -1258,11 +1271,8 @@ impl<'a> FileVisitor<'a> {
                             prior_externally_gated |= pred_externally_gated;
                             if let Some(p) = pred {
                                 let neg = p.not();
-                                prior_negations = Self::and_conditions(
-                                    self.ctx,
-                                    prior_negations,
-                                    Some(neg),
-                                );
+                                prior_negations =
+                                    Self::and_conditions(self.ctx, prior_negations, Some(neg));
                             }
                             idx = body_pos + 1;
                             continue;
@@ -2023,7 +2033,11 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
         if i.path().is_ident("cfg_attr")
             && !self.does_cfg_attr_override_path(std::slice::from_ref(i))
         {
-            let (own, parsed) = parser::parse_main_attributes_direct_with(i, self.ctx, self.known_features.as_deref());
+            let (own, parsed) = parser::parse_main_attributes_direct_with(
+                i,
+                self.ctx,
+                self.known_features.as_deref(),
+            );
             if let Some(own) = own {
                 if parser::is_no_std(&parsed, true) {
                     self.no_std_condition = Some(own.clone());
@@ -2662,7 +2676,8 @@ impl<'a> ModCollector<'a> {
         let source_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
         // Fold any file-level inner `#![cfg(...)]` gate into the entry condition
         // so items gated only by the inner attribute are seen as conditional.
-        let file_gate = file_inner_cfg_gate(self.ctx, &syntax.attrs, self.known_features.as_deref());
+        let file_gate =
+            file_inner_cfg_gate(self.ctx, &syntax.attrs, self.known_features.as_deref());
         let effective = FileVisitor::and_conditions(self.ctx, inherited, file_gate);
         let mut visitor = FileVisitor::new(
             self.ctx,
@@ -2675,8 +2690,15 @@ impl<'a> ModCollector<'a> {
             self.known_features.clone(),
         );
         visitor.visit_file(&syntax);
-        let (local_items, mut children, hard_constraints, no_std_cond, pending_includes, mut facts, path_roots) =
-            visitor.finish();
+        let (
+            local_items,
+            mut children,
+            hard_constraints,
+            no_std_cond,
+            pending_includes,
+            mut facts,
+            path_roots,
+        ) = visitor.finish();
         self.hard_constraints.extend(hard_constraints);
         self.pending_includes.extend(pending_includes);
         if no_std_cond.is_some() {
@@ -2687,7 +2709,14 @@ impl<'a> ModCollector<'a> {
         }
 
         for child in &mut children {
-            Self::resolve_child(self.ctx, child, &mut self.hard_constraints, &mut self.pending_includes, &mut facts, self.known_features.clone());
+            Self::resolve_child(
+                self.ctx,
+                child,
+                &mut self.hard_constraints,
+                &mut self.pending_includes,
+                &mut facts,
+                self.known_features.clone(),
+            );
         }
 
         // A crate that is `#![no_std]` outright has no `#![cfg_attr(<cond>,
@@ -2736,7 +2765,9 @@ impl<'a> ModCollector<'a> {
                     self.no_std_condition = Some(gate.not());
                 }
                 None if !facts.any_extern_std => {
-                    debug!("Unconditional #![no_std] and no `extern crate std`: no_std condition is true");
+                    debug!(
+                        "Unconditional #![no_std] and no `extern crate std`: no_std condition is true"
+                    );
                     self.no_std_condition = Some(Bool::from_bool(self.ctx, true));
                 }
                 None => {}
@@ -2766,7 +2797,14 @@ impl<'a> ModCollector<'a> {
     ) {
         if child.is_inline {
             for gc in &mut child.children {
-                Self::resolve_child(ctx, gc, hard_constraints, pending_includes, facts, known_features.clone());
+                Self::resolve_child(
+                    ctx,
+                    gc,
+                    hard_constraints,
+                    pending_includes,
+                    facts,
+                    known_features.clone(),
+                );
             }
             return;
         }
@@ -2808,8 +2846,15 @@ impl<'a> ModCollector<'a> {
                 known_features.clone(),
             );
             fv.visit_file(&syntax);
-            let (local_items, mut grandchildren, hard_constraints_child, _no_std_cond, pend, child_facts, path_roots) =
-                fv.finish();
+            let (
+                local_items,
+                mut grandchildren,
+                hard_constraints_child,
+                _no_std_cond,
+                pend,
+                child_facts,
+                path_roots,
+            ) = fv.finish();
             child.path_roots = path_roots;
             hard_constraints.extend(hard_constraints_child);
             pending_includes.extend(pend);
@@ -2836,7 +2881,14 @@ impl<'a> ModCollector<'a> {
 
             // Recurse into grandchildren
             for gc in &mut grandchildren {
-                Self::resolve_child(ctx, gc, hard_constraints, pending_includes, facts, known_features.clone());
+                Self::resolve_child(
+                    ctx,
+                    gc,
+                    hard_constraints,
+                    pending_includes,
+                    facts,
+                    known_features.clone(),
+                );
             }
 
             child.source_dir = source_dir;
@@ -2903,8 +2955,9 @@ pub fn resolve_pending_includes<'a>(
 /// Recursively rewrite every `source_file` in a parsed generated subtree to its
 /// normalized `$OUT_DIR/…` form (a no-op for non-generated paths).
 fn normalize_subtree_source_files(node: &mut ModNode) {
-    node.source_file =
-        PathBuf::from(driver::normalize_generated_path(&node.source_file.to_string_lossy()));
+    node.source_file = PathBuf::from(driver::normalize_generated_path(
+        &node.source_file.to_string_lossy(),
+    ));
     for child in &mut node.children {
         normalize_subtree_source_files(child);
     }
@@ -3069,9 +3122,7 @@ fn has_top_level_cfg_attr(trees: &[TokenTree]) -> bool {
 }
 
 fn is_cfg_if_path(path: &syn::Path) -> bool {
-    path.segments
-        .last()
-        .map_or(false, |s| s.ident == "cfg_if")
+    path.segments.last().map_or(false, |s| s.ident == "cfg_if")
 }
 
 /// Parse a single outer attribute from a `# [ ... ]` token stream and, if it is
@@ -3204,7 +3255,12 @@ fn cfg_attr_no_std_predicate(attr: &Attribute) -> Option<target_cfg::CfgPred> {
 /// derive without cargo, and the manifest is recorded in
 /// `telemetry.cargo_metadata_failed`.
 fn run_cargo_metadata(manifest: &str) -> Option<cargo_metadata::Metadata> {
-    let run = || MetadataCommand::new().manifest_path(manifest).no_deps().exec();
+    let run = || {
+        MetadataCommand::new()
+            .manifest_path(manifest)
+            .no_deps()
+            .exec()
+    };
 
     let first_err = match run() {
         Ok(metadata) => return Some(metadata),

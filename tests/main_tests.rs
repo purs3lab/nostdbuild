@@ -47,9 +47,11 @@ fn run_main_test(crate_name: &str, crate_version: &str, arch: &str) {
     // dir) to a per-crate path, so the tests build concurrently instead of queuing.
     // A stable per-crate path (not a fresh temp) keeps cargo's cache warm across
     // reruns. Does not affect emitted results — those go to consts::RESULTS_PATH.
-    let cargo_target_dir = std::env::temp_dir()
-        .join("nostd_main_tests")
-        .join(format!("{}-{}", crate_name.replace('-', "_"), crate_version));
+    let cargo_target_dir = std::env::temp_dir().join("nostd_main_tests").join(format!(
+        "{}-{}",
+        crate_name.replace('-', "_"),
+        crate_version
+    ));
     std::fs::create_dir_all(&cargo_target_dir)
         .expect("Failed to create per-crate CARGO_TARGET_DIR");
 

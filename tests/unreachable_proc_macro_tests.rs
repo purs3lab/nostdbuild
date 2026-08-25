@@ -183,6 +183,7 @@ fn the_package_and_crate_spellings_are_the_same_lookup() {
 fn the_fixture_macro_is_actually_a_proc_macro() {
     let dir: PathBuf = nostd::parser::find_sibling_crate_dir(&manifest(), "hidden_macro").unwrap();
     assert!(nostd::parser::crate_dir_is_proc_macro(&dir));
-    let plain: PathBuf = nostd::parser::find_sibling_crate_dir(&manifest(), "plain_helper").unwrap();
+    let plain: PathBuf =
+        nostd::parser::find_sibling_crate_dir(&manifest(), "plain_helper").unwrap();
     assert!(!nostd::parser::crate_dir_is_proc_macro(&plain));
 }

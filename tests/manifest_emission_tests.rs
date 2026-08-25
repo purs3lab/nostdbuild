@@ -141,9 +141,7 @@ fn implicit_optional_dep_feature_is_not_redeclared() {
         },
         Vec::new(),
     ));
-    crate_info
-        .features
-        .push(("std".to_string(), Vec::new()));
+    crate_info.features.push(("std".to_string(), Vec::new()));
 
     let to_declare = new_feats_to_add(
         &crate_info,
@@ -178,7 +176,10 @@ fn suppressed_implicit_feature_is_declared_with_its_dep_ref() {
         "#,
     );
     assert!(features_reference_dep_explicitly(&manifest, "simd"));
-    assert!(!features_reference_dep_explicitly(&toml_of(BLAKE_HASH), "simd"));
+    assert!(!features_reference_dep_explicitly(
+        &toml_of(BLAKE_HASH),
+        "simd"
+    ));
 
     let crate_info = CrateInfo {
         name: "blake-hash".to_string(),

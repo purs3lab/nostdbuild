@@ -673,7 +673,11 @@ pub fn resolve_import_to_use_gateways(out: &mut FeatureRunOutput, root: &ModNode
         let mut v: Vec<_> = binding
             .iter()
             .map(|(k, (gated, anchor))| {
-                (k.clone(), *gated, anchor.as_ref().map(|(s, _)| s.start_line))
+                (
+                    k.clone(),
+                    *gated,
+                    anchor.as_ref().map(|(s, _)| s.start_line),
+                )
             })
             .collect();
         v.sort();
@@ -959,7 +963,9 @@ pub fn park_injecting_proc_macros(
     // no parking — the same place the run would have been without this.
     let PassOutcome::Success { full_output, .. } = run_default_features_pass(manifest, main_name)
     else {
-        debug!("Proc-macro parking: the crate does not compile with its default features; no evidence to park on");
+        debug!(
+            "Proc-macro parking: the crate does not compile with its default features; no evidence to park on"
+        );
         return;
     };
 
@@ -969,9 +975,7 @@ pub fn park_injecting_proc_macros(
         if injected_std_records(&full_output, &krate) == 0 {
             continue;
         }
-        telemetry
-            .proc_macro_std_injectors
-            .push(dep.package.clone());
+        telemetry.proc_macro_std_injectors.push(dep.package.clone());
         park_one_proc_macro(main_name, manifest, dep, &krate, &defaults, telemetry);
     }
 }
@@ -1587,8 +1591,7 @@ fn set_host_no_std_applicability(pred: Option<&target_cfg::CfgPred>, telemetry: 
     // `std_inconclusive_runs` is kept as a high-water mark.
     if telemetry.no_std_cfg_predicate.is_none() {
         telemetry.no_std_cfg_predicate = Some(p.to_string());
-        telemetry.no_std_predicate_targets =
-            targets.iter().map(|t| t.to_string()).collect();
+        telemetry.no_std_predicate_targets = targets.iter().map(|t| t.to_string()).collect();
     }
 }
 
@@ -1653,8 +1656,7 @@ pub fn compile_failure_names_crate(stderr: &str, crate_name: &str) -> bool {
 /// records with `expansion_crate: Some("std")` and 40 with `Some("core")`, and
 /// **not one** of them names `std` in its path text.
 pub fn crate_named_std_in_path(record: &PathRecord) -> bool {
-    record.expansion_crate.is_none()
-        && record.path_text.split("::").any(|seg| seg.trim() == "std")
+    record.expansion_crate.is_none() && record.path_text.split("::").any(|seg| seg.trim() == "std")
 }
 
 /// The package name in a ``could not compile `X` `` line, if the line is one.
@@ -2455,7 +2457,10 @@ pub fn find_feature_combs_for_all_code<'a>(
                     );
 
                     let run = timing::scope("coverage_run", enable.join(","));
-                    run.meta("kind", format!("cegar iter {cegar_iter} set {set_num}/{set_total}"));
+                    run.meta(
+                        "kind",
+                        format!("cegar iter {cegar_iter} set {set_num}/{set_total}"),
+                    );
                     match run_rustc_plugin_pass(manifest, crate_name, &enable, None) {
                         PassOutcome::Success {
                             macro_modules,
@@ -3156,7 +3161,9 @@ pub fn discover_build_enablers<'a>(
 
     debug!(
         "[enablers] no bare-metal target has compiled; base {:?}, trying {} candidate feature(s): {:?}",
-        base, candidates.len(), candidates
+        base,
+        candidates.len(),
+        candidates
     );
 
     let budget = std::cell::Cell::new(MAX_ENABLER_PROBES);
@@ -3259,9 +3266,7 @@ pub fn discover_build_enablers<'a>(
             Some(set) => set,
             None => {
                 // Fall back to trying each alone; the shrink then has nothing to do.
-                debug!(
-                    "[enablers] every candidate on does not compile; trying them one at a time"
-                );
+                debug!("[enablers] every candidate on does not compile; trying them one at a time");
                 let single = candidates
                     .iter()
                     .find(|c| compiles(std::slice::from_ref(*c)))
@@ -3340,10 +3345,7 @@ fn classify_and_split(
     // plus one, so adding them would double-count), and one `Telemetry` is shared
     // by the main crate and every dependency analysed after it — a plain
     // assignment lets the last dependency's zero erase the main crate's count.
-    let inconclusive = covering_runs
-        .iter()
-        .filter(|r| r.std_inconclusive)
-        .count();
+    let inconclusive = covering_runs.iter().filter(|r| r.std_inconclusive).count();
     telemetry.std_inconclusive_runs = telemetry.std_inconclusive_runs.max(inconclusive);
     if inconclusive > 0 {
         debug!(
@@ -3485,8 +3487,9 @@ pub fn analyze_crate<'a>(
             .map(|a| &a.exemplar)
             .chain(always_std_others.iter().map(|a| &a.exemplar))
             .filter_map(|ex| {
-                ancestors_for_record(&root, ex)
-                    .or_else(|| macro_body_cfgs_to_ancestors(ctx, &ex.macro_body_cfgs, &known_features))
+                ancestors_for_record(&root, ex).or_else(|| {
+                    macro_body_cfgs_to_ancestors(ctx, &ex.macro_body_cfgs, &known_features)
+                })
             })
             .flatten()
             .collect();
@@ -3549,8 +3552,9 @@ pub fn analyze_crate<'a>(
         .filter(|a| !is_local_reexport(&a.exemplar))
         .map(|a| ProbeTarget {
             analysis: a.clone(),
-            ancestors: ancestors_for_record(&root, &a.exemplar)
-                .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)),
+            ancestors: ancestors_for_record(&root, &a.exemplar).or_else(|| {
+                macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)
+            }),
             externally_gated: span_externally_gated(&root, &a.exemplar),
         })
         .collect::<Vec<_>>();
@@ -3569,8 +3573,9 @@ pub fn analyze_crate<'a>(
         .into_iter()
         .map(|a| ProbeTarget {
             analysis: a.clone(),
-            ancestors: ancestors_for_record(&root, &a.exemplar)
-                .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)),
+            ancestors: ancestors_for_record(&root, &a.exemplar).or_else(|| {
+                macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)
+            }),
             externally_gated: span_externally_gated(&root, &a.exemplar),
         })
         .collect::<Vec<_>>();
@@ -3594,8 +3599,9 @@ pub fn analyze_crate<'a>(
         .filter(|a| !is_local_reexport(&a.exemplar))
         .map(|a| ProbeTarget {
             analysis: a.clone(),
-            ancestors: ancestors_for_record(&root, &a.exemplar)
-                .or_else(|| macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)),
+            ancestors: ancestors_for_record(&root, &a.exemplar).or_else(|| {
+                macro_body_cfgs_to_ancestors(ctx, &a.exemplar.macro_body_cfgs, &known_features)
+            }),
             externally_gated: span_externally_gated(&root, &a.exemplar),
         })
         .collect::<Vec<_>>();
@@ -3633,10 +3639,9 @@ pub fn analyze_crate<'a>(
         feature_explaining_std(&t.analysis).filter(|f| no_std_switch.contains(f))
     };
 
-    let (explained, conditional_targets): (Vec<_>, Vec<_>) =
-        conditional_candidates.into_iter().partition(|t| {
-            !t.externally_gated && t.ancestors.is_some() && explains(t).is_some()
-        });
+    let (explained, conditional_targets): (Vec<_>, Vec<_>) = conditional_candidates
+        .into_iter()
+        .partition(|t| !t.externally_gated && t.ancestors.is_some() && explains(t).is_some());
 
     let explained_results: Vec<ProbeResult> = explained
         .into_iter()

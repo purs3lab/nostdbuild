@@ -167,4 +167,3 @@ fn control_without_known_features_undeclared_stays_a_variable() {
         );
     });
 }
-

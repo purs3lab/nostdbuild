@@ -87,9 +87,7 @@ fn parse(src: &str) -> CfgPred {
         panic!("not a list");
     };
     let metas = list
-        .parse_args_with(
-            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-        )
+        .parse_args_with(syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
         .expect("args parse");
     CfgPred::parse(metas.first().expect("a predicate")).expect("a predicate CfgPred models")
 }
@@ -141,7 +139,8 @@ fn a_crates_own_spelled_out_std_survives_the_target_predicate_rule() {
 
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
-    let (hard_spans, ..) = analyze_crate(&ctx, &manifest, "target_cfg_no_std_own_std", &mut telemetry);
+    let (hard_spans, ..) =
+        analyze_crate(&ctx, &manifest, "target_cfg_no_std_own_std", &mut telemetry);
 
     assert_eq!(
         telemetry.no_std_cfg_predicate.as_deref(),
@@ -214,7 +213,10 @@ fn absent_atoms_are_false_and_the_combinators_follow_rustc() {
     let any_none_or_test = parse(r#"#![cfg_attr(any(target_os = "none", test), no_std)]"#);
     assert!(!any_none_or_test.holds(&host));
     let any_with_a_true = parse(r#"#![cfg_attr(any(target_os = "none", unix), no_std)]"#);
-    assert_eq!(any_with_a_true.holds(&host), atom("unix", None).holds(&host));
+    assert_eq!(
+        any_with_a_true.holds(&host),
+        atom("unix", None).holds(&host)
+    );
 
     let all_of_nothing = CfgPred::All(vec![]);
     assert!(all_of_nothing.holds(&host), "all() is true, as in rustc");

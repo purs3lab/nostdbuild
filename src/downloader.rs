@@ -703,7 +703,12 @@ pub fn dep_adding_features(toml: &Value, declared: &HashSet<String>) -> HashSet<
     if let Some(features) = features {
         for (feat_name, values) in features {
             let mut refs = Vec::new();
-            for v in values.as_array().into_iter().flatten().filter_map(Value::as_str) {
+            for v in values
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
                 match v.split_once('/') {
                     // `dep?/feat` links nothing; `dep/feat` on an optional dep does.
                     Some((dep, _)) => {

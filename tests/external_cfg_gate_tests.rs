@@ -172,7 +172,10 @@ fn negated_single_feature_is_not_externally_gated() {
     // produces a real Bool, so the group is non-empty and never reaches the
     // truncation at all — it must stay probe-able rather than being swept up.
     let (has_eq, constants) = constants_of(syn::parse_quote!(#[cfg(not(feature = "std"))]));
-    assert!(has_eq, "a negated feature gate must still yield an equation");
+    assert!(
+        has_eq,
+        "a negated feature gate must still yield an equation"
+    );
     assert!(
         constants.is_empty(),
         "a feature gate contributes no bare constants"

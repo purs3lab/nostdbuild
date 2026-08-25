@@ -104,7 +104,10 @@ fn the_scout_is_the_target_with_the_modal_error() {
         ));
     }
 
-    assert_eq!(scout_target(&stats, &mark).as_deref(), Some("thumbv6m-none-eabi"));
+    assert_eq!(
+        scout_target(&stats, &mark).as_deref(),
+        Some("thumbv6m-none-eabi")
+    );
 }
 
 /// Rows recorded before the mark belong to an earlier attempt and must not vote.

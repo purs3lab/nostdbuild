@@ -177,7 +177,10 @@ const OWN_STD_LINE: usize = 25;
 fn cargos_give_up_line_says_whether_the_crate_was_reached() {
     let dep_failed = "error[E0463]: can't find crate for `std`\n\
                       error: could not compile `core2` (lib) due to 4 previous errors\n";
-    assert!(!compile_failure_names_crate(dep_failed, "bitstream-io:4.0.0"));
+    assert!(!compile_failure_names_crate(
+        dep_failed,
+        "bitstream-io:4.0.0"
+    ));
 
     let own_failed = "error[E0433]: failed to resolve: use of unresolved module `std`\n\
                       error: could not compile `tarfs` (lib) due to 2 previous errors\n";
@@ -192,7 +195,10 @@ fn cargos_give_up_line_says_whether_the_crate_was_reached() {
     // Cargo prints the package name with dashes; the pipeline uses either
     // spelling.
     let underscored = "error: could not compile `bitstream_io` (lib) due to 32 previous errors\n";
-    assert!(compile_failure_names_crate(underscored, "bitstream-io:4.0.0"));
+    assert!(compile_failure_names_crate(
+        underscored,
+        "bitstream-io:4.0.0"
+    ));
 
     // A dependency whose name merely contains the crate's is not the crate.
     let lookalike = "error: could not compile `fatfs-utils` (lib) due to 1 previous error\n";

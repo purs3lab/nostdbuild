@@ -1,8 +1,8 @@
 #![feature(rustc_private)]
 
 use nostd::driver::{
-    extract_hard_std_candidates, is_local_reexport, load_plugin_output, neutralize_panic_expansions,
-    resolve_local_facade_gateways,
+    extract_hard_std_candidates, is_local_reexport, load_plugin_output,
+    neutralize_panic_expansions, resolve_local_facade_gateways,
 };
 use nostd::phases::classify_spans;
 use nostd::types::{
@@ -464,15 +464,27 @@ fn resolves_child_of_mod_rs_in_same_dir() {
 #[test]
 fn returns_none_when_no_source_file_exists() {
     let callsite = fixture("src/wasm.rs");
-    assert_eq!(resolve_macro_module_file(&callsite, false, "does_not_exist"), None);
+    assert_eq!(
+        resolve_macro_module_file(&callsite, false, "does_not_exist"),
+        None
+    );
 }
 
 #[test]
 fn is_mod_rs_style_classifies_entrypoint_modrs_and_plain_files() {
     let entry = fixture("src/lib.rs");
-    assert!(is_mod_rs_style(&fixture("src/lib.rs"), &entry), "entrypoint is mod-rs style");
-    assert!(is_mod_rs_style(&fixture("src/time/mod.rs"), &entry), "mod.rs is mod-rs style");
-    assert!(!is_mod_rs_style(&fixture("src/wasm.rs"), &entry), "plain foo.rs is NOT mod-rs style");
+    assert!(
+        is_mod_rs_style(&fixture("src/lib.rs"), &entry),
+        "entrypoint is mod-rs style"
+    );
+    assert!(
+        is_mod_rs_style(&fixture("src/time/mod.rs"), &entry),
+        "mod.rs is mod-rs style"
+    );
+    assert!(
+        !is_mod_rs_style(&fixture("src/wasm.rs"), &entry),
+        "plain foo.rs is NOT mod-rs style"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -762,7 +774,10 @@ mod import_to_use {
     fn routed_use_with_no_facade_anchor_is_now_excused() {
         let mut routed = usage_record("HashMap", "std", Some("std"), Some("crate::foo"));
         routed.context = PathContext::Type;
-        let mut out = output(vec![std_import("std::collections::HashMap", 10), at(routed, 20)]);
+        let mut out = output(vec![
+            std_import("std::collections::HashMap", 10),
+            at(routed, 20),
+        ]);
 
         resolve_import_to_use_gateways(&mut out, &tree_gating(&[10]));
 
@@ -790,7 +805,8 @@ mod import_to_use {
     /// std uses are excused.
     #[test]
     fn non_std_import_is_ignored() {
-        let mut hashbrown = usage_record("hashbrown::HashMap", "hashbrown", Some("hashbrown"), None);
+        let mut hashbrown =
+            usage_record("hashbrown::HashMap", "hashbrown", Some("hashbrown"), None);
         hashbrown.context = PathContext::ImportDeclaration;
         let mut out = output(vec![at(hashbrown, 10), bare_std_use("HashMap", 20)]);
 

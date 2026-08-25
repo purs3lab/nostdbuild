@@ -67,7 +67,10 @@ fn strings(v: &[&str]) -> Vec<String> {
 #[test]
 fn negated_std_forbids_std() {
     let ctx = z3::Context::new(&z3::Config::new());
-    let cond = condition(&ctx, "#![cfg_attr(not(any(test, feature = \"std\")), no_std)]");
+    let cond = condition(
+        &ctx,
+        "#![cfg_attr(not(any(test, feature = \"std\")), no_std)]",
+    );
     let info = crate_info(vec![
         feature("default", &["getrandom", "std"]),
         feature("std", &[]),
@@ -292,7 +295,10 @@ fn a_feature_the_condition_says_nothing_about_is_left_alone() {
         &[],
         &strings(&["std"]),
     );
-    assert!(added.is_empty() && removed.is_empty(), "{added:?} {removed:?}");
+    assert!(
+        added.is_empty() && removed.is_empty(),
+        "{added:?} {removed:?}"
+    );
     assert!(main_features.is_empty(), "{main_features:?}");
 }
 

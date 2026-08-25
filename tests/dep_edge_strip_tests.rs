@@ -72,7 +72,6 @@ impl Fixture {
             })
             .unwrap_or_default()
     }
-
 }
 
 impl Drop for Fixture {
@@ -141,10 +140,7 @@ fn a_dep_feature_the_solve_merely_did_not_ask_for_survives() {
 
     assert_eq!(
         fixture.values("spin"),
-        vec![
-            "spin/mutex".to_string(),
-            "spin/spin_mutex".to_string()
-        ],
+        vec!["spin/mutex".to_string(), "spin/spin_mutex".to_string()],
         "the values the feature exists for were deleted"
     );
     assert_eq!(
@@ -269,10 +265,7 @@ fn an_unanalysed_dependency_costs_the_manifest_nothing() {
 
     assert_eq!(
         fixture.values("spin"),
-        vec![
-            "spin/mutex".to_string(),
-            "spin/spin_mutex".to_string()
-        ],
+        vec!["spin/mutex".to_string(), "spin/spin_mutex".to_string()],
     );
     assert_eq!(flexible, vec!["spin".to_string()]);
 }

@@ -142,8 +142,7 @@ pub fn classify_spans(runs: &[CoveringRun]) -> Vec<SpanAnalysis> {
             // successful compile, so such a run is a working configuration in
             // which the span is not std usage. Absent that, the span is std no
             // matter what is enabled, whatever else sits on top of it.
-            let std_in_every_run =
-                !acc.std_cfgs.is_empty() && acc.std_run_idxs.len() == runs.len();
+            let std_in_every_run = !acc.std_cfgs.is_empty() && acc.std_run_idxs.len() == runs.len();
 
             let verdict = if acc.std_cfgs.is_empty() {
                 SpanVerdict::NeverStd
@@ -345,18 +344,27 @@ pub fn gate_satisfied_std_spans<'a>(
 
     match solve_with_negation(ctx, hard_constraints, &satisfied, all_constraints) {
         SolveResult::Unsat => {
-            debug!("Gate {} cannot be satisfied under the hard constraints", satisfied);
+            debug!(
+                "Gate {} cannot be satisfied under the hard constraints",
+                satisfied
+            );
             None
         }
         SolveResult::Sat(features, _) => {
-            debug!("Gate-satisfying configuration for {}: {:?}", satisfied, features);
+            debug!(
+                "Gate-satisfying configuration for {}: {:?}",
+                satisfied, features
+            );
             match run_rustc_plugin_pass(manifest, crate_name, &features, None) {
                 PassOutcome::Success { std_spans, .. } => Some(std_spans),
                 // A configuration that keeps the gate and drops std does not
                 // build: the gate really is the way out, so leave the probe's
                 // condition alone.
                 _ => {
-                    debug!("Gate-satisfying configuration {:?} did not compile", features);
+                    debug!(
+                        "Gate-satisfying configuration {:?} did not compile",
+                        features
+                    );
                     None
                 }
             }

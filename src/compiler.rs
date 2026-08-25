@@ -32,9 +32,15 @@ pub fn mark_build_records(stats: &AllStats, telemetry: &Telemetry) -> BuildRecor
 
 /// Discard everything recorded since `mark` — used when a speculative attempt
 /// loses and the caller keeps the earlier feature set.
-pub fn rewind_build_records(stats: &mut AllStats, telemetry: &mut Telemetry, mark: &BuildRecordMark) {
+pub fn rewind_build_records(
+    stats: &mut AllStats,
+    telemetry: &mut Telemetry,
+    mark: &BuildRecordMark,
+) {
     stats.compilation_res.truncate(mark.results);
-    telemetry.build_success_targets.truncate(mark.success_targets);
+    telemetry
+        .build_success_targets
+        .truncate(mark.success_targets);
     telemetry.build_fail_targets.truncate(mark.fail_targets);
     telemetry.build_success_count = mark.success_count;
 }

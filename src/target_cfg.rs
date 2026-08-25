@@ -52,10 +52,7 @@ pub type CfgSet = HashSet<(String, Option<String>)>;
 /// apply this rule" rather than as any kind of default.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CfgPred {
-    Atom {
-        key: String,
-        value: Option<String>,
-    },
+    Atom { key: String, value: Option<String> },
     Not(Box<CfgPred>),
     All(Vec<CfgPred>),
     Any(Vec<CfgPred>),

@@ -247,9 +247,7 @@ impl<'a> std::fmt::Display for ProbeResult<'a> {
 #[derive(Debug, Clone)]
 pub enum ProbeDecision {
     /// The probe build succeeded and the span still resolved to std. Evidence of hardness, but not conclusive on its own.
-    StillStd {
-        reason: String,
-    },
+    StillStd { reason: String },
     /// The probe build succeeded and the span resolved to a non-std crate. Strong evidence that negating the witness_gate would avoid this span.
     NonStd {
         reason: String,
@@ -266,9 +264,7 @@ pub enum ProbeDecision {
     /// cannot find type `Vec` in this scope` — the crate does not compile with
     /// `std` off, whatever the gate says). Same argument as T5's attributed
     /// `dep_not_no_std` exit: the run holds the evidence, so it should say it.
-    CompileFailed {
-        reason: String,
-    },
+    CompileFailed { reason: String },
     /// The span is guarded, but by a cfg predicate naming no feature — e.g.
     /// `#[cfg(all(target_arch = "x86_64", target_os = "linux"))]`. Features are
     /// the axis this tool controls; the target is the consumer's choice, so such
@@ -283,9 +279,7 @@ pub enum ProbeDecision {
     /// arm is present in every covering run and would classify AlwaysStd
     /// unanimously. Compiling for a bare-metal target instead is no help —
     /// every std usage becomes a hard error, so nothing is observable.
-    ExternallyGated {
-        reason: String,
-    },
+    ExternallyGated { reason: String },
 }
 
 #[derive(Debug, Clone)]

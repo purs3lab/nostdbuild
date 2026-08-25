@@ -51,13 +51,7 @@ fn record(
 
 /// A std usage record at `line`, in the shape a derive expansion produces.
 fn std_usage(line: usize) -> PathRecord {
-    record(
-        "std::error::Error",
-        "std",
-        line,
-        PathContext::Other,
-        None,
-    )
+    record("std::error::Error", "std", line, PathContext::Other, None)
 }
 
 /// A core record co-located with it — same position, different crate.
@@ -131,7 +125,13 @@ fn alternate_crates_are_deduped_and_sorted() {
             vec![
                 std_usage(9),
                 core_usage(9),
-                record("hashbrown::HashMap", "hashbrown", 9, PathContext::Other, None),
+                record(
+                    "hashbrown::HashMap",
+                    "hashbrown",
+                    9,
+                    PathContext::Other,
+                    None,
+                ),
             ],
         ),
         run(&["alloc"], vec![core_usage(9)]),

@@ -170,8 +170,8 @@ fn the_trial_that_compiled_becomes_a_covering_run() {
 #[cargo_test]
 fn a_crate_that_already_builds_bare_metal_runs_no_search() {
     let _serial = isolated();
-    let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/test_extern_std_on_feature");
+    let fixture_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/test_extern_std_on_feature");
 
     let p = project()
         .at("build_enabler_skip")

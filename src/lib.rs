@@ -264,8 +264,7 @@ impl AllStats {
         // Written unconditionally, like `std_usages.json`: an empty file is the
         // positive statement that nothing was left unproven, which is what
         // separates a proven clearance from a quiet one.
-        let unproven_data =
-            serde_json::to_string_pretty(&self.unproven_std_usage_matches).unwrap();
+        let unproven_data = serde_json::to_string_pretty(&self.unproven_std_usage_matches).unwrap();
         std::fs::write(stats_dir.join("unproven_std_usages.json"), unproven_data).unwrap();
         if let Some(cov) = &self.coverage_comparison {
             let cov_data = serde_json::to_string_pretty(cov).unwrap();

@@ -210,10 +210,7 @@ pub fn model_to_features(model: &Option<z3::Model>) -> DoubleTupleVecString {
 /// omission is the trap every feature reader in this codebase has fallen into:
 /// `glam`'s and `euclid`'s `libm` is an optional dependency, so a check built on
 /// the declared table alone re-misses it on the day it lands.
-pub fn selectable_features(
-    crate_info: &CrateInfo,
-    manifest_toml: &toml::Value,
-) -> HashSet<String> {
+pub fn selectable_features(crate_info: &CrateInfo, manifest_toml: &toml::Value) -> HashSet<String> {
     let mut selectable: HashSet<String> = crate_info
         .features
         .iter()

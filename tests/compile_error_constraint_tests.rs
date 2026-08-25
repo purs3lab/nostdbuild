@@ -59,7 +59,9 @@ fn crate_info(features: &[(&str, &[&str])]) -> CrateInfo {
             .map(|(name, deps)| {
                 (
                     name.to_string(),
-                    deps.iter().map(|d| (d.to_string(), d.to_string())).collect(),
+                    deps.iter()
+                        .map(|d| (d.to_string(), d.to_string()))
+                        .collect(),
                 )
             })
             .collect(),
@@ -77,13 +79,7 @@ fn violations(
     let ctx = z3::Context::new(&z3::Config::new());
     let attrs = attrs_for(fixture_name);
     let enabled: Vec<String> = enabled.iter().map(|s| s.to_string()).collect();
-    parser::violated_compile_error_constraints(
-        &ctx,
-        &attrs,
-        info,
-        &enabled,
-        default_features_on,
-    )
+    parser::violated_compile_error_constraints(&ctx, &attrs, info, &enabled, default_features_on)
 }
 
 // ---------------------------------------------------------------------------
@@ -96,14 +92,23 @@ fn violations(
 fn empty_feature_set_violates_a_two_way_disjunction() {
     let info = crate_info(&[("default", &["blst", "std"]), ("blst", &[]), ("rust", &[])]);
     let v = violations("bulletproofs_shape.rs", &info, &[], false);
-    assert_eq!(v.len(), 1, "expected the constraint to be reported, got {:?}", v);
+    assert_eq!(
+        v.len(),
+        1,
+        "expected the constraint to be reported, got {:?}",
+        v
+    );
 }
 
 #[test]
 fn enabling_blst_satisfies_the_disjunction() {
     let info = crate_info(&[("default", &["blst", "std"]), ("blst", &[]), ("rust", &[])]);
     let v = violations("bulletproofs_shape.rs", &info, &["blst"], false);
-    assert!(v.is_empty(), "blst should satisfy the constraint, got {:?}", v);
+    assert!(
+        v.is_empty(),
+        "blst should satisfy the constraint, got {:?}",
+        v
+    );
 }
 
 /// The other disjunct must work too — the check must not be hardcoded to one arm.
@@ -111,7 +116,11 @@ fn enabling_blst_satisfies_the_disjunction() {
 fn enabling_rust_satisfies_the_disjunction() {
     let info = crate_info(&[("default", &["blst", "std"]), ("blst", &[]), ("rust", &[])]);
     let v = violations("bulletproofs_shape.rs", &info, &["rust"], false);
-    assert!(v.is_empty(), "rust should satisfy the constraint, got {:?}", v);
+    assert!(
+        v.is_empty(),
+        "rust should satisfy the constraint, got {:?}",
+        v
+    );
 }
 
 /// The vacuous-check regression guard. Under the old code every feature not in
@@ -239,7 +248,13 @@ fn lexical_info() -> CrateInfo {
 /// minimal.
 #[test]
 fn a_violated_implication_is_repaired_by_one_added_feature() {
-    let add = repair("lexical_shape.rs", &lexical_info(), &["floats"], false, &["std"]);
+    let add = repair(
+        "lexical_shape.rs",
+        &lexical_info(),
+        &["floats"],
+        false,
+        &["std"],
+    );
     assert_eq!(
         add.len(),
         1,
@@ -257,7 +272,13 @@ fn a_violated_implication_is_repaired_by_one_added_feature() {
 /// `floats` would satisfy the constraint too, and is not this pass's call.
 #[test]
 fn the_repair_never_removes_an_enabled_feature() {
-    let add = repair("lexical_shape.rs", &lexical_info(), &["floats"], false, &["std"]);
+    let add = repair(
+        "lexical_shape.rs",
+        &lexical_info(),
+        &["floats"],
+        false,
+        &["std"],
+    );
     assert!(
         !add.contains(&"floats".to_string()),
         "the repair must not name an already-enabled feature, got {:?}",
@@ -296,7 +317,12 @@ fn a_wide_disjunction_is_repaired_minimally() {
         ("std", &[]),
     ]);
     let add = repair("uom_shape.rs", &info, &["std"], false, &["std"]);
-    assert_eq!(add.len(), 1, "expected a single storage type, got {:?}", add);
+    assert_eq!(
+        add.len(),
+        1,
+        "expected a single storage type, got {:?}",
+        add
+    );
 }
 
 /// Nothing violated, nothing to repair — the case every crate that builds today
@@ -334,7 +360,12 @@ fn a_forbidden_feature_is_never_offered_as_a_repair() {
 fn the_permitted_disjunct_is_offered() {
     let info = crate_info(&[("default", &["std"]), ("std", &[]), ("libm", &[])]);
     let add = repair("std_or_libm_shape.rs", &info, &[], false, &["std"]);
-    assert_eq!(add, vec!["libm".to_string()], "expected libm, got {:?}", add);
+    assert_eq!(
+        add,
+        vec!["libm".to_string()],
+        "expected libm, got {:?}",
+        add
+    );
 }
 
 /// A `compile_error!` may test a cfg a build script emits (bucket I). Passing
@@ -640,7 +671,12 @@ fn the_attributes_half_collects_the_same_conjoined_constraint() {
 #[test]
 fn the_forbidden_combination_is_still_reported_as_violated() {
     let info = crate_info(&[("no_std", &[]), ("wasm-bindgen", &[]), ("std", &[])]);
-    let v = violations("stacked_shape.rs", &info, &["no_std", "wasm-bindgen"], false);
+    let v = violations(
+        "stacked_shape.rs",
+        &info,
+        &["no_std", "wasm-bindgen"],
+        false,
+    );
     assert_eq!(
         v.len(),
         1,
@@ -741,5 +777,10 @@ fn an_exclusive_choice_is_repaired_by_the_no_std_arm() {
         false,
         &["std"],
     );
-    assert_eq!(add, vec!["spin".to_string()], "expected `spin`, got {:?}", add);
+    assert_eq!(
+        add,
+        vec!["spin".to_string()],
+        "expected `spin`, got {:?}",
+        add
+    );
 }

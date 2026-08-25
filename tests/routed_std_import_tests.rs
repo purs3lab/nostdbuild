@@ -125,8 +125,16 @@ fn two_hop_binding_is_anchored_to_the_std_rooted_seed() {
     let (out, _) = resolve(
         "routed_std_import",
         vec![
-            std_record_at("routed_std_import", "let _ = Entry::Occupied;", "Entry::Occupied"),
-            std_record_at("routed_std_import", "let _ = Entry::Vacant;", "Entry::Vacant"),
+            std_record_at(
+                "routed_std_import",
+                "let _ = Entry::Occupied;",
+                "Entry::Occupied",
+            ),
+            std_record_at(
+                "routed_std_import",
+                "let _ = Entry::Vacant;",
+                "Entry::Vacant",
+            ),
         ],
     );
 
@@ -208,7 +216,8 @@ fn a_routed_import_record_does_not_poison_the_name_it_binds() {
     );
 
     assert_eq!(
-        anchored, 2,
+        anchored,
+        2,
         "both the routed import and the use it binds must be excused, got {:?}",
         out.records
             .iter()
@@ -271,7 +280,11 @@ fn an_ungated_sibling_binding_blocks_every_excuse() {
     let (out, anchored) = resolve(
         "routed_std_import_mixed",
         vec![
-            std_record_at("routed_std_import_mixed", "let _ = HashMap::new();", "HashMap::new"),
+            std_record_at(
+                "routed_std_import_mixed",
+                "let _ = HashMap::new();",
+                "HashMap::new",
+            ),
             std_record_at(
                 "routed_std_import_mixed",
                 "let _ = Entry::Occupied;",
@@ -281,7 +294,8 @@ fn an_ungated_sibling_binding_blocks_every_excuse() {
     );
 
     assert_eq!(
-        anchored, 0,
+        anchored,
+        0,
         "an ungated std binding of the name must block the excuse, got {:?}",
         out.records
             .iter()

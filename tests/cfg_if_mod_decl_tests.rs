@@ -14,8 +14,8 @@
 
 use std::path::{Path, PathBuf};
 
-use nostd::visitor::{ModCollector, ModNode, externally_gated_for_span};
 use nostd::types::ReadableSpan;
+use nostd::visitor::{ModCollector, ModNode, externally_gated_for_span};
 
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/cfg_if_mod_decl/lib.rs")
@@ -45,7 +45,13 @@ fn path_attr_arms_each_register_their_own_file() {
         );
         let mut files: Vec<String> = mmaps
             .iter()
-            .map(|c| c.source_file.file_name().unwrap().to_string_lossy().into_owned())
+            .map(|c| {
+                c.source_file
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
             .collect();
         files.sort();
         assert_eq!(
@@ -74,7 +80,11 @@ fn path_attr_arm_files_are_actually_walked() {
 fn feature_gated_arm_mod_is_registered() {
     with_tree(|tree| {
         let featmods = children_named(tree, "featmod");
-        assert_eq!(featmods.len(), 1, "`mod featmod;` in a feature-gated arm must be registered");
+        assert_eq!(
+            featmods.len(),
+            1,
+            "`mod featmod;` in a feature-gated arm must be registered"
+        );
         assert!(
             featmods[0].entry_condition.is_some(),
             "a feature-gated arm must pass its condition to the module it declares"
@@ -86,7 +96,11 @@ fn feature_gated_arm_mod_is_registered() {
 fn default_resolution_arm_mod_is_registered() {
     with_tree(|tree| {
         let hosts = children_named(tree, "host");
-        assert_eq!(hosts.len(), 1, "`mod host;` with no #[path] must resolve to host/mod.rs");
+        assert_eq!(
+            hosts.len(),
+            1,
+            "`mod host;` with no #[path] must resolve to host/mod.rs"
+        );
         assert!(
             hosts[0].source_file.ends_with("host/mod.rs"),
             "expected host/mod.rs, got {:?}",
@@ -143,12 +157,17 @@ fn path_attr_in_non_mod_rs_file_resolves_against_the_files_own_dir() {
         let sub = children_named(tree, "sub");
         assert_eq!(sub.len(), 1, "`mod sub;` must be registered");
         let gated = children_named(sub[0], "gated");
-        assert_eq!(gated.len(), 2, "both cfg_if arms must register a `gated` child");
+        assert_eq!(
+            gated.len(),
+            2,
+            "both cfg_if arms must register a `gated` child"
+        );
         for c in gated {
             // The bug put these under `sub/deep/`, which does not exist.
             assert!(
                 c.source_file.ends_with("cfg_if_mod_decl/deep/gated_win.rs")
-                    || c.source_file.ends_with("cfg_if_mod_decl/deep/gated_unix.rs"),
+                    || c.source_file
+                        .ends_with("cfg_if_mod_decl/deep/gated_unix.rs"),
                 "#[path] in a non-mod-rs file must resolve against that file's own \
                  directory, not the module search dir; got {:?}",
                 c.source_file
