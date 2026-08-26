@@ -323,7 +323,7 @@ pub fn process_crate(
     is_main: bool,
     optional_dep_feats: &mut TupleVec,
     hard_constraints: Option<Bool>,
-) -> anyhow::Result<TripleTupleVecString> {
+) -> anyhow::Result<QuadTupleVecString> {
     let (mut enable, mut disable): DoubleTupleVecString = (Vec::new(), Vec::new());
 
     let name_with_version = name_with_version.unwrap_or(&exchange.name_with_version);
@@ -354,7 +354,7 @@ pub fn process_crate(
     if !attrs.unconditional_no_std {
         if !no_std {
             debug!("No no_std found for the crate");
-            return Ok((Vec::new(), Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
         }
     } else {
         if is_main {
@@ -413,7 +413,7 @@ pub fn process_crate(
         // crates in the corpus that reach it, 5519 have no probe condition at all.
         if items.itemexterncrates.is_empty() && hard_constraints.is_none() {
             debug!("No extern crates found for the crate");
-            return Ok((Vec::new(), Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
         }
         if items.itemexterncrates.is_empty() {
             debug!(
@@ -487,7 +487,7 @@ pub fn process_crate(
                     }
                     Err(e) => {
                         debug!("Failed to parse extern crates: {}", e);
-                        return Ok((Vec::new(), Vec::new(), Vec::new()));
+                        return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
                     }
                 }
             }
@@ -550,7 +550,7 @@ pub fn process_crate(
                     .hard_unsat_deps
                     .push((name_with_version.to_string(), hard.to_string()));
             }
-            return Ok((Vec::new(), Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
         }
     } else {
         vec![]
@@ -635,7 +635,7 @@ pub fn process_crate(
                     .hard_with_main_unsat_deps
                     .push((name_with_version.to_string(), cond));
             }
-            return Ok((Vec::new(), Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
         }
     }
 
@@ -653,21 +653,108 @@ pub fn process_crate(
         None => (Vec::new(), Vec::new()),
     };
     non_minimalizable_features.extend(no_std_required.iter().cloned());
+    // Kept for the difference taken after the solve: what the no_std condition
+    // *itself* requires, as opposed to what asserting a `#[cfg]` added on top.
+    let condition_required: Vec<String> = no_std_required.clone();
+
+    // A `#[cfg]` says *when code exists*. `solve` asserts every equation here, which
+    // reads it as *what the configuration must satisfy* — and under a `not(std)` hard
+    // constraint the ubiquitous `#[cfg(any(feature = "std", feature = "X"))]` then
+    // collapses to "X must be on". That is how num-complex 0.4.6, a crate that is
+    // `#![no_std]` unconditionally, came to "require feature 'libm' for no_std".
+    //
+    // Not every such forcing is harmful — `alloc` and `libm` are usually the feature
+    // the no_std path really does want, and `discover_build_enablers` is the thing
+    // that proves it by compiling. But one class is never right: an assertion that
+    // turns on a feature this crate's own no_std condition *forbids*, or one that
+    // reaches such a feature through the crate's `[features]` table. Asserting it
+    // states that the crate is no_std only if it enables std.
+    //
+    // `bitcoin 0.32` is the case:
+    // `#[cfg(all(feature = "secp-recovery", feature = "base64", feature = "rand-std"))]`
+    // forced all three, and `rand-std = ["std", ...]`. It was written onto the edge as
+    // a no_std requirement and every target died on `E0463 can't find crate for std`
+    // — 87 such writes corpus-wide, 57 of them crates that build nothing.
+    if !no_std_forbidden.is_empty() {
+        let declared: Vec<String> = crate_info
+            .features
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect();
+        let mut base: Vec<Bool> = hard_constraint_vec.clone();
+        if let Some(eq) = &equation {
+            base.push(eq.clone());
+        }
+        filtered.retain(|cand| {
+            let forced = solver::features_forced_true(ctx, &base, cand, &declared);
+            let contradictory: Vec<&String> = forced
+                .iter()
+                .filter(|f| {
+                    no_std_forbidden.contains(f)
+                        || reaches_forbidden_feature(crate_info, f, &no_std_forbidden)
+                })
+                .collect();
+            if contradictory.is_empty() {
+                return true;
+            }
+            println!(
+                "[equations] {}: dropping cfg condition {} — asserting it forces {:?}, \
+                 which enable(s) {:?}, forbidden by the crate's own no_std condition",
+                name_with_version, cand, contradictory, no_std_forbidden
+            );
+            exchange.telemetry.self_contradictory_cfg_equations.push((
+                name_with_version.to_string(),
+                contradictory.into_iter().cloned().collect(),
+            ));
+            false
+        });
+    }
+
     if is_main {
         exchange.main_no_std_required = no_std_required;
         exchange.main_no_std_forbidden = no_std_forbidden;
     }
 
     // Finally, we solve the equations
-    let (model, len, depth, entailed_false) = {
+    let (model, len, depth, entailed_false, entailed_true) = {
         let t = crate::timing::scope("feature_solve", name_with_version);
         t.meta("constraint_len", filtered.len().to_string());
         solver::solve(ctx, &equation, &filtered, &hard_constraint_vec)
     };
     debug!(
-        "Solver result for crate {}: model={:?}, len={}, depth={}, entailed false={:?}",
-        name_with_version, model, len, depth, entailed_false
+        "Solver result for crate {}: model={:?}, len={}, depth={}, entailed false={:?}, entailed true={:?}",
+        name_with_version, model, len, depth, entailed_false, entailed_true
     );
+    // `entailed_true` is "the solve cannot drop this" — but the solve includes the
+    // asserted `#[cfg]` conditions, so it conflates two very different claims:
+    // "this crate cannot be no_std without the feature" (what `no_std_forced_features`
+    // reads off the condition alone) and "a cfg gate named it, and asserting the gate
+    // pinned it". num-complex 0.4.6 is `#![no_std]` unconditionally and still reports
+    // `libm` entailed, purely because `#[cfg(any(feature = "std", feature = "libm"))]`
+    // was asserted under `not(std)`.
+    //
+    // Recorded rather than acted on. The second class is where an unnecessary feature
+    // in the emitted manifest comes from, so it is the list to read when proposing a
+    // dependency-edge change upstream — but KI-27 is the standing reason a feature in
+    // it can still be genuinely needed (a trait impl nobody names), so the build, not
+    // this list, is the arbiter.
+    let assertion_forced: Vec<String> = entailed_true
+        .iter()
+        .filter(|f| !condition_required.contains(f))
+        .cloned()
+        .collect();
+    if !assertion_forced.is_empty() {
+        println!(
+            "[equations] {}: features required only because a cfg condition was asserted \
+             (the no_std condition itself does not need them): {:?}",
+            name_with_version, assertion_forced
+        );
+        exchange
+            .telemetry
+            .features_forced_by_cfg_assertion
+            .push((name_with_version.to_string(), assertion_forced));
+    }
+
     exchange
         .telemetry
         .max_contraint_length
@@ -779,7 +866,17 @@ pub fn process_crate(
         deps_to_keep,
     );
 
-    Ok((enable, disable, entailed_false))
+    // `enable` is filtered and minimized after the solve — undeclared atoms are
+    // dropped (R34-2/R34-14), `minimize` takes back optional-dep enablers. Re-intersect
+    // so the proven list can never name a feature the returned list no longer carries;
+    // a caller reading `entailed_true` as "this one in `enable` is proven" would
+    // otherwise be reading about a feature that is no longer there.
+    let entailed_true: Vec<String> = entailed_true
+        .into_iter()
+        .filter(|f| enable.contains(f))
+        .collect();
+
+    Ok((enable, disable, entailed_false, entailed_true))
 }
 
 /// Returns the Cargo.toml string representation of how `dep_name` is enabled
@@ -1774,7 +1871,7 @@ pub fn process_dep_crate(
         (None, None) => None,
     };
 
-    let (enable, disable, entailed_false) = process_crate(
+    let (enable, disable, entailed_false, _entailed_true) = process_crate(
         exchange,
         &ctx,
         dep,
@@ -2779,10 +2876,23 @@ pub fn compile_error_repair_features(
 /// * `attrs` - The attributes of the dependency crate
 /// * `ctx` - The Z3 context
 /// # Returns
-/// A tuple containing the equations for the dependency
-/// crate and the parsed attributes.
-pub fn parse_attributes<'a>(attrs: &Attributes, ctx: &'a z3::Context) -> Vec<Option<Bool<'a>>> {
-    let mut equation: Vec<Option<Bool>> = Vec::new();
+/// One entry per interesting `#[cfg]`: its equation, paired with the **feature
+/// atoms that equation actually names**.
+///
+/// The atoms are carried out rather than recovered later because the only thing
+/// available later is the Z3 AST's rendered text, and matching a feature name
+/// against that text is a substring test. `bitcoin 0.32` has
+/// `#[cfg(all(feature = "secp-recovery", feature = "base64", feature = "rand-std"))]`,
+/// which names no `std` feature at all, yet `"rand-std".contains("std")` held and
+/// the equation was kept, asserted, and turned all three features into
+/// requirements — `rand-std` links `std`, so every target then failed with
+/// `E0463 can't find crate for std`. `hashes-std`, `rustc-dep-of-std` and
+/// `spin_no_std` are the same shape.
+pub fn parse_attributes<'a>(
+    attrs: &Attributes,
+    ctx: &'a z3::Context,
+) -> Vec<(Option<Bool<'a>>, Vec<String>)> {
+    let mut equation: Vec<(Option<Bool>, Vec<String>)> = Vec::new();
     let mut temp_eq: Option<Bool>;
     let mut parsed: ParsedAttr;
     for attr in &attrs.attributes {
@@ -2794,7 +2904,7 @@ pub fn parse_attributes<'a>(attrs: &Attributes, ctx: &'a z3::Context) -> Vec<Opt
                 // Attributes like `#[cfg (feature = "serde")]` are not interesting.
                 continue;
             }
-            equation.push(temp_eq);
+            equation.push((temp_eq, parsed.features.clone()));
         }
     }
 
@@ -2802,28 +2912,26 @@ pub fn parse_attributes<'a>(attrs: &Attributes, ctx: &'a z3::Context) -> Vec<Opt
 }
 
 /// Filter the equations based on the main features.
-/// Only the equations that contain the main features will be kept.
+/// Only the equations that name one of the main features will be kept.
 /// # Arguments
-/// * `equations` - The equations to filter
+/// * `equations` - `(equation, feature atoms it names)` pairs from `parse_attributes`
 /// * `main_features` - The features of the main crate
 /// # Returns
 /// The filtered equations
+///
+/// Membership, not substring. The atoms come from the parsed `#[cfg]` itself, so
+/// `rand-std` no longer answers to `std`; see `parse_attributes` for what that
+/// cost.
 pub fn filter_equations<'a>(
-    equations: &Vec<Option<Bool<'a>>>,
+    equations: &[(Option<Bool<'a>>, Vec<String>)],
     main_features: &[String],
 ) -> Vec<Bool<'a>> {
     let mut filtered: Vec<Bool<'_>> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    for e in equations.iter().flatten() {
-        let mut found = false;
-        for feature in main_features {
-            if e.to_string().contains(feature) {
-                found = true;
-                break;
-            }
-        }
-        if found {
+    for (e, feats) in equations.iter() {
+        let Some(e) = e else { continue };
+        if feats.iter().any(|f| main_features.contains(f)) {
             filtered.push(e.clone());
         }
     }
@@ -4656,6 +4764,10 @@ struct DepUsageContext {
     enable: Vec<String>,
     /// Features this crate's own no_std solve determined it does not need.
     disable: Vec<String>,
+    /// The subset of `enable` the solve *proved* must be on — re-checking with
+    /// the feature forced off came back UNSAT. Everything in `enable` but not
+    /// here is a Z3 don't-care, which is not the same thing as a requirement.
+    entailed_true: Vec<String>,
     /// (dep_norm_name, item_name) pairs this crate's own source actually
     /// references from each of its dependencies, restricted to call sites
     /// compatible with this crate's hard constraints. Mirrors
@@ -4697,6 +4809,7 @@ pub fn recursive_dep_requirement_check(
         DepUsageContext {
             enable: exchange.main_enable.clone(),
             disable: Vec::new(),
+            entailed_true: Vec::new(),
             valid_cross_crate_items: exchange.valid_cross_crate_items.clone(),
             feature_to_items: HashMap::new(),
         },
@@ -4840,20 +4953,22 @@ pub fn recursive_dep_requirement_check(
                 (
                     c.enable.clone(),
                     c.disable.clone(),
+                    c.entailed_true.clone(),
                     c.feature_to_items.clone(),
                 )
             });
 
-            let (enable, disable, feature_to_items): (
+            let (enable, disable, entailed_true, feature_to_items): (
+                Vec<String>,
                 Vec<String>,
                 Vec<String>,
                 HashMap<String, HashSet<String>>,
-            ) = if let Some((enable, disable, feature_to_items)) = cached {
+            ) = if let Some((enable, disable, entailed_true, feature_to_items)) = cached {
                 debug!(
                     "Already visited dependency requirements for crate: {}",
                     dep_name_with_version
                 );
-                (enable, disable, feature_to_items)
+                (enable, disable, entailed_true, feature_to_items)
             } else {
                 let ctx = z3::Context::new(&z3::Config::new());
                 let (all_hard, hard_constraints, _, _, dep_root, dep_records, _) =
@@ -4870,7 +4985,7 @@ pub fn recursive_dep_requirement_check(
                     &all_hard,
                     None,
                 );
-                let (enable, disable, _) = process_crate(
+                let (enable, disable, _, entailed_true) = process_crate(
                     exchange,
                     &ctx,
                     &mut crate_attrs,
@@ -4892,8 +5007,16 @@ pub fn recursive_dep_requirement_check(
                     hard_constraints.as_ref(),
                     &ctx,
                 );
+                // Both lists, not just `disable`. The map answers "which of this
+                // crate's items does feature F gate", and the *enable* side needs
+                // that answer just as much: it is how the audit below tells a
+                // feature the parent genuinely reaches items through from one Z3
+                // set true because nothing said otherwise.
                 let feature_to_items: HashMap<String, HashSet<String>> = disable
                     .iter()
+                    .chain(enable.iter())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
                     .map(|feat| {
                         let f_var = z3::ast::Bool::new_const(&ctx, feat.as_str());
                         let gated: HashSet<String> = named
@@ -4915,12 +5038,13 @@ pub fn recursive_dep_requirement_check(
                     DepUsageContext {
                         enable: enable.clone(),
                         disable: disable.clone(),
+                        entailed_true: entailed_true.clone(),
                         valid_cross_crate_items: dep_valid_cross_crate_items,
                         feature_to_items: feature_to_items.clone(),
                     },
                 );
 
-                (enable, disable, feature_to_items)
+                (enable, disable, entailed_true, feature_to_items)
             };
 
             debug!(
@@ -4951,7 +5075,7 @@ pub fn recursive_dep_requirement_check(
                 ));
             }
 
-            let dep_violations = audit_dependency_requirement(
+            let (dep_violations, unjustified) = audit_dependency_requirement(
                 &crate_info,
                 &dep_crate_info,
                 &dep.name,
@@ -4959,10 +5083,22 @@ pub fn recursive_dep_requirement_check(
                 &dep_name_with_version,
                 &enable,
                 &disable,
+                &entailed_true,
                 &parent_active_enable,
                 &parent_valid_cross_crate_items,
                 &feature_to_items,
             );
+            if !unjustified.is_empty() {
+                println!(
+                    "[recursive_check] {} (parent {}): enable features with no justification \
+                     (solve had no opinion and the parent reaches no item they gate): {:?}",
+                    dep_name_with_version, name_with_version, unjustified
+                );
+                exchange
+                    .telemetry
+                    .unjustified_enable_features
+                    .push((dep_name_with_version.clone(), unjustified));
+            }
             if !dep_violations.is_empty() {
                 for v in &dep_violations {
                     println!("[recursive_check] {}", v);
@@ -4988,6 +5124,9 @@ pub fn recursive_dep_requirement_check(
 /// Cargo.toml. `enable`/`disable` are the dependency's own minimal no_std solve
 /// result (what it actually needs/doesn't need, in isolation). Returns one
 /// human-readable message per problem found; an empty vec means the edge is fine.
+///
+/// The second return value is the features dropped from the Direction 1 scan as
+/// unjustified — reported, not silently swallowed, because the atom is evidence.
 #[allow(clippy::too_many_arguments)]
 fn audit_dependency_requirement(
     main_crate_info: &CrateInfo,
@@ -4997,11 +5136,13 @@ fn audit_dependency_requirement(
     dep_name_with_version: &str,
     enable: &[String],
     disable: &[String],
+    entailed_true: &[String],
     parent_active_enable: &[String],
     parent_valid_cross_crate_items: &HashSet<(String, String)>,
     feature_to_items: &HashMap<String, HashSet<String>>,
-) -> Vec<String> {
+) -> (Vec<String>, Vec<String>) {
     let mut violations = Vec::new();
+    let mut unjustified = Vec::new();
 
     let dep_edge = main_crate_info
         .deps_and_features
@@ -5015,9 +5156,38 @@ fn audit_dependency_requirement(
     let mut parent_reachable = parent_active_enable.to_vec();
     solver::all_enabled_for_feat(&mut parent_reachable, main_crate_info);
 
+    let dep_norm = dep_name.replace('-', "_");
+
     // --- Direction 1: dep requires a feature the parent has no way to enable. ---
+    //
+    // "Requires" has to be earned. `enable` is one satisfying assignment, and Z3
+    // assigns a feature no equation mentions arbitrarily, so a raw `enable` scan
+    // reports don't-cares as requirements: across the corpus this direction's top
+    // complaints were `with-tracing`, `runtime-benchmarks`, `fuzz` and `try-runtime`,
+    // none of which has any bearing on whether a crate is no_std. num-complex 0.4.6
+    // is `#![no_std]` unconditionally and still got reported as requiring `libm`.
+    //
+    // Two things earn it, and the same two are what a later pass may act on:
+    //   - the solve proved it (`entailed_true`: forcing the feature off is UNSAT), or
+    //   - the parent reaches an item the feature gates (the Direction 2 items test,
+    //     applied here in the same shape).
+    //
+    // Deliberately *not* a licence to delete: this function writes no manifest. A
+    // feature suppressed here is recorded, and over-suppressing costs a warning
+    // rather than a build.
     for feat in enable {
         if dep_default_feats.contains(feat) {
+            continue;
+        }
+        let justified = entailed_true.contains(feat)
+            || feature_to_items.get(feat).is_some_and(|items| {
+                items.contains("*")
+                    || items.iter().any(|item| {
+                        parent_valid_cross_crate_items.contains(&(dep_norm.clone(), item.clone()))
+                    })
+            });
+        if !justified {
+            unjustified.push(feat.clone());
             continue;
         }
         if feat_available_for_dep(main_crate_info, dep_name, feat) {
@@ -5040,7 +5210,6 @@ fn audit_dependency_requirement(
     // `disable` only means "not required in isolation," not "forbidden" — if the
     // parent's own source genuinely uses an item gated by this feature (under the
     // parent's own hard constraints), it's not a misconfiguration, skip it.
-    let dep_norm = dep_name.replace('-', "_");
     for feat in disable {
         let protected = feature_to_items.get(feat).is_some_and(|items| {
             items.contains("*")
@@ -5088,7 +5257,7 @@ fn audit_dependency_requirement(
         }
     }
 
-    violations
+    (violations, unjustified)
 }
 
 fn feat_available_for_dep(main_crate_info: &CrateInfo, dep_name: &str, feat: &str) -> bool {

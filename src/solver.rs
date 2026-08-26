@@ -10,8 +10,8 @@ use crate::types::*;
 use crate::{CrateInfo, Telemetry, consts::CUSTOM_FEATURES_ENABLED, parser};
 
 /// Given a context, a main equation and a list of filtered equations, solve for the
-/// main equation — and report which of the model's `false` features it had no choice
-/// about.
+/// main equation — and report which of the model's features it had no choice about,
+/// in both directions.
 /// # Arguments
 /// * `ctx` - The Z3 context
 /// * `main_equation` - The main equation to solve for
@@ -25,12 +25,24 @@ use crate::{CrateInfo, Telemetry, consts::CUSTOM_FEATURES_ENABLED, parser};
 ///   had no reason to set them either way and picked false. Telling the two apart is
 ///   what stops later passes from deleting a feature the crate's author asked for;
 ///   see `parser::finalize_dep_crate`.
+/// * `Vec<String>` - The entailed-true set: every feature `f` for which
+///   `assertions ∧ ¬f` is UNSAT, i.e. the features the crate genuinely cannot be
+///   no_std without. Same distinction, the other way round, and the one the enable
+///   side never had: the model's other `true` entries are don't-cares that a pass
+///   reading `enable` as a requirement list turns into features it asks cargo for
+///   on no evidence at all.
 pub fn solve<'a>(
     ctx: &'a z3::Context,
     main_equation: &Option<Bool>,
     filtered: &Vec<Bool>,
     hard_constraints: &[Bool<'a>],
-) -> (Option<z3::Model<'a>>, usize, usize, Vec<String>) {
+) -> (
+    Option<z3::Model<'a>>,
+    usize,
+    usize,
+    Vec<String>,
+    Vec<String>,
+) {
     let solver = z3::Solver::new(ctx);
     let possible = find_possible_equations(ctx, main_equation, filtered, hard_constraints);
     let (mut len, mut depth) = (0, 0);
@@ -80,7 +92,32 @@ pub fn solve<'a>(
         })
         .unwrap_or_default();
 
-    (model, len, depth, entailed_false)
+    // The mirror image, and the one the enable side never had. `model_to_enabled_features`
+    // returns every Bool the model happened to set true, which for a feature no equation
+    // mentions is an arbitrary pick — nalgebra 0.33.2 has zero `#[cfg(feature = "libm")]`
+    // in its source, so `libm` is a free variable there, and the pick is the whole
+    // difference between the run that built 26/26 and the one that built 0/26. Re-checking
+    // with the feature forced *off* asks the question that actually matters: "could this
+    // crate be no_std without it?" SAT means the solve has no opinion and any pass
+    // downstream that treats the `true` as a requirement is inventing one.
+    let entailed_true: Vec<String> = model
+        .as_ref()
+        .map(|m| {
+            model_to_enabled_features(m)
+                .into_iter()
+                .filter(|name| {
+                    let var = Bool::new_const(ctx, name.as_str());
+                    solver.push();
+                    solver.assert(&var.not());
+                    let forced = solver.check() == z3::SatResult::Unsat;
+                    solver.pop(1);
+                    forced
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    (model, len, depth, entailed_false, entailed_true)
 }
 
 pub fn eqs_to_features(ctx: &z3::Context, eqs: &[Bool]) -> (Vec<String>, Vec<String>) {
@@ -312,6 +349,41 @@ pub fn retain_selectable_features(
 /// condition is then stronger than the source warrants — the same reading
 /// `driver`'s `no_std_switch` already takes of the same atoms — and the effect is
 /// bounded to turning on a feature the author's own condition names.
+/// The declared features that asserting `candidate` on top of `base` turns on.
+///
+/// "Turns on" is entailment, not the model's pick: a feature is reported only
+/// when `base ∧ candidate ∧ ¬feature` is UNSAT, so the answer does not depend on
+/// which satisfying assignment Z3 happened to choose.
+pub fn features_forced_true<'a>(
+    ctx: &'a z3::Context,
+    base: &[Bool<'a>],
+    candidate: &Bool<'a>,
+    declared: &[String],
+) -> Vec<String> {
+    let solver = z3::Solver::new(ctx);
+    for b in base {
+        solver.assert(b);
+    }
+    solver.assert(candidate);
+    if solver.check() != z3::SatResult::Sat {
+        // Nothing is forced by an assertion that cannot hold at all; the
+        // compatibility search in `find_possible_equations` drops these anyway.
+        return Vec::new();
+    }
+    declared
+        .iter()
+        .filter(|feat| {
+            let var = Bool::new_const(ctx, feat.as_str());
+            solver.push();
+            solver.assert(&var.not());
+            let forced = solver.check() == z3::SatResult::Unsat;
+            solver.pop(1);
+            forced
+        })
+        .cloned()
+        .collect()
+}
+
 pub fn no_std_forced_features<'a>(
     ctx: &'a z3::Context,
     equation: &Bool<'a>,
@@ -439,6 +511,9 @@ pub fn final_feature_list_dep(
         telemetry
             .default_list_modified
             .push((name.to_string(), true));
+        telemetry
+            .default_list_modified_list
+            .push((name.to_string(), dep_feats_to_remove.clone()));
     } else {
         telemetry
             .default_list_modified

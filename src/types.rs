@@ -28,6 +28,12 @@ pub type TupleVec = Vec<(String, String)>;
 
 pub type DoubleTupleVecString = (Vec<String>, Vec<String>);
 pub type TripleTupleVecString = (Vec<String>, Vec<String>, Vec<String>);
+/// `(enable, disable, entailed_false, entailed_true)` — a crate's solve result.
+/// The two `entailed_*` lists are the *proven* subsets of the two before them:
+/// `disable` and `enable` are one satisfying assignment, and Z3 assigns a
+/// feature no equation mentions arbitrarily, so neither list on its own
+/// distinguishes "the solve requires this" from "the solve had no opinion".
+pub type QuadTupleVecString = (Vec<String>, Vec<String>, Vec<String>, Vec<String>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpanVerdict {

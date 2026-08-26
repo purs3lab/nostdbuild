@@ -443,6 +443,20 @@ pub struct Telemetry {
     pub undeclared_feature_atoms: Vec<(String, Vec<String>)>,
     /// Did we have to modify the default features that main set for any of its dependencies
     pub default_list_modified: Vec<(String, bool)>,
+    /// For each dependency whose edge was modified above, *which* author-declared
+    /// values were taken out of its `[dependencies.<dep>] features = [...]` list.
+    ///
+    /// The bool alone could not answer that, and this is the one deletion the tool
+    /// makes to something the author wrote by hand, so it is the one most worth
+    /// showing in a diff. Each entry is in `removable` — the dependency's solve
+    /// proved it cannot be on and the crate still be no_std — which is what
+    /// licenses removing it at all; contrast `features_not_required_but_declared`,
+    /// which is merely unjustified and is therefore kept.
+    ///
+    /// Note this is the dependency *edge*. `unnecessary_features_removed_list` is
+    /// the sibling record for the main crate's own `[features]` table, where the
+    /// deleted values are `<dep>/<feat>` strings inside a feature's array.
+    pub default_list_modified_list: Vec<(String, Vec<String>)>,
     /// Did we change the default-features to false for any dependency
     pub default_true_unset_deps: Vec<(String, bool)>,
     /// Proc-macro defaults parked on the edge, as `<package>/<feature>` (O-9). A
@@ -490,6 +504,23 @@ pub struct Telemetry {
     pub unnecessary_features_removed: Vec<(String, bool)>,
     /// Features that were moved for the above case
     pub unnecessary_features_removed_list: Vec<(String, Vec<String>)>,
+    /// Per dependency, the features the *author* declared on that dependency's
+    /// edge which the analysis cannot justify: the dependency's own solve did not
+    /// prove them (forcing them off stays SAT) and the parent reaches no item they
+    /// gate. These are **kept** — a pass downstream of the solve only subtracts
+    /// what it added, never what the author wrote (F15, and the uom/`bmp390` case
+    /// where stripping declared values left uom with no storage type) — so this
+    /// list is a report, not an action.
+    ///
+    /// Distinct from `unnecessary_features_removed_list`, which is the *proven*
+    /// must-be-off set and does get removed. This one is "nothing shows it is
+    /// needed", which is a weaker claim and the reason it is only reported.
+    ///
+    /// Read it when proposing upstream changes: each entry is a candidate for
+    /// deletion from the crate's own Cargo.toml, to be confirmed by a build rather
+    /// than taken on the tool's word — KI-27 is the standing reason the analysis
+    /// can miss a requirement that is real (a trait impl nobody names).
+    pub features_not_required_but_declared: Vec<(String, Vec<String>)>,
     /// List of optional dependencies that were enabled due to some other feature being enabled
     pub optional_deps_enabled: Vec<String>,
     /// List of optional dependencies that were enabled due to some other feature being enabled
@@ -692,6 +723,36 @@ pub struct Telemetry {
     /// enables, or a parent forcing on a feature the dependency does not
     /// need and does not protect via its own item usage.
     pub recursive_requirement_check_violations: Vec<String>,
+    /// Per dependency, the features its own solve put in `enable` that nothing
+    /// justifies: the solve did not prove them (forcing them off stays SAT) and
+    /// the parent reaches no item they gate. These are Z3 don't-cares, and the
+    /// recursive check no longer reports them as no_std requirements. Recorded
+    /// because the same set is what a manifest-writing pass would have to stop
+    /// emitting — `custom_features_added_list` is where they land today.
+    pub unjustified_enable_features: Vec<(String, Vec<String>)>,
+    /// Per crate, the features a `#[cfg]` condition would have forced on that the
+    /// crate's own no_std condition forbids (directly, or through its `[features]`
+    /// table). The condition is dropped rather than asserted: it claimed the crate
+    /// is no_std only when it enables std, which cannot be what the author meant
+    /// and is not a configuration worth emitting. `bitcoin 0.32`'s
+    /// `all(secp-recovery, base64, rand-std)` forcing `rand-std = ["std", ...]` is
+    /// the shape.
+    pub self_contradictory_cfg_equations: Vec<(String, Vec<String>)>,
+    /// Per crate, the features that came out of the solve as *entailed true* only
+    /// because a `#[cfg]` condition was asserted — the crate's own no_std condition
+    /// does not require them.
+    ///
+    /// This is the split `entailed_true` cannot make on its own, and it is the list
+    /// to read when proposing a dependency-edge change upstream: everything here is
+    /// a feature the emitted manifest asks for that no statement about no_std
+    /// justifies. num-complex 0.4.6 — `#![no_std]` unconditionally — reports `libm`
+    /// here, from `#[cfg(any(feature = "std", feature = "libm"))]` asserted under
+    /// `not(std)`.
+    ///
+    /// Not evidence the feature is unwanted: KI-27 (a trait impl nobody names) is the
+    /// standing case where a genuinely required feature has nothing to justify it in
+    /// this analysis. Confirm with a build before dropping one.
+    pub features_forced_by_cfg_assertion: Vec<(String, Vec<String>)>,
     /// List of unknown keywords found in attributes
     pub unknown_idents_in_attrs: bool,
     /// List of unknown keywords found in attributes for dependencies
