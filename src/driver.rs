@@ -30,9 +30,41 @@ use crate::{
 /// builds per iteration. A combo that fails on the crate's established good
 /// target is almost never rescued by a different triple, and the host fallback
 /// still catches genuine std; the cost is a minor precision loss (host cfgs) for
-/// exactly those combos. Process-global is safe: the tool analyses one main
-/// crate per process.
+/// exactly those combos.
+///
+/// **Process-global on purpose, and deliberately not reset between crates.** A
+/// triple that linked for one crate is a good first guess for the next, and
+/// dependencies are analysed in this same process — so a dep inherits the main
+/// crate's answer instead of re-scanning `TARGET_LIST`. What this cache is *not*
+/// is a statement about the crate currently under analysis: "the cache is set"
+/// answers "has anything compiled bare-metal in this process", never "has *this*
+/// crate". Anything that needs the second question wants
+/// [`CRATE_REACHED_BARE_METAL`]; reading this one instead is how KI-28 happened.
 static LAST_GOOD_TARGET: Mutex<Option<&'static str>> = Mutex::new(None);
+
+/// Did any plugin pass for the crate *currently* under analysis compile for a
+/// bare-metal target?
+///
+/// The per-crate half of [`LAST_GOOD_TARGET`], and the one
+/// [`discover_build_enablers`] is gated on. The two used to be the same flag,
+/// which silently made the enabler search main-crate-only: `analyze_crate` runs
+/// for every dependency in the same process, so the first crate that compiled
+/// bare-metal left the cache set and every crate after it skipped the search.
+/// The unit-sphere 0.4.0 run measured it — 19 `analyze` calls, one
+/// `build_enablers` call lasting 16 ms, which was the featureless main crate
+/// returning on `declared.is_empty()`. Not one of its 18 dependencies was asked.
+///
+/// KI-28, and latent as far as anything observed: the shapes the search exists
+/// for (euclid, bevy_input, totsu_core) are all documented as *main* crates, and
+/// no corpus crate is yet known to convert because a *dependency* got its
+/// enabler. It does not explain unit-sphere — nalgebra builds bare-metal without
+/// `libm` perfectly well, so the search is right to skip it there; that one is
+/// KI-27 plus an arbitrary Z3 don't-care.
+///
+/// Reset per crate next to [`HOST_NOT_NO_STD`], at the top of
+/// `find_feature_combs_for_all_code`, so the previous crate's answer cannot leak
+/// into this one. Set wherever `LAST_GOOD_TARGET` is.
+static CRATE_REACHED_BARE_METAL: Mutex<bool> = Mutex::new(false);
 
 /// Does the crate under analysis declare `#![no_std]` on a *target* predicate
 /// that the host does not satisfy?
@@ -54,21 +86,28 @@ static HOST_NOT_NO_STD: Mutex<bool> = Mutex::new(false);
 
 /// Clear the process-global per-crate caches. **For tests only.**
 ///
-/// `LAST_GOOD_TARGET` is documented above as safe to share because the tool
-/// analyses one main crate per process. That holds for the binary and not for a
-/// test binary, where several `analyze_crate` calls share one process: a fixture
-/// that compiles for a bare-metal target leaves the cache set, and every test
-/// running after it skips `discover_build_enablers` outright — the search is
-/// gated on the cache being empty. The suite then passes or fails on thread
-/// scheduling rather than on behaviour, which is how
+/// `CRATE_REACHED_BARE_METAL` is reset per crate in the normal course of a run,
+/// so a test that goes through `find_feature_combs_for_all_code` does not need
+/// this. A test that calls the lower layers directly does, and clearing it is
+/// cheap, so it is cleared here too.
+///
+/// `LAST_GOOD_TARGET` is the one that genuinely leaks: nothing resets it between
+/// crates by design, and in a test binary several `analyze_crate` calls share one
+/// process, so a fixture that compiles for a bare-metal target hands its triple
+/// to every test after it. That used to also decide whether
+/// `discover_build_enablers` ran at all — the suite then passed or failed on
+/// thread scheduling rather than on behaviour, which is how
 /// `the_trial_that_compiled_becomes_a_covering_run` came to fail under
-/// `--test-threads=1` while passing by default.
+/// `--test-threads=1` while passing by default. Splitting the enabler gate onto
+/// `CRATE_REACHED_BARE_METAL` removes that particular coupling; the target hint
+/// still crosses tests, which is why this exists.
 ///
 /// Callers must also serialise against each other; resetting the cache while
 /// another test is mid-analysis would take that test's target away.
 pub fn reset_target_cache() {
     *LAST_GOOD_TARGET.lock().unwrap() = None;
     *HOST_NOT_NO_STD.lock().unwrap() = false;
+    *CRATE_REACHED_BARE_METAL.lock().unwrap() = false;
 }
 
 /// The `--target` the user pinned on the command line, if any. When set, the
@@ -1342,8 +1381,9 @@ pub fn run_rustc_plugin_pass_with(
     //
     // Which bare-metal target(s) to try, in order:
     //   * an explicit CLI `--target` pins the analysis to exactly that target;
-    //   * else the crate's already-established good target (`LAST_GOOD_TARGET`),
-    //     so the covering-set/CEGAR runs don't re-scan all 26 every call;
+    //   * else the last triple that linked in this process (`LAST_GOOD_TARGET`),
+    //     so the covering-set/CEGAR runs don't re-scan all 26 every call — a hint
+    //     that outlives the crate that produced it, and may be a dependency's;
     //   * else, on the very first pass, scan `TARGET_LIST` for the first that
     //     compiles and cache it.
     let explicit = *EXPLICIT_TARGET.lock().unwrap();
@@ -1497,6 +1537,12 @@ pub fn run_rustc_plugin_pass_with(
     match succeeded_target {
         Some(t) => {
             *LAST_GOOD_TARGET.lock().unwrap() = Some(t);
+            // The per-crate half. `succeeded_target` is `Some` only for a real
+            // `--target` build, so this says exactly what `discover_build_enablers`
+            // needs to know: *this* crate has been compiled for bare metal at least
+            // once, and a search for the feature it cannot build without would be
+            // searching for something that does not exist.
+            *CRATE_REACHED_BARE_METAL.lock().unwrap() = true;
             debug!("cargo hir succeeded for {} on target {}", crate_name, t);
         }
         None if std_inconclusive && host_not_no_std => debug!(
@@ -2215,6 +2261,12 @@ pub fn find_feature_combs_for_all_code<'a>(
     // the call below, and inheriting a dependency's predicate would be worse
     // than having none.
     set_host_no_std_applicability(None, telemetry);
+
+    // Same reasoning, same place, for the other per-crate flag. This is the only
+    // reset: `LAST_GOOD_TARGET` deliberately survives, because a triple that
+    // linked once is still the right first guess, while "has *this* crate reached
+    // bare metal" has to start false for every crate — main and dependency alike.
+    *CRATE_REACHED_BARE_METAL.lock().unwrap() = false;
 
     for entry_path in &entrypoints {
         if !entry_path.exists() {
@@ -3169,12 +3221,18 @@ pub fn discover_build_enablers<'a>(
     let budget = std::cell::Cell::new(MAX_ENABLER_PROBES);
     // Only the first trial is allowed to sweep `TARGET_LIST` looking for a triple
     // that works; after that every trial is pinned to one. A trial that succeeds
-    // sets `LAST_GOOD_TARGET` and pins itself; a trial that fails leaves the cache
-    // empty, and without this each subsequent failure would cost another 26
-    // builds. `TARGET_LIST[0]` is the arbitrary-but-fixed stand-in for that case —
-    // a crate that builds bare-metal at all almost always builds for most triples,
-    // and if this one is wrong the search just reports nothing, which is where it
-    // would have been anyway.
+    // sets `LAST_GOOD_TARGET` and pins itself; a trial that fails leaves it as it
+    // was, and without this each subsequent failure could cost another 26 builds.
+    // `TARGET_LIST[0]` is the arbitrary-but-fixed stand-in for a still-empty cache
+    // — a crate that builds bare-metal at all almost always builds for most
+    // triples, and if this one is wrong the search just reports nothing, which is
+    // where it would have been anyway.
+    //
+    // For a dependency the cache is normally already warm, set by the main crate or
+    // an earlier sibling, so even the sweeping first trial resolves to that one
+    // triple inside `run_rustc_plugin_pass_with`. That is a borrowed answer rather
+    // than this crate's own, and it carries the same risk `TARGET_LIST[0]` does:
+    // wrong triple, empty search, no worse than not running.
     let pinned = std::cell::Cell::new(false);
     // The records of the most recent trial that compiled, kept so the caller can
     // adopt it as a covering run instead of paying for the build and dropping it.
@@ -3447,11 +3505,20 @@ pub fn analyze_crate<'a>(
     let (mut analyses, mut always_std_imports, mut always_std_others) =
         classify_and_split(&covering_runs, crate_name, telemetry);
 
-    // `LAST_GOOD_TARGET` is still unset only when not one covering run compiled
-    // for a bare-metal target — every record above came from the host fallback.
-    // Probing from here is doomed: each probe compiles the same way and comes back
-    // `CompileFailed`, so look for the feature the crate needs to build at all
-    // before spending them.
+    // `CRATE_REACHED_BARE_METAL` is still false only when not one covering run of
+    // *this* crate compiled for a bare-metal target — every record above came from
+    // the host fallback. Probing from here is doomed: each probe compiles the same
+    // way and comes back `CompileFailed`, so look for the feature the crate needs
+    // to build at all before spending them.
+    //
+    // This used to read `LAST_GOOD_TARGET`, which answers a different question:
+    // has *anything* compiled bare-metal in this process. `analyze_crate` runs for
+    // every dependency too, so the first crate that linked switched the search off
+    // for every crate after it, and the main crate — analysed first, before any
+    // cache exists — was in practice the only crate it ever ran for (KI-28). The
+    // unit-sphere 0.4.0 run's timing shows the shape plainly: 19 `analyze` calls,
+    // one `build_enablers` call, 16 ms, which was the featureless main crate
+    // returning on `declared.is_empty()`.
     //
     // It used to be gated on there also being an `AlwaysStd` span to probe, on the
     // reasoning that those are the only spans a failed probe turns into `unproven`
@@ -3468,17 +3535,26 @@ pub fn analyze_crate<'a>(
     // whether or not there is anything left to prove. 45 of R31-5's 48 crates are
     // this shape (`libm`, `alloc`), none of them with a span to their name.
     //
-    // Skipped outright for a crate that already has a good target, which is the
+    // Skipped outright for a crate that already reached bare metal, which is the
     // overwhelming majority. When it does run and fails, the cost is one probe's
     // worth of builds; when it succeeds it also fixes `LAST_GOOD_TARGET`, so every
     // probe after it stops sweeping all 26 targets.
+    //
+    // Cheaper for a dependency than for a main crate, which is why widening the
+    // gate is affordable. `MAX_ENABLER_PROBES` bounds the trials either way, but
+    // only the first is allowed to sweep `TARGET_LIST`, and by the time a dep is
+    // analysed `LAST_GOOD_TARGET` is normally set by the main crate or a sibling —
+    // so `run_rustc_plugin_pass_with` resolves even that first trial to the one
+    // cached triple. With `allow_host_fallback = false` that is one build per
+    // trial. A dep with no `[features]` still costs nothing: `declared.is_empty()`
+    // returns before any build.
     // Local, not read back off `telemetry`: one `Telemetry` is shared by the main
     // crate and every dependency analysed after it, so recovering the list from
     // there hands the main crate's `libm` to each dep's solve — and a dep that has
     // no such feature emits it as `<dep>/libm` in `custom_no_std_feature_enabled`,
     // which cargo rejects outright (observed on totsu_core → `log/libm`).
     let mut build_enablers: Vec<String> = Vec::new();
-    if LAST_GOOD_TARGET.lock().unwrap().is_none() {
+    if !*CRATE_REACHED_BARE_METAL.lock().unwrap() {
         // The gates the prober is about to negate. Passed in so the search never
         // proposes a feature that satisfies one of them — `std` is otherwise a
         // perfectly good answer to "what makes this crate compile".

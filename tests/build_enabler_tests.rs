@@ -361,3 +361,81 @@ fn a_feature_in_a_std_spans_gate_can_still_be_the_enabler() {
         "no span should be left unproven once the enabler is found: {unproven:?}"
     );
 }
+
+/// KI-28: the search must run for a crate analysed **after** one that already
+/// compiled bare metal in the same process.
+///
+/// `analyze_crate` is called for every dependency, not just the main crate, and
+/// the gate used to read `LAST_GOOD_TARGET` — a *process-wide* target hint that
+/// nothing resets between crates. The first crate that linked therefore switched
+/// the search off for every crate after it, which in a real run means every
+/// dependency: the main crate is analysed first, before any cache exists, and the
+/// deps follow.
+///
+/// Measured on the unit-sphere 0.4.0 run: 19 `analyze` calls, one `build_enablers`
+/// call lasting 16 ms — the featureless main crate returning on
+/// `declared.is_empty()`. Not one of its 18 dependencies entered the search.
+///
+/// Latent rather than known-costly: this does **not** explain unit-sphere's 0/26.
+/// nalgebra builds bare metal without `libm` (`--no-default-features
+/// --features alloc,macros` links on `aarch64-unknown-none`), so skipping the
+/// search there is correct; that failure is KI-27 plus an arbitrary Z3
+/// don't-care. No corpus crate is yet known to convert because of this fix.
+///
+/// The cache is warmed by a real analysis rather than by hand: `build_enabler_libm`
+/// finds its enabler, and the trial that proved it is a bare-metal compile, so
+/// `LAST_GOOD_TARGET` is set by the time the second analysis starts. Deliberately
+/// **not** re-isolated in between — the warm cache is the whole point. Note that
+/// `test_extern_std_on_feature` is *not* usable here: its ungated
+/// `pub use std::vec::Vec` means it never links bare metal and so never warms
+/// anything.
+#[cargo_test]
+fn a_warm_target_cache_from_an_earlier_crate_does_not_skip_the_search() {
+    let _serial = isolated();
+
+    // First crate. Its enabler trial compiles for a bare-metal target, which is
+    // what sets `LAST_GOOD_TARGET` for everything after it.
+    let (_warm_p, warm_manifest) = load_fixture("build_enabler_libm");
+    let warm_ctx = z3::Context::new(&z3::Config::new());
+    let mut warm_telemetry = Telemetry::default();
+    let _ = analyze_crate(
+        &warm_ctx,
+        &warm_manifest,
+        "build_enabler_libm",
+        &mut warm_telemetry,
+    );
+    assert_eq!(
+        warm_telemetry.build_enabler_features,
+        vec!["libm".to_string()],
+        "precondition: the first crate must find its enabler, and the trial that          proved it is the bare-metal compile that warms the cache"
+    );
+
+    // Second crate, same process, cache left warm on purpose. Identical to
+    // `the_trial_that_compiled_becomes_a_covering_run` in every way except that
+    // it no longer runs first.
+    let (_p, manifest) = load_fixture("build_enabler_shim_method");
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut telemetry = Telemetry::default();
+    let (hard_spans, _condition, _coverage, _ce, _root, _records, unproven) =
+        analyze_crate(&ctx, &manifest, "build_enabler_shim_method", &mut telemetry);
+
+    assert_eq!(
+        telemetry.build_enabler_features,
+        vec!["libm".to_string()],
+        "the enabler search is gated on whether *this* crate reached bare metal,          not on whether anything in the process has; an earlier crate's cached          target must not switch it off"
+    );
+
+    // The payoff, unchanged from the first-crate case: `nearest` is ungated, so
+    // only a run in which it resolves to the shim can clear it, and that run
+    // exists only if the search ran.
+    assert!(
+        hard_spans.is_empty(),
+        "`x.round()` binds the shim's `F32Ext::round` in the configuration the \
+         enabler search compiled, so it is not unavoidable std: {hard_spans:?}"
+    );
+    assert!(
+        unproven.is_empty(),
+        "no span should be left unproven once the compiling run is counted: {unproven:?}"
+    );
+    assert_eq!(telemetry.unproven_std_spans, 0);
+}
