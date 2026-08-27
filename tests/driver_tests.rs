@@ -663,6 +663,7 @@ mod import_to_use {
                 use_path: None,
                 extern_roots: Vec::new(),
                 impl_trait: None,
+                macro_call: None,
             })
             .collect();
         ModNode {

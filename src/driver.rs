@@ -3170,13 +3170,16 @@ pub fn reachable_impl_records<'a>(
 /// calls resolved to still exist — the KI-27 requirement.
 ///
 /// The compiler reported, for each call site, the impl it selected
-/// (`ImplRecord`). Each of those is looked up in **this dependency's** module
-/// tree by span, and:
+/// (`ImplRecord`). Each of those is looked up in the module tree of the crate
+/// that **defines** it, and:
 ///
 /// * an impl with no `#[cfg]` requires nothing — it is there whatever the
 ///   feature set;
 /// * a gated one requires that *some* impl with the same `(trait, self-type)`
-///   key exists, which is the disjunction of their gates.
+///   key exists, which is the disjunction of their gates;
+/// * a macro-generated one has no key, so the alternation is over the
+///   invocations of the macro that generated it — see
+///   `impl_requirement_in_crate`.
 ///
 /// The disjunction, not the gate of the impl that happened to win, is the whole
 /// point. A pass that compiled with `std` on selects the `std`-gated arm, and
@@ -3186,6 +3189,22 @@ pub fn reachable_impl_records<'a>(
 /// Zeroize for Vec<Z>` — so the requirement is `alloc`, and since no multiexp
 /// feature reaches it, `final_feature_list_dep` parks it in
 /// `custom_no_std_feature_enabled`. That is the configuration that builds.
+///
+/// The defining crate need not be this dependency. unit-sphere 0.4.0 calls
+/// `.norm_squared()` on a `Vector3<f64>`, nalgebra defines that method ungated,
+/// and the impl the obligation needs — `impl ComplexField for f64` — is in
+/// **simba**, which unit-sphere neither names nor depends on. A requirement
+/// derived in simba's feature namespace says nothing about nalgebra's until each
+/// atom is re-expressed across the edge that links them, which is what
+/// `translate_across_edge` does and what `dependency_compile_error_constraints`
+/// already does one level up. `nalgebra` declares `libm = ["simba/libm"]`, so
+/// simba's `libm` becomes nalgebra's `libm` and the constraint lands where the
+/// solve can act on it.
+///
+/// A crate reachable through **two** direct dependencies gets the requirement
+/// from both. That is redundant rather than wrong — cargo unifies features per
+/// package, so one path enabling `simba/libm` gives the single simba build its
+/// impl — and the alternative is to pick one edge arbitrarily.
 ///
 /// Two kinds of requirement are dropped rather than asserted:
 ///
@@ -3197,11 +3216,6 @@ pub fn reachable_impl_records<'a>(
 ///   applies: an unsatisfiable conjunct costs the crate *every* covering run —
 ///   no baseline, no solved sets, every span `AlwaysStd` — which is far worse
 ///   than the failure it was trying to prevent.
-///
-/// A record whose impl span finds no keyed item in the tree is skipped. That is
-/// the macro-generated case (simba's `impl_complex!`, where the impl exists only
-/// after expansion and the tree has a macro invocation at that span), and it is
-/// not yet handled.
 pub fn impl_availability_requirement<'a>(
     ctx: &'a Context,
     dep_root: &ModNode<'a>,
@@ -3211,61 +3225,65 @@ pub fn impl_availability_requirement<'a>(
     dep_hard: Option<&Bool<'a>>,
 ) -> Option<Bool<'a>> {
     let wanted = dep_crate.replace('-', "_");
-    let all_gates = visitor::collect_trait_impl_gates(dep_root, ctx);
-    let mut parts: Vec<Bool<'a>> = Vec::new();
 
+    // `(what the requirement is for, where the call was, the requirement)`, all
+    // already in *this dependency's* feature namespace.
+    let mut candidates: Vec<(String, &ImplRecord, Bool<'a>)> = Vec::new();
+
+    // One hop: the impl is in this dependency, and the tree the caller already
+    // built answers directly.
+    let all_gates = visitor::collect_trait_impl_gates(dep_root, ctx);
+    let mut foreign: BTreeMap<String, Vec<&ImplRecord>> = BTreeMap::new();
     for record in records {
         if record.definition_crate.replace('-', "_") != wanted {
+            foreign
+                .entry(record.definition_crate.clone())
+                .or_default()
+                .push(record);
             continue;
         }
-        let Some(span) = span_in_dep_tree(&record.impl_span, dep_dir) else {
-            continue;
-        };
-        let Some((key, Some(_))) = visitor::impl_at_span(dep_root, &span, ctx) else {
-            // Either the span found no keyed impl (macro-generated), or the impl
-            // it found is unconditional and requires nothing.
-            continue;
-        };
-
-        let mut alternatives: Vec<Bool<'a>> = Vec::new();
-        let mut unconditional = false;
-        for (other, gate) in &all_gates {
-            if *other != key {
-                continue;
-            }
-            match gate {
-                None => unconditional = true,
-                Some(g) => alternatives.push(g.clone()),
-            }
-        }
-        if unconditional || alternatives.is_empty() {
-            continue;
-        }
-
-        let requirement = Bool::or(ctx, &alternatives.iter().collect::<Vec<_>>()).simplify();
-        if requirement == Bool::from_bool(ctx, true) {
-            continue;
-        }
+        if let Some((label, requirement)) =
+            impl_requirement_in_crate(ctx, dep_root, dep_dir, &all_gates, record)
         {
-            let s = z3::Solver::new(ctx);
-            s.assert(&requirement);
-            if let Some(h) = dep_hard {
-                s.assert(h);
-            }
-            if s.check() != z3::SatResult::Sat {
-                debug!(
-                    "[impl_req] {}: no feature set gives `{} for {}` and keeps the crate no_std; \
-                     leaving the requirement out",
-                    dep_crate, key.0, key.1
-                );
+            candidates.push((label, record, requirement));
+        }
+    }
+
+    // Two hops and further. One graph walk per dependency answers for every
+    // crate the records name, so the cost does not multiply by the number of
+    // distinct defining crates.
+    if !foreign.is_empty() {
+        let chains = edge_chains_to_crates(dep_dir, &foreign.keys().cloned().collect());
+        for (definition_crate, group) in &foreign {
+            let Some(chain) = chains.get(&definition_crate.replace('-', "_")) else {
+                // Not below this dependency at all — some other edge of the main
+                // crate reaches it, and that edge's own `process_dep_crate` call
+                // is where this record gets its answer.
                 continue;
-            }
+            };
+            candidates.extend(transitive_impl_requirements(ctx, chain, group));
+        }
+    }
+
+    let mut parts: Vec<Bool<'a>> = Vec::new();
+    for (label, record, requirement) in candidates {
+        let s = z3::Solver::new(ctx);
+        s.assert(&requirement);
+        if let Some(h) = dep_hard {
+            s.assert(h);
+        }
+        if s.check() != z3::SatResult::Sat {
+            debug!(
+                "[impl_req] {}: no feature set gives `{}` and keeps the crate no_std; \
+                 leaving the requirement out",
+                dep_crate, label
+            );
+            continue;
         }
         println!(
-            "[impl_req] {} must provide `impl {} for {}` ({} used it at {}:{}): {:?}",
+            "[impl_req] {} must provide `{}` ({} used it at {}:{}): {:?}",
             dep_crate,
-            key.0,
-            key.1,
+            label,
             record.span.usage_crate.as_deref().unwrap_or("the crate"),
             record.span.file,
             record.span.start_line,
@@ -3280,6 +3298,405 @@ pub fn impl_availability_requirement<'a>(
         return None;
     }
     Some(Bool::and(ctx, &parts.iter().collect::<Vec<_>>()).simplify())
+}
+
+/// Does any of `records` name an impl this dependency would have to provide —
+/// itself, or through a crate below it?
+///
+/// The `db.bin` guard. The DB answers "what does this dependency need to be
+/// no_std", keyed by the dependency alone, and that is parent-independent. A
+/// KI-27 requirement is not: `zeroize/alloc` is needed because *multiexp* calls
+/// `.zeroize()` on a `Vec`, and `nalgebra/libm` because *unit-sphere* calls
+/// `.norm_squared()` on a `Vector3<f64>` — facts about the parent, not about the
+/// dependency. A cache hit would silently skip the constraint, which is the same
+/// shape as a cache hit silently skipping the analysis a verification run exists
+/// to test.
+///
+/// The two-hop case is why this is not a name comparison: the record names
+/// simba, the dependency is nalgebra, and nothing about the two strings says
+/// they are related. It walks the same edge graph
+/// `impl_availability_requirement` does, and answers `false` fast for the common
+/// case of a crate with no records at all.
+pub fn dep_carries_impl_requirements(
+    dep_dir: &Path,
+    dep_crate: &str,
+    records: &[ImplRecord],
+) -> bool {
+    let wanted = dep_crate.replace('-', "_");
+    let mut foreign: HashSet<String> = HashSet::new();
+    for record in records {
+        let defined_in = record.definition_crate.replace('-', "_");
+        if defined_in == wanted {
+            return true;
+        }
+        foreign.insert(defined_in);
+    }
+    if foreign.is_empty() {
+        return false;
+    }
+    !edge_chains_to_crates(dep_dir, &foreign).is_empty()
+}
+
+/// What the crate that **defines** a selected impl has to enable for that impl
+/// to exist, in its own feature namespace — with a human-readable label for the
+/// log line.
+///
+/// Two ways to find the alternatives, and which one applies is decided by what
+/// the tree holds at the impl's span:
+///
+/// * a keyed `impl` item (`LocalItem::impl_trait`) — the alternatives are every
+///   impl in the crate with the same `(trait, self-type)` key. Anchoring on the
+///   span rather than the key is what keeps a blanket impl from answering for a
+///   concrete one; see `visitor::impl_at_span`.
+/// * a macro **invocation** (`LocalItem::macro_call`) — the impl does not exist
+///   before expansion, so there is no keyed item to find and no key to
+///   enumerate by. The alternatives are the gates of every invocation of the
+///   same macro in the crate: the same macro expanded twice generates the same
+///   impls twice, so the invocations *are* the arms. simba writes
+///
+///   ```text
+///   #[cfg(all(not(feature = "std"), not(feature = "libm_force"), feature = "libm"))]
+///   impl_complex!(f32, f32, Float; f64, f64, Float);
+///   #[cfg(all(feature = "std", not(feature = "libm_force")))]
+///   impl_complex!(f32, f32, f32; f64, f64, f64);
+///   ```
+///
+///   giving `(¬std ∧ ¬libm_force ∧ libm) ∨ (std ∧ ¬libm_force)`, which forces
+///   `libm` once `std` is off.
+///
+/// Guarded on `ImplRecord::via_macro`: the tree has a `LocalItem` for *every*
+/// macro invocation, so without it any impl whose span happened to fall inside
+/// one would be answered by the wrong alternation. The macro name comes from the
+/// tree rather than from `via_macro` because the invocation is where the
+/// `#[cfg]` is — a macro that expands to another macro reports the inner name
+/// and carries the outer one's gate.
+///
+/// simba's `#[cfg(feature = "libm_force")] impl ComplexField for f32` is
+/// deliberately **not** folded in as a third alternative. It is a hand-written
+/// impl, not something `impl_complex!` generates, and reading it as an arm would
+/// let the solve answer the requirement with `simba/libm_force` — a
+/// configuration nothing in this run has compiled. The inference here is "the
+/// same macro generates the same impls", and it does not extend past the macro.
+fn impl_requirement_in_crate<'a>(
+    ctx: &'a Context,
+    root: &ModNode<'a>,
+    dir: &Path,
+    all_gates: &[((String, String), Option<Bool<'a>>)],
+    record: &ImplRecord,
+) -> Option<(String, Bool<'a>)> {
+    let span = span_in_dep_tree(&record.impl_span, dir)?;
+
+    let mut alternatives: Vec<Bool<'a>> = Vec::new();
+    let mut unconditional = false;
+    let label;
+
+    match visitor::impl_at_span(root, &span, ctx) {
+        // Written out, and gated: enumerate its arms by key.
+        Some((key, Some(_))) => {
+            label = format!("impl {} for {}", key.0, key.1);
+            for (other, gate) in all_gates {
+                if *other != key {
+                    continue;
+                }
+                match gate {
+                    None => unconditional = true,
+                    Some(g) => alternatives.push(g.clone()),
+                }
+            }
+        }
+        // Written out and unconditional: there is nothing to ask for.
+        Some((_, None)) => return None,
+        // Not in the tree as an impl at all — the macro case.
+        None => {
+            record.via_macro.as_ref()?;
+            let (macro_name, gate) = visitor::macro_invocation_at_span(root, &span, ctx)?;
+            // An ungated invocation generates the impl in every configuration.
+            gate.as_ref()?;
+            label = format!(
+                "impl {} for {} (from {}!)",
+                record.trait_name, record.self_ty, macro_name
+            );
+            for gate in visitor::collect_macro_invocation_gates(root, &macro_name, ctx) {
+                match gate {
+                    None => unconditional = true,
+                    Some(g) => alternatives.push(g),
+                }
+            }
+        }
+    }
+
+    if unconditional || alternatives.is_empty() {
+        return None;
+    }
+    let requirement = Bool::or(ctx, &alternatives.iter().collect::<Vec<_>>()).simplify();
+    if requirement == Bool::from_bool(ctx, true) {
+        return None;
+    }
+    Some((label, requirement))
+}
+
+/// One dependency edge, as the two crate directories it joins plus the edge's
+/// own declaration. `dep_key` is the manifest's *key* for the edge — what a
+/// `features = ["key/feat"]` reference has to match, which is not the package
+/// name when the edge renames it.
+#[derive(Clone)]
+struct DepHop {
+    upper_dir: PathBuf,
+    dep_key: String,
+    edge: toml::Value,
+    lower_dir: PathBuf,
+}
+
+/// The impl requirements a crate two or more hops down places on the direct
+/// dependency at the top of `chain`.
+///
+/// The requirement is derived in the defining crate's namespace — its tree is
+/// built here, from the copy in the `_deps` directory that already holds the
+/// whole transitive closure — and then carried up one edge at a time. A hop that
+/// cannot forward the requirement drops it; see `translate_across_edge`.
+fn transitive_impl_requirements<'a, 'r>(
+    ctx: &'a Context,
+    chain: &[DepHop],
+    records: &[&'r ImplRecord],
+) -> Vec<(String, &'r ImplRecord, Bool<'a>)> {
+    let Some(last) = chain.last() else {
+        return Vec::new();
+    };
+    let dir = &last.lower_dir;
+    let manifest = dir.join("Cargo.toml").display().to_string();
+    let Some(entry) = parser::crate_entry_file(dir) else {
+        return Vec::new();
+    };
+    let name = entry
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("lib")
+        .to_string();
+
+    // Same erasure policy as any other tree: a `#[cfg]` naming a feature the
+    // manifest does not declare has no solver variable, so it cannot come back
+    // as a requirement.
+    let known_features = visitor::declared_features(&manifest);
+    let mut collector = ModCollector::with_known_features(ctx, known_features);
+    let root = collector.collect(&entry, &name);
+    let all_gates = visitor::collect_trait_impl_gates(&root, ctx);
+
+    // Read each edge once. `declared_features` shells out to `cargo metadata`,
+    // and a crate that needs one impl at fifty call sites arrives as fifty
+    // records — the translation is a property of the edge, not of the record.
+    let hops: Vec<HopContext> = chain.iter().map(HopContext::read).collect();
+
+    let mut out = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for record in records {
+        let Some((label, mut requirement)) =
+            impl_requirement_in_crate(ctx, &root, dir, &all_gates, record)
+        else {
+            continue;
+        };
+        // Same requirement from a second call site is the same requirement. The
+        // caller dedups what reaches the solve anyway; this dedups the work.
+        if !seen.insert(format!("{label}|{requirement:?}")) {
+            continue;
+        }
+        let mut translated = true;
+        for hop in hops.iter().rev() {
+            match translate_across_edge(ctx, &requirement, hop) {
+                Some(next) => requirement = next,
+                None => {
+                    translated = false;
+                    break;
+                }
+            }
+        }
+        if translated {
+            out.push((label, *record, requirement));
+        }
+    }
+    out
+}
+
+/// One edge of a chain, with everything the translation needs read off disk —
+/// the manifests on both sides, the lower crate's declared features, and the
+/// features the edge itself supplies.
+struct HopContext {
+    upper_dir: PathBuf,
+    lower_dir: PathBuf,
+    dep_key: String,
+    upper_toml: toml::Value,
+    lower_declared: HashSet<String>,
+    always_on: HashSet<String>,
+}
+
+impl HopContext {
+    fn read(hop: &DepHop) -> Self {
+        let upper_toml =
+            read_manifest_toml(&hop.upper_dir.join("Cargo.toml").display().to_string());
+        let lower_manifest = hop.lower_dir.join("Cargo.toml").display().to_string();
+        let lower_toml = read_manifest_toml(&lower_manifest);
+        Self {
+            upper_dir: hop.upper_dir.clone(),
+            lower_dir: hop.lower_dir.clone(),
+            dep_key: hop.dep_key.clone(),
+            always_on: parser::edge_supplied_dep_features(&hop.edge, &lower_toml),
+            lower_declared: visitor::declared_features(&lower_manifest),
+            upper_toml,
+        }
+    }
+}
+
+/// Re-express a condition over the lower crate's features in the upper crate's,
+/// across one dependency edge.
+///
+/// The per-atom translation `dependency_compile_error_constraints` documents,
+/// reused verbatim because it is the same question asked in the same direction:
+///
+/// * on unconditionally — the edge names the feature in `features = [...]`, or
+///   does not set `default-features = false` and the feature is in the lower
+///   crate's `default` closure. Cargo enables it whatever the upper crate's own
+///   features do, so the atom is `true`.
+/// * otherwise — the disjunction of the upper crate's features that reach
+///   `<key>/<feat>` transitively. `libm` is how nalgebra reaches `simba/libm`.
+/// * nothing reaches it — substituted `false`, and the result kept only if it is
+///   still satisfiable. `false` is the reading available here and the dangerous
+///   one: the dependency walk rewrites dependency manifests and can turn such a
+///   feature on with no feature path from the parent at all, and an unsat
+///   conjunct costs the crate every covering run.
+///
+/// `None` means "nothing left to require": either the edge already supplies it,
+/// or no reachable feature can.
+fn translate_across_edge<'a>(
+    ctx: &'a Context,
+    cond: &Bool<'a>,
+    hop: &HopContext,
+) -> Option<Bool<'a>> {
+    let HopContext {
+        upper_toml,
+        lower_declared,
+        always_on,
+        ..
+    } = hop;
+
+    let mut atoms: Vec<String> = feature_atoms(cond, lower_declared).into_iter().collect();
+    atoms.sort();
+
+    let mut substitutions: Vec<(Bool<'a>, Bool<'a>)> = Vec::new();
+    let mut unreachable_atom = false;
+    for feat in atoms {
+        let from = Bool::new_const(ctx, feat.as_str());
+        let to = if always_on.contains(&feat) {
+            Bool::from_bool(ctx, true)
+        } else {
+            let enablers =
+                parser::local_features_enabling_dep_feature(upper_toml, &hop.dep_key, &feat);
+            if enablers.is_empty() {
+                unreachable_atom = true;
+                Bool::from_bool(ctx, false)
+            } else {
+                let vars: Vec<Bool> = enablers
+                    .iter()
+                    .map(|f| Bool::new_const(ctx, f.as_str()))
+                    .collect();
+                Bool::or(ctx, &vars.iter().collect::<Vec<_>>())
+            }
+        };
+        substitutions.push((from, to));
+    }
+
+    let pairs: Vec<(&Bool, &Bool)> = substitutions.iter().map(|(f, t)| (f, t)).collect();
+    let translated = cond.substitute(&pairs).simplify();
+    if translated == Bool::from_bool(ctx, true) {
+        return None;
+    }
+    if unreachable_atom {
+        let s = z3::Solver::new(ctx);
+        s.assert(&translated);
+        if s.check() != z3::SatResult::Sat {
+            debug!(
+                "An impl requirement on {} can only be answered by a feature {} cannot reach; \
+                 leaving it out",
+                hop.lower_dir.display(),
+                hop.upper_dir.display()
+            );
+            return None;
+        }
+    }
+    Some(translated)
+}
+
+/// The shortest chain of dependency edges from `from_dir` down to each crate in
+/// `wanted`, keyed by the crate's underscore-normalised **lib** name — which is
+/// what rustc puts in `ImplRecord::definition_crate`, and what `[lib] name` can
+/// make differ from the package name.
+///
+/// One breadth-first walk answers for every crate at once: the alternative is a
+/// walk per defining crate per dependency, and the graph being walked is the
+/// same one every time. `_deps` holds the whole transitive closure, so
+/// `find_sibling_crate_dir` resolves each edge without touching the index.
+///
+/// Optional edges are **not** skipped, and that is the difference from
+/// `dependency_compile_error_constraints`. That function asserts a requirement
+/// that only holds in the configurations linking the dependency, so an optional
+/// edge would impose it on builds that never compile it. Here the compiler has
+/// already told us it selected an impl from the crate at the far end, so the
+/// edge is linked in the configuration that matters.
+fn edge_chains_to_crates(
+    from_dir: &Path,
+    wanted: &HashSet<String>,
+) -> HashMap<String, Vec<DepHop>> {
+    /// Deep enough for the chains that occur (unit-sphere's is one hop past the
+    /// direct dependency) without walking an entire dependency closure when the
+    /// crate is not below this edge at all.
+    const MAX_DEPTH: usize = 4;
+
+    let wanted: HashSet<String> = wanted.iter().map(|w| w.replace('-', "_")).collect();
+    let mut found: HashMap<String, Vec<DepHop>> = HashMap::new();
+    let mut visited: HashSet<PathBuf> = HashSet::from([from_dir.to_path_buf()]);
+    let mut frontier: Vec<(PathBuf, Vec<DepHop>)> = vec![(from_dir.to_path_buf(), Vec::new())];
+
+    for _ in 0..MAX_DEPTH {
+        if found.len() == wanted.len() {
+            break;
+        }
+        let mut next: Vec<(PathBuf, Vec<DepHop>)> = Vec::new();
+        for (dir, chain) in frontier {
+            let manifest = dir.join("Cargo.toml").display().to_string();
+            let manifest_toml = read_manifest_toml(&manifest);
+            for (dep_key, edge) in parser::dependency_edges(&manifest_toml) {
+                let package = edge
+                    .get("package")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or(&dep_key)
+                    .to_string();
+                let Some(child) = parser::find_sibling_crate_dir(&manifest, &package) else {
+                    continue;
+                };
+                let mut extended = chain.clone();
+                extended.push(DepHop {
+                    upper_dir: dir.clone(),
+                    dep_key: dep_key.clone(),
+                    edge: edge.clone(),
+                    lower_dir: child.clone(),
+                });
+                let lib = parser::dep_crate_name(
+                    &child.join("Cargo.toml").display().to_string(),
+                    &package,
+                )
+                .replace('-', "_");
+                if wanted.contains(&lib) {
+                    found.entry(lib).or_insert(extended.clone());
+                }
+                if visited.insert(child.clone()) {
+                    next.push((child, extended));
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    found
 }
 
 /// Re-root a span the compiler reported against the dependency source this run
@@ -4306,6 +4723,11 @@ pub fn analyze_crate<'a>(
     );
     let impl_records =
         reachable_impl_records(&root, &observed_impls, final_condition.as_ref(), ctx);
+    debug!(
+        "[impl_req] {} obligation record(s) from no_std-consistent passes,          {} at call sites the emitted configuration compiles",
+        observed_impls.len(),
+        impl_records.len()
+    );
 
     // Consume the runs rather than cloning out of them: the records are only
     // needed as `CrossCrateRef`, and holding the originals plus a full copy is

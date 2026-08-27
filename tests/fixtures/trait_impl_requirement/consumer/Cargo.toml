@@ -14,6 +14,13 @@ default-features = false
 version = "1.0.0"
 default-features = false
 
+# The two-hop edge. The consumer names `middle::norm_squared`, which is ungated;
+# the impl the obligation needs is in `deep`, which the consumer neither names
+# nor depends on.
+[dependencies.middle]
+version = "1.0.0"
+default-features = false
+
 [features]
 default = ["std"]
 std = ["gated/std"]

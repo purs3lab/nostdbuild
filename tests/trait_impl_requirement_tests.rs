@@ -570,3 +570,326 @@ fn without_a_no_std_condition_every_pass_counts() {
         1
     );
 }
+
+// ---------------------------------------------------------------------------
+// KI-27 part 2 — the two-hop, macro-generated case (unit-sphere 0.4.0).
+//
+// unit-sphere writes `(b - a).norm_squared()` on a `Vector3<f64>`. nalgebra
+// defines that method ungated, and the impl the obligation actually needs —
+// `impl ComplexField for f64` — is in **simba**, which unit-sphere neither
+// names nor depends on, and which generates the impl from `impl_complex!` so
+// that no `impl` item exists in the source at all. Both halves have to work:
+// the impl has to be findable by the macro that made it, and the requirement
+// has to be carried up the edge chain into a feature the direct dependency
+// declares.
+//
+// `deep` is simba in miniature, `middle` is nalgebra, `opaque` is the same edge
+// with nothing forwarded.
+// ---------------------------------------------------------------------------
+
+/// `record`, for an impl that only exists after a macro expands. `via_macro` is
+/// what rustc reports for one, and `impl_span` is the **invocation** — the impl
+/// itself has no span in the source to report.
+fn macro_record(
+    dep: &str,
+    krate: &str,
+    trait_name: &str,
+    self_ty: &str,
+    needle: &str,
+) -> ImplRecord {
+    let mut rec = record(dep, krate, trait_name, self_ty, needle);
+    rec.via_macro = Some("impl_complex".to_string());
+    rec
+}
+
+/// The std arm of `deep`'s `impl_complex!` — the one a std-on pass selects, and
+/// a std-on pass is where these records come from.
+const DEEP_STD_ARM: &str = r#"#[cfg(all(feature = "std", not(feature = "libm_force")))]"#;
+/// The arm a no_std build can have.
+const DEEP_LIBM_ARM: &str =
+    r#"#[cfg(all(not(feature = "std"), not(feature = "libm_force"), feature = "libm"))]"#;
+
+fn deep_record() -> ImplRecord {
+    macro_record("deep-1.0.0", "deep", "ComplexField", "f64", DEEP_STD_ARM)
+}
+
+/// An impl a macro generated has no `impl` item in the tree and no
+/// `(trait, self-type)` key to enumerate its arms by. The key that survives
+/// expansion is the macro's own name: rustc reports it, the tree records it on
+/// the invocation, and the invocation is where the `#[cfg]` sits.
+#[test]
+fn a_macro_generated_impl_is_found_by_the_macro_that_made_it() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let tree = dep_tree(&ctx, "deep-1.0.0");
+    // Sanity: the two generated impls are not in the tree at all. The only
+    // keyed `ComplexField for f64` is the hand-written `libm_force` one, so a
+    // key-based lookup would answer this obligation with the wrong feature.
+    let keyed = collect_trait_impl_gates(&tree, &ctx)
+        .into_iter()
+        .filter(|((trait_name, self_ty), _)| trait_name == "ComplexField" && self_ty == "f64")
+        .count();
+    assert_eq!(
+        keyed, 1,
+        "only the hand-written impl exists before expansion"
+    );
+
+    let req = requirement(&ctx, &tree, "deep-1.0.0", &[deep_record()], None)
+        .expect("the generated impl exists only under a cfg, so it is a requirement");
+
+    assert!(
+        !satisfiable(&ctx, &req, &[], &["std", "libm", "libm_force"]),
+        "with neither invocation compiled there is no impl"
+    );
+    assert!(satisfiable(&ctx, &req, &["libm"], &["std", "libm_force"]));
+}
+
+/// The alternation is over the macro's **invocations**. A std-on pass selects
+/// the `std` arm; asserting that arm's gate would demand the one thing the run
+/// exists to remove, and the `libm` arm is the whole point of looking.
+#[test]
+fn the_alternation_is_over_the_macros_invocations() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let tree = dep_tree(&ctx, "deep-1.0.0");
+    let no_std = Bool::new_const(&ctx, "std").not();
+    let req = requirement(&ctx, &tree, "deep-1.0.0", &[deep_record()], Some(&no_std)).unwrap();
+
+    assert!(
+        satisfiable(&ctx, &req, &["libm"], &["std", "libm_force"]),
+        "the arm the compiler did not select has to stay reachable"
+    );
+    // With `std` off, the only invocation left is the `libm` one — which is the
+    // inference the whole entry is about.
+    let solver = z3::Solver::new(&ctx);
+    solver.assert(&req);
+    solver.assert(&no_std);
+    solver.assert(&Bool::new_const(&ctx, "libm").not());
+    assert_eq!(
+        solver.check(),
+        z3::SatResult::Unsat,
+        "no `std`, no `libm` — and `libm_force` is not one of the macro's arms"
+    );
+}
+
+/// Recording the arm the compiler did *not* select gives the same answer, the
+/// same way it does for a written-out impl: the requirement is a property of the
+/// obligation, not of the pass that observed it.
+#[test]
+fn either_macro_invocation_yields_the_same_requirement() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let tree = dep_tree(&ctx, "deep-1.0.0");
+    let from_std = requirement(&ctx, &tree, "deep-1.0.0", &[deep_record()], None).unwrap();
+    let from_libm = requirement(
+        &ctx,
+        &tree,
+        "deep-1.0.0",
+        &[macro_record(
+            "deep-1.0.0",
+            "deep",
+            "ComplexField",
+            "f64",
+            DEEP_LIBM_ARM,
+        )],
+        None,
+    )
+    .unwrap();
+
+    for (on, off) in [
+        (vec!["std"], vec!["libm", "libm_force"]),
+        (vec!["libm"], vec!["std", "libm_force"]),
+        (vec!["libm_force"], vec!["std", "libm"]),
+        (vec![], vec!["std", "libm", "libm_force"]),
+    ] {
+        assert_eq!(
+            satisfiable(&ctx, &from_std, &on, &off),
+            satisfiable(&ctx, &from_libm, &on, &off),
+            "invocations disagree for on={on:?} off={off:?}"
+        );
+    }
+}
+
+/// A hand-written impl of the same trait for the same type is **not** an arm of
+/// the macro. simba writes `#[cfg(feature = "libm_force")] impl ComplexField for
+/// f32` beside its two `impl_complex!` invocations; the inference being made
+/// here is "the same macro generates the same impls", and it does not extend to
+/// a block someone wrote out. Folding it in would let the solve answer the
+/// requirement with `libm_force` — a configuration nothing in the run compiled.
+#[test]
+fn a_hand_written_impl_is_not_an_arm_of_the_macro() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let tree = dep_tree(&ctx, "deep-1.0.0");
+    let req = requirement(&ctx, &tree, "deep-1.0.0", &[deep_record()], None).unwrap();
+    assert!(
+        !satisfiable(&ctx, &req, &["libm_force"], &["std", "libm"]),
+        "the libm_force impl is hand-written, not generated by impl_complex!"
+    );
+}
+
+/// Every macro invocation is a `LocalItem`, so the macro reading has to be
+/// guarded on the compiler actually saying the impl came from one. Without
+/// `via_macro` an impl whose span merely fell inside an invocation would be
+/// answered by that macro's alternation, which is a different question.
+#[test]
+fn without_via_macro_a_span_inside_an_invocation_is_not_read() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let tree = dep_tree(&ctx, "deep-1.0.0");
+    let mut rec = deep_record();
+    rec.via_macro = None;
+    assert!(requirement(&ctx, &tree, "deep-1.0.0", &[rec], None).is_none());
+}
+
+/// An ungated invocation generates its impls in every configuration, so a call
+/// resolving into one requires nothing — the macro counterpart of
+/// `an_unconditional_impl_requires_nothing`.
+#[test]
+fn an_ungated_macro_invocation_requires_nothing() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let tree = dep_tree(&ctx, "deep-1.0.0");
+    let mut rec = macro_record(
+        "deep-1.0.0",
+        "deep",
+        "Marker",
+        "f64",
+        "impl_marker!(f32, f64);",
+    );
+    rec.via_macro = Some("impl_marker".to_string());
+    assert!(requirement(&ctx, &tree, "deep-1.0.0", &[rec], None).is_none());
+}
+
+/// The two-hop case itself. The record names `deep`, the dependency being
+/// solved is `middle`, and the requirement only means something to `middle` once
+/// each of `deep`'s features is re-expressed as the `middle` feature that
+/// forwards it — `libm = ["deep/libm"]`, which is nalgebra's
+/// `libm = ["simba/libm"]`.
+#[test]
+fn an_impl_two_hops_down_constrains_the_direct_dependency() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let middle = dep_tree(&ctx, "middle-1.0.0");
+    let req = requirement(&ctx, &middle, "middle-1.0.0", &[deep_record()], None)
+        .expect("simba's impl is nalgebra's problem to forward");
+
+    // With `middle`'s own std route off — which is what the emitted
+    // `--no-default-features` configuration does — only its `libm` remains.
+    let solver = z3::Solver::new(&ctx);
+    solver.assert(&req);
+    for off in ["std", "default", "libm"] {
+        solver.assert(&Bool::new_const(&ctx, off).not());
+    }
+    assert_eq!(
+        solver.check(),
+        z3::SatResult::Unsat,
+        "nothing forwards the impl once std and libm are both off"
+    );
+    assert!(satisfiable(
+        &ctx,
+        &req,
+        &["libm"],
+        &["std", "default", "libm-force"]
+    ));
+}
+
+/// The atoms translated are the *lower* crate's, and they are translated into
+/// the upper crate's own names. `deep`'s `libm_force` is `middle`'s `libm-force`
+/// — the same feature under two spellings — and reading `deep`'s spelling as a
+/// `middle` feature would constrain a feature that does not exist.
+#[test]
+fn each_hop_translates_into_the_upper_crates_own_feature_names() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let middle = dep_tree(&ctx, "middle-1.0.0");
+    let req = requirement(&ctx, &middle, "middle-1.0.0", &[deep_record()], None).unwrap();
+    let printed = format!("{req:?}");
+    assert!(
+        printed.contains("libm-force"),
+        "middle spells it `libm-force`: {printed}"
+    );
+    assert!(
+        !printed.contains("libm_force"),
+        "deep's spelling must not survive the hop: {printed}"
+    );
+}
+
+/// A hop with no feature that forwards the requirement substitutes `false` for
+/// that atom and keeps only what is left — the `unreachable_atom` discipline
+/// `dependency_compile_error_constraints` established. `opaque` forwards `std`
+/// and nothing else, so the `libm` arm is gone and the `std` arm is all there
+/// is; under a no_std condition that is nothing, and nothing is what gets
+/// asserted. An unsatisfiable conjunct here would cost the crate every covering
+/// run.
+#[test]
+fn a_hop_that_forwards_nothing_drops_the_requirement_rather_than_failing() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let opaque = dep_tree(&ctx, "opaque-1.0.0");
+    let req = requirement(&ctx, &opaque, "opaque-1.0.0", &[deep_record()], None)
+        .expect("the std arm is still reachable through this edge");
+    assert!(
+        !satisfiable(&ctx, &req, &["libm"], &["std", "default"]),
+        "opaque has no libm feature, so that arm cannot be asked for"
+    );
+
+    let no_std = z3::ast::Bool::and(
+        &ctx,
+        &[
+            &Bool::new_const(&ctx, "std").not(),
+            &Bool::new_const(&ctx, "default").not(),
+        ],
+    );
+    assert!(
+        requirement(
+            &ctx,
+            &opaque,
+            "opaque-1.0.0",
+            &[deep_record()],
+            Some(&no_std)
+        )
+        .is_none(),
+        "with the only forwardable arm forbidden the requirement is left out, not asserted"
+    );
+}
+
+/// A record naming a crate that is not below this dependency says nothing about
+/// it. `gated` does not depend on `deep`, and the edge that does reach it gets
+/// its own `process_dep_crate` call.
+#[test]
+fn a_crate_not_below_this_dependency_is_not_constrained() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let gated = dep_tree(&ctx, "gated-1.0.0");
+    assert!(requirement(&ctx, &gated, "gated-1.0.0", &[deep_record()], None).is_none());
+}
+
+/// The `db.bin` guard has to see the two-hop case too. The DB is keyed by the
+/// dependency alone, and "nalgebra needs `libm`" is a fact about *unit-sphere* —
+/// a cache hit would silently skip the constraint, which is the shape
+/// [[db-cache-invalidates-verification]] is about. Nothing in the strings
+/// "simba" and "nalgebra" says they are related, so the guard walks the same
+/// edge graph the requirement does.
+#[test]
+fn the_db_guard_sees_a_crate_below_the_dependency() {
+    use nostd::driver::dep_carries_impl_requirements;
+
+    let rec = [deep_record()];
+    assert!(
+        dep_carries_impl_requirements(&dep_dir("middle-1.0.0"), "middle", &rec),
+        "middle forwards deep's features, so its solve is the one that has to run"
+    );
+    assert!(
+        !dep_carries_impl_requirements(&dep_dir("gated-1.0.0"), "gated", &rec),
+        "gated does not reach deep, so the DB is still sound for it"
+    );
+    assert!(
+        dep_carries_impl_requirements(
+            &dep_dir("gated-1.0.0"),
+            "gated",
+            &[record(
+                "gated-1.0.0",
+                "gated",
+                "Zeroize",
+                "Vec",
+                r#"#[cfg(feature = "alloc")]"#,
+            )],
+        ),
+        "the one-hop case is the guard's original job"
+    );
+    assert!(
+        !dep_carries_impl_requirements(&dep_dir("middle-1.0.0"), "middle", &[]),
+        "a crate with no records at all keeps the DB"
+    );
+}

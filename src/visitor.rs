@@ -540,6 +540,25 @@ pub struct LocalItem<'a> {
     /// there would change feature selection for every crate in the corpus. Read
     /// by `collect_trait_impl_gates` and `impl_at_span`, and by nothing else.
     pub impl_trait: Option<(String, String)>,
+    /// For a macro *invocation* item only: the name of the macro invoked —
+    /// `impl_complex!(f32, f32, Float; …)` records `Some("impl_complex")`.
+    ///
+    /// An impl a macro generates has no syntactic existence before expansion,
+    /// so `impl_trait` is `None` for it and there is no key to enumerate its
+    /// arms by. The macro's name is the key that survives expansion: rustc
+    /// reports it in `ImplRecord::via_macro`, and the `#[cfg]` deciding whether
+    /// the impl exists sits on the invocation, which is what this item is.
+    /// `driver::impl_availability_requirement` reads the gates of every
+    /// invocation of the same macro in the crate as the alternatives to the one
+    /// the compiler selected — simba invokes `impl_complex!` once under
+    /// `not(std)`/`libm` and once under `std`, and those two are the arms.
+    ///
+    /// A *field*, for the reason `impl_trait` and `extern_roots` are fields:
+    /// `name` feeds `feature_to_items` and the cross-crate item match, so a
+    /// synthetic name there would change feature selection corpus-wide. Read by
+    /// `collect_macro_invocation_gates` and `macro_invocation_at_span`, and by
+    /// nothing else.
+    pub macro_call: Option<String>,
 }
 
 impl LocalItem<'_> {
@@ -1101,6 +1120,7 @@ impl<'a> FileVisitor<'a> {
             use_path: None,
             extern_roots: Vec::new(),
             impl_trait,
+            macro_call: None,
         });
         true
     }
@@ -1170,6 +1190,7 @@ impl<'a> FileVisitor<'a> {
                     use_path: None,
                     extern_roots: Vec::new(),
                     impl_trait: None,
+                    macro_call: None,
                 });
             }
         }
@@ -1218,6 +1239,7 @@ impl<'a> FileVisitor<'a> {
                 use_path: None,
                 extern_roots: Vec::new(),
                 impl_trait: None,
+                macro_call: None,
             });
         }
         for tt in seg {
@@ -1368,6 +1390,7 @@ impl<'a> FileVisitor<'a> {
             // (caches-0.3.0's `else { use libm; … }`).
             extern_roots: scan_extern_roots(&body.stream()),
             impl_trait: None,
+            macro_call: None,
         });
         // Register `mod X;` declared inside this arm, gated by the arm. syn hands
         // us the cfg_if tokens opaquely, so without this the module is never
@@ -2117,6 +2140,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                     use_path: None,
                     extern_roots: Vec::new(),
                     impl_trait: None,
+                    macro_call: None,
                 });
             }
         }
@@ -2375,6 +2399,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 use_path: Some(segments),
                 extern_roots,
                 impl_trait: None,
+                macro_call: None,
             });
         }
         syn::visit::visit_item_use(self, i);
@@ -2425,6 +2450,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 use_path: None,
                 extern_roots,
                 impl_trait: None,
+                macro_call: None,
             });
         } else {
             self.push_item(LocalItem {
@@ -2435,6 +2461,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 use_path: None,
                 extern_roots,
                 impl_trait: None,
+                macro_call: None,
             });
         }
         syn::visit::visit_item_extern_crate(self, i);
@@ -2533,6 +2560,12 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
             // definition applies. Either may be absent; both absent reproduces
             // the previous unconditional LocalItem.
             let externally_gated = own_externally_gated || macro_externally_gated;
+            // The invoked macro's name, so an impl that only exists after
+            // expansion can still be found by the arm that generated it — see
+            // [`LocalItem::macro_call`]. The *last* path segment, because a
+            // qualified invocation (`$crate::impl_complex!`, `simba::impl_op!`)
+            // is the same macro rustc names bare in `ImplRecord::via_macro`.
+            let macro_call = i.mac.path.segments.last().map(|seg| seg.ident.to_string());
             self.push_item(LocalItem {
                 own_condition: Self::and_conditions(self.ctx, own.clone(), macro_cond.clone()),
                 span: self.get_span(&i.span()),
@@ -2541,6 +2574,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 use_path: None,
                 extern_roots: Vec::new(),
                 impl_trait: None,
+                macro_call,
             });
         }
         // A custom macro (e.g. cfg_if-style `cfg_time!`) may take `mod X;` as a
@@ -2641,6 +2675,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 use_path: None,
                 extern_roots: Vec::new(),
                 impl_trait: None,
+                macro_call: None,
             });
         }
 
@@ -3640,6 +3675,133 @@ fn collect_impl_gates_recursive<'a>(
 
     for child in &node.children {
         collect_impl_gates_recursive(child, module_gate.clone(), ctx, out);
+    }
+}
+
+/// The macro **invocation** whose span contains `target`, with the condition
+/// under which it is compiled.
+///
+/// The macro counterpart to [`impl_at_span`], and the reason it exists: an impl
+/// a macro generates is not in the syn tree at all, so the span rustc reports
+/// for it — mapped to its call site — lands on the invocation rather than on a
+/// keyed `impl` item. simba's `impl ComplexField for f64` is exactly that: the
+/// tree has `impl_complex!(f32, f32, Float; f64, f64, Float)` at
+/// `src/scalar/complex.rs:479` carrying the `#[cfg]` that decides whether the
+/// impl exists, and nothing keyed by `("ComplexField", "f64")` anywhere.
+///
+/// Returns the invoked macro's name along with the gate, because the name is
+/// what enumerates the alternatives — see [`collect_macro_invocation_gates`].
+/// Innermost match wins, the same rule [`impl_at_span`] uses.
+pub fn macro_invocation_at_span<'a>(
+    node: &ModNode<'a>,
+    target: &ReadableSpan,
+    ctx: &'a z3::Context,
+) -> Option<(String, Option<Bool<'a>>)> {
+    macro_invocation_at_span_inner(node, target, ctx, node.entry_condition.clone())
+}
+
+fn macro_invocation_at_span_inner<'a>(
+    node: &ModNode<'a>,
+    target: &ReadableSpan,
+    ctx: &'a z3::Context,
+    inherited: Option<Bool<'a>>,
+) -> Option<(String, Option<Bool<'a>>)> {
+    let module_gate = match (&inherited, &node.entry_condition) {
+        (Some(i), Some(e)) => Some(Bool::and(ctx, &[i, e])),
+        (Some(i), None) => Some(i.clone()),
+        (None, Some(e)) => Some(e.clone()),
+        (None, None) => None,
+    };
+
+    for child in &node.children {
+        if let Some(found) = macro_invocation_at_span_inner(child, target, ctx, module_gate.clone())
+        {
+            return Some(found);
+        }
+    }
+
+    if node.source_file.to_string_lossy() == target.file {
+        for item in &node.local_items {
+            let Some(name) = item.macro_call.clone() else {
+                continue;
+            };
+            if !item.span_matches(target) {
+                continue;
+            }
+            let effective = match (&module_gate, &item.own_condition) {
+                (Some(g), Some(c)) => Some(Bool::and(ctx, &[g, c])),
+                (Some(g), None) => Some(g.clone()),
+                (None, Some(c)) => Some(c.clone()),
+                (None, None) => None,
+            };
+            return Some((name, effective));
+        }
+    }
+    None
+}
+
+/// Every invocation of `macro_name` in the tree, paired with the condition under
+/// which it is compiled — `(entry_conditions AND own_condition)`, or `None` when
+/// it is unconditional.
+///
+/// The macro counterpart to [`collect_trait_impl_gates`]. Where that answers
+/// "which of this crate's features would give the caller an impl of `Zeroize`
+/// for `Vec`", this answers the same question for an impl no `#[cfg]` names
+/// directly: the same macro invoked twice generates the same impls twice, so the
+/// arms of the alternation are the invocations, and their gates are the
+/// alternatives. simba's two `impl_complex!` invocations give
+/// `(¬std ∧ ¬libm_force ∧ libm) ∨ (std ∧ ¬libm_force)`, which forces `libm` once
+/// `std` is off.
+///
+/// An unconditional invocation is kept, with `None`, for the reason
+/// [`collect_trait_impl_gates`] keeps an ungated impl: that is the answer "the
+/// impl is there whatever you enable", and dropping it would turn a satisfied
+/// requirement into a demand for a feature.
+pub fn collect_macro_invocation_gates<'a>(
+    node: &ModNode<'a>,
+    macro_name: &str,
+    ctx: &'a z3::Context,
+) -> Vec<Option<Bool<'a>>> {
+    let mut result = vec![];
+    collect_macro_gates_recursive(
+        node,
+        node.entry_condition.clone(),
+        macro_name,
+        ctx,
+        &mut result,
+    );
+    result
+}
+
+fn collect_macro_gates_recursive<'a>(
+    node: &ModNode<'a>,
+    inherited: Option<Bool<'a>>,
+    macro_name: &str,
+    ctx: &'a z3::Context,
+    out: &mut Vec<Option<Bool<'a>>>,
+) {
+    let module_gate = match (&inherited, &node.entry_condition) {
+        (Some(i), Some(e)) => Some(Bool::and(ctx, &[i, e])),
+        (Some(i), None) => Some(i.clone()),
+        (None, Some(e)) => Some(e.clone()),
+        (None, None) => None,
+    };
+
+    for item in &node.local_items {
+        if item.macro_call.as_deref() != Some(macro_name) {
+            continue;
+        }
+        let effective = match (&module_gate, &item.own_condition) {
+            (Some(g), Some(c)) => Some(Bool::and(ctx, &[g, c])),
+            (Some(g), None) => Some(g.clone()),
+            (None, Some(c)) => Some(c.clone()),
+            (None, None) => None,
+        };
+        out.push(effective);
+    }
+
+    for child in &node.children {
+        collect_macro_gates_recursive(child, module_gate.clone(), macro_name, ctx, out);
     }
 }
 

@@ -1,0 +1,17 @@
+# nalgebra in miniature: it forwards every one of `deep`'s features and defines
+# the method the consumer actually names, ungated. The consumer names nothing
+# from `deep` and does not depend on it.
+[package]
+name = "middle"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies.deep]
+version = "1.0.0"
+default-features = false
+
+[features]
+default = ["std"]
+std = ["deep/std"]
+libm = ["deep/libm"]
+libm-force = ["deep/libm_force"]

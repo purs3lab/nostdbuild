@@ -1882,6 +1882,13 @@ pub fn process_dep_crate(
     // fail on `E0599 the method zeroize exists … but its trait bounds were not
     // satisfied`.
     //
+    // The impl need not be *this* dependency's. unit-sphere 0.4.0 calls
+    // `.norm_squared()` on a `Vector3<f64>`, nalgebra defines that method
+    // ungated, and the `impl ComplexField for f64` the obligation needs is in
+    // simba — which unit-sphere neither names nor depends on. A requirement
+    // derived in simba's namespace is carried up the edge chain and arrives here
+    // as nalgebra's `libm`, because nalgebra declares `libm = ["simba/libm"]`.
+    //
     // Conjoined here rather than applied afterwards for the same reason R31-4
     // gives: a feature forced on by a hard constraint also lands in
     // `non_minimalizable_features`, which is what stops `minimize` from taking it

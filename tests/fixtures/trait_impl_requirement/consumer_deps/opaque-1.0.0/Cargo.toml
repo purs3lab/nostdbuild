@@ -1,0 +1,14 @@
+# The same edge with nothing forwarded but `std`. A requirement that can only be
+# met through `deep/libm` has no way up through this crate.
+[package]
+name = "opaque"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies.deep]
+version = "1.0.0"
+default-features = false
+
+[features]
+default = ["std"]
+std = ["deep/std"]

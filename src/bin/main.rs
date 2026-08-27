@@ -121,16 +121,19 @@ fn process_dep_crate_wrapper(
     // does needs nothing. A cached answer would silently skip the constraint,
     // the same way a cache hit silently skips the analysis a verification run is
     // testing, so a dependency this crate has impl requirements on is analysed.
+    //
+    // "On" includes through it: unit-sphere's records name simba, the dependency
+    // is nalgebra, and it is nalgebra's `libm` that has to be forced on.
     let dep_package = dep.crate_name.split(':').next().unwrap_or(&dep.crate_name);
-    let dep_crate = parser::dep_crate_name(
-        &parser::determine_manifest_file(&dep.crate_name, Some(&exchange.name_with_version)),
-        dep_package,
-    )
-    .replace('-', "_");
-    let has_impl_requirements = exchange
-        .impl_records
-        .iter()
-        .any(|r| r.definition_crate.replace('-', "_") == dep_crate);
+    let dep_manifest =
+        parser::determine_manifest_file(&dep.crate_name, Some(&exchange.name_with_version));
+    let dep_crate = parser::dep_crate_name(&dep_manifest, dep_package).replace('-', "_");
+    let dep_dir = std::path::Path::new(&dep_manifest)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let has_impl_requirements =
+        driver::dep_carries_impl_requirements(&dep_dir, &dep_crate, &exchange.impl_records);
     if has_impl_requirements {
         debug!(
             "Not using the DB for {}: the main crate's calls need impls it may gate",
