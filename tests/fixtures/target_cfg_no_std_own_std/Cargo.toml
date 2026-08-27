@@ -10,3 +10,5 @@ name = "target_cfg_no_std_own_std"
 
 [features]
 default = []
+
+[workspace]

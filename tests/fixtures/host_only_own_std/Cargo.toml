@@ -10,3 +10,5 @@ name = "host_only_own_std"
 
 [features]
 default = []
+
+[workspace]

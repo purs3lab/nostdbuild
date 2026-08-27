@@ -16,7 +16,7 @@
       "--features",
       "alloc,parking_lot,triomphe"
     ],
-    "status": "Success",
+    "status": "Failed",
     "error": null
   }
 ]

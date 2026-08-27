@@ -177,6 +177,10 @@ fn test_assertr() {
     run_main_test("assertr", "0.4.3", "x86_64-unknown-none");
 }
 
+/// The one golden that records a `Failed` build. The args are the assertion;
+/// the failure is `wg`'s own `#![deny(warnings)]` meeting the nightly
+/// `fetch_update` → `try_update` rename in `src/no_std.rs`, which no emitted
+/// feature set can dodge — `DENY_LINT_FALLOUT`, not a tool regression.
 #[cargo_test]
 fn test_wg() {
     run_main_test("wg", "0.9.2", "x86_64-unknown-none");
