@@ -1,0 +1,11 @@
+[package]
+name = "gated"
+version = "1.0.0"
+edition = "2021"
+
+[features]
+default = ["alloc"]
+alloc = []
+portable = []
+std = ["alloc"]
+simd = []

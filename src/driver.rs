@@ -2841,6 +2841,7 @@ pub fn analyze_crate_wrapper<'a>(
     visitor::ModNode<'a>,
     HashSet<CrossCrateRef>,
     Vec<ReadableSpan>,
+    Vec<ImplRecord>,
 ) {
     // The one place that names *whose* analysis follows. Dependencies run the
     // same coverage/probe code as the main crate, so without an ambient crate on
@@ -2988,6 +2989,320 @@ pub fn compute_valid_cross_crate_items<'a>(
     }
 
     result
+}
+
+/// The impls observed by the passes whose own feature set satisfies the crate's
+/// no_std condition — and by every pass when not one of them does.
+///
+/// Which pass saw an obligation matters, and a span cannot stand in for it. uom
+/// 0.38.0 is the case: its `system! { … }` at `src/si/mod.rs:10` generates the
+/// whole SI module, and a pass with `std` on resolves an `f32: MulAdd` inside
+/// that expansion — an obligation the no_std configuration never raises, because
+/// the code that carries it is not generated. The invocation is ungated, so the
+/// call site is "reachable" by any span test, and the requirement that follows
+/// (`std ∨ libm` in num-traits, with `std` forbidden) forces `num-traits/libm`
+/// onto a build that compiles clean without it. uom has no `libm` feature of its
+/// own, so it arrives as an injected `custom_no_std_feature_enabled` entry —
+/// visible, wrong, and not a build failure, which is the worst shape for a
+/// mistake to take.
+///
+/// The fallback is not a hedge, it is the KI-27 case itself. A crate that needs
+/// an impl its feature set does not provide **does not type check**, so it has
+/// no no_std-consistent pass at all: multiexp 0.4.0 has zero covering runs and a
+/// `default = ["std"]` pass, and that std-on pass is the only compilation in the
+/// entire run that ever resolved `Vec<Vec<u8>>: Zeroize`. "No pass could be both
+/// no_std and compile" is exactly the situation where a std-on pass is the only
+/// evidence available, and where its evidence is worth acting on.
+///
+/// Note the fallback keys on whether such a *pass* exists, never on whether the
+/// consistent passes happened to produce records. uom's do not, and reading that
+/// as "no evidence, fall back" would put its `libm` straight back.
+pub fn impls_from_no_std_passes(
+    ctx: &Context,
+    manifest: &str,
+    hard: Option<&Bool<'_>>,
+    covering_runs: &[CoveringRun],
+    default_output: Option<&FeatureRunOutput>,
+) -> Vec<ImplRecord> {
+    let manifest_toml = read_manifest_toml(manifest);
+    let feat_map = downloader::read_local_features(&manifest_toml);
+    let declared = visitor::declared_features(manifest);
+
+    // True when the crate is no_std in the configuration this pass compiled.
+    // The assignment is total over the declared features, so satisfiability is
+    // evaluation; atoms the condition names that cargo does not declare stay
+    // free, the same latitude policy G already gives them.
+    let compiled_no_std = |feats: &[String], defaults_on: bool| -> bool {
+        let Some(h) = hard else {
+            // Nothing to contradict: the crate is no_std whatever is enabled.
+            return true;
+        };
+        let mut on: HashSet<String> = feats.iter().cloned().collect();
+        if defaults_on {
+            on.insert("default".to_string());
+        }
+        let on = parser::close_over_local_features(&on, &feat_map);
+        let solver = z3::Solver::new(ctx);
+        solver.assert(h);
+        for feat in &declared {
+            let var = Bool::new_const(ctx, feat.as_str());
+            if on.contains(feat) {
+                solver.assert(&var);
+            } else {
+                solver.assert(&var.not());
+            }
+        }
+        solver.check() == z3::SatResult::Sat
+    };
+
+    // The default pass takes no `--no-default-features`; every covering run does.
+    let passes: Vec<(&FeatureRunOutput, bool, &[String])> = covering_runs
+        .iter()
+        .map(|run| (&run.output, false, run.features.as_slice()))
+        .chain(default_output.map(|out| (out, true, [].as_slice())))
+        .collect();
+
+    let mut any_consistent = false;
+    let mut kept: Vec<ImplRecord> = Vec::new();
+    for (output, defaults_on, feats) in &passes {
+        if compiled_no_std(feats, *defaults_on) {
+            any_consistent = true;
+            kept.extend(output.impls.iter().cloned());
+        }
+    }
+    if any_consistent {
+        return kept;
+    }
+    debug!(
+        "No pass compiled this crate in a no_std configuration; \
+         reading trait obligations off the ones that did compile"
+    );
+    passes
+        .iter()
+        .flat_map(|(output, _, _)| output.impls.iter().cloned())
+        .collect()
+}
+
+/// The impl records whose **call site** a no_std build can actually reach.
+///
+/// `hard` is the crate's own no_std condition — the thing the emitted
+/// configuration has to satisfy — so a call site is in that build when its gate
+/// is satisfiable *together with* it. A call under `#[cfg(feature = "std")]` is
+/// not, and the impl it needs is not something to demand of a dependency. With
+/// no condition at all every call site counts, which is what "no constraint on
+/// the configuration" means.
+///
+/// Deliberately **not** `compute_valid_cross_crate_items`'s test, which asks
+/// whether the gate holds in a configuration where the no_std condition does
+/// *not* — the opposite question. That is defensible where it is used, because
+/// its answer only ever protects a dependency feature from removal and erring
+/// wide costs nothing. Here the answer *adds* a feature, and a feature added on
+/// the strength of a call the emitted configuration never compiles is a
+/// dependency the crate did not need.
+///
+/// This test is about the **gate on the call**. The other half of the same
+/// question — whether the *pass* that saw the obligation was compiling a no_std
+/// configuration at all — a span cannot answer; see `impls_from_no_std_passes`.
+///
+/// `records` is the union over every pass that compiled — the covering runs
+/// *and* the default-features pass. The default pass is not an afterthought
+/// here: a crate whose feature set is missing an impl does not type check, so
+/// its covering runs all fail and contribute nothing, which is precisely the
+/// shape KI-27 is about. multiexp 0.4.0 has **zero** covering runs, and the
+/// default pass — `default = ["std"]`, which reaches `zeroize/alloc` — is the
+/// only compilation in the whole run that ever resolved `Vec<Vec<u8>>: Zeroize`.
+///
+/// Reading a std-on pass costs nothing here because no verdict is taken from it:
+/// which impl it selected is a fact about that configuration, and
+/// `impl_availability_requirement` asks for the *alternatives* to that impl, not
+/// for its gate.
+pub fn reachable_impl_records<'a>(
+    root: &ModNode<'a>,
+    records: &[ImplRecord],
+    hard: Option<&Bool<'a>>,
+    ctx: &'a Context,
+) -> Vec<ImplRecord> {
+    // Keyed by span, not by record: a call site that needs three impls asks the
+    // solver one question, and the answer is a property of where the call is.
+    let mut by_span: HashMap<&ReadableSpan, bool> = HashMap::new();
+    let mut seen: HashSet<ImplRecord> = HashSet::new();
+    for record in records {
+        if seen.contains(record) {
+            continue;
+        }
+        let reachable = *by_span.entry(&record.span).or_insert_with(|| match hard {
+            None => true,
+            Some(h) => match find_condition_for_span(root, &record.span, ctx, None) {
+                None => true,
+                Some(c) => {
+                    let s = z3::Solver::new(ctx);
+                    s.assert(&c);
+                    s.assert(h);
+                    s.check() == z3::SatResult::Sat
+                }
+            },
+        });
+        if reachable {
+            seen.insert(record.clone());
+        }
+    }
+    let mut out: Vec<ImplRecord> = seen.into_iter().collect();
+    out.sort_by(|a, b| {
+        (
+            &a.definition_crate,
+            &a.trait_name,
+            &a.self_ty,
+            &a.span.file,
+            a.span.start_line,
+        )
+            .cmp(&(
+                &b.definition_crate,
+                &b.trait_name,
+                &b.self_ty,
+                &b.span.file,
+                b.span.start_line,
+            ))
+    });
+    out
+}
+
+/// What a dependency's feature set has to provide so the impls its dependent's
+/// calls resolved to still exist — the KI-27 requirement.
+///
+/// The compiler reported, for each call site, the impl it selected
+/// (`ImplRecord`). Each of those is looked up in **this dependency's** module
+/// tree by span, and:
+///
+/// * an impl with no `#[cfg]` requires nothing — it is there whatever the
+///   feature set;
+/// * a gated one requires that *some* impl with the same `(trait, self-type)`
+///   key exists, which is the disjunction of their gates.
+///
+/// The disjunction, not the gate of the impl that happened to win, is the whole
+/// point. A pass that compiled with `std` on selects the `std`-gated arm, and
+/// asserting that gate would demand the one thing the run exists to remove; the
+/// alternation is what lets the solve pick the arm a no_std build can have. For
+/// multiexp 0.4.0 there is exactly one arm — `#[cfg(feature = "alloc")] impl<Z>
+/// Zeroize for Vec<Z>` — so the requirement is `alloc`, and since no multiexp
+/// feature reaches it, `final_feature_list_dep` parks it in
+/// `custom_no_std_feature_enabled`. That is the configuration that builds.
+///
+/// Two kinds of requirement are dropped rather than asserted:
+///
+/// * one already satisfied unconditionally (`true` after simplification) — there
+///   is nothing to ask for, and asking would turn a free feature into a fixed
+///   one;
+/// * one no feature set can meet under the dependency's own constraints. That is
+///   the `unreachable_atom` discipline `dependency_compile_error_constraints`
+///   applies: an unsatisfiable conjunct costs the crate *every* covering run —
+///   no baseline, no solved sets, every span `AlwaysStd` — which is far worse
+///   than the failure it was trying to prevent.
+///
+/// A record whose impl span finds no keyed item in the tree is skipped. That is
+/// the macro-generated case (simba's `impl_complex!`, where the impl exists only
+/// after expansion and the tree has a macro invocation at that span), and it is
+/// not yet handled.
+pub fn impl_availability_requirement<'a>(
+    ctx: &'a Context,
+    dep_root: &ModNode<'a>,
+    dep_dir: &Path,
+    dep_crate: &str,
+    records: &[ImplRecord],
+    dep_hard: Option<&Bool<'a>>,
+) -> Option<Bool<'a>> {
+    let wanted = dep_crate.replace('-', "_");
+    let all_gates = visitor::collect_trait_impl_gates(dep_root, ctx);
+    let mut parts: Vec<Bool<'a>> = Vec::new();
+
+    for record in records {
+        if record.definition_crate.replace('-', "_") != wanted {
+            continue;
+        }
+        let Some(span) = span_in_dep_tree(&record.impl_span, dep_dir) else {
+            continue;
+        };
+        let Some((key, Some(_))) = visitor::impl_at_span(dep_root, &span, ctx) else {
+            // Either the span found no keyed impl (macro-generated), or the impl
+            // it found is unconditional and requires nothing.
+            continue;
+        };
+
+        let mut alternatives: Vec<Bool<'a>> = Vec::new();
+        let mut unconditional = false;
+        for (other, gate) in &all_gates {
+            if *other != key {
+                continue;
+            }
+            match gate {
+                None => unconditional = true,
+                Some(g) => alternatives.push(g.clone()),
+            }
+        }
+        if unconditional || alternatives.is_empty() {
+            continue;
+        }
+
+        let requirement = Bool::or(ctx, &alternatives.iter().collect::<Vec<_>>()).simplify();
+        if requirement == Bool::from_bool(ctx, true) {
+            continue;
+        }
+        {
+            let s = z3::Solver::new(ctx);
+            s.assert(&requirement);
+            if let Some(h) = dep_hard {
+                s.assert(h);
+            }
+            if s.check() != z3::SatResult::Sat {
+                debug!(
+                    "[impl_req] {}: no feature set gives `{} for {}` and keeps the crate no_std; \
+                     leaving the requirement out",
+                    dep_crate, key.0, key.1
+                );
+                continue;
+            }
+        }
+        println!(
+            "[impl_req] {} must provide `impl {} for {}` ({} used it at {}:{}): {:?}",
+            dep_crate,
+            key.0,
+            key.1,
+            record.span.usage_crate.as_deref().unwrap_or("the crate"),
+            record.span.file,
+            record.span.start_line,
+            requirement
+        );
+        if !parts.contains(&requirement) {
+            parts.push(requirement);
+        }
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+    Some(Bool::and(ctx, &parts.iter().collect::<Vec<_>>()).simplify())
+}
+
+/// Re-root a span the compiler reported against the dependency source this run
+/// analysed.
+///
+/// The impl span comes out of rustc pointing into the registry checkout the
+/// build compiled (`…/registry/src/index.crates.io-<hash>/zeroize-1.9.0/src/lib.rs`),
+/// while the module tree was built over the tool's own copy
+/// (`…/multiexp-0.4.0_deps/zeroize-1.9.0/src/lib.rs`). Same file, two paths, and
+/// `find_condition_for_span` matches on the string. The longest path suffix that
+/// exists under `dep_dir` is the crate-relative path, and it is unique — no
+/// other suffix of the same string names an existing file there.
+fn span_in_dep_tree(span: &ReadableSpan, dep_dir: &Path) -> Option<ReadableSpan> {
+    let parts: Vec<&str> = span.file.split('/').filter(|p| !p.is_empty()).collect();
+    for start in 0..parts.len() {
+        let candidate = dep_dir.join(parts[start..].join("/"));
+        if candidate.is_file() {
+            let mut mapped = span.clone();
+            mapped.file = candidate.to_string_lossy().to_string();
+            return Some(mapped);
+        }
+    }
+    None
 }
 
 /// The declared features a Z3 condition mentions.
@@ -3456,6 +3771,7 @@ pub fn analyze_crate<'a>(
     visitor::ModNode<'a>,
     HashSet<CrossCrateRef>,
     Vec<ReadableSpan>,
+    Vec<ImplRecord>,
 ) {
     let (root, mut covering_runs, mut hard_constraints, compile_error_constraints, no_std_conds) =
         find_feature_combs_for_all_code(ctx, manifest, crate_name, telemetry);
@@ -3978,6 +4294,19 @@ pub fn analyze_crate<'a>(
         .map(|f| f.target.analysis.span)
         .collect();
 
+    // Taken before the runs are consumed below, and filtered here rather than by
+    // the caller because `final_condition` — the crate's no_std condition — is
+    // exactly the `hard` both of these tests need and it is live at this point.
+    let observed_impls = impls_from_no_std_passes(
+        ctx,
+        manifest,
+        final_condition.as_ref(),
+        &covering_runs,
+        default_features_output.as_ref(),
+    );
+    let impl_records =
+        reachable_impl_records(&root, &observed_impls, final_condition.as_ref(), ctx);
+
     // Consume the runs rather than cloning out of them: the records are only
     // needed as `CrossCrateRef`, and holding the originals plus a full copy is
     // what made feature-heavy crates (web-sys) exhaust memory here.
@@ -4006,6 +4335,7 @@ pub fn analyze_crate<'a>(
         root,
         covering_records,
         unproven,
+        impl_records,
     )
 }
 

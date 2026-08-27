@@ -69,6 +69,7 @@ fn output(records: Vec<PathRecord>) -> FeatureRunOutput {
         records,
         macro_module_imports: vec![],
         out_dir: None,
+        impls: Vec::new(),
     }
 }
 

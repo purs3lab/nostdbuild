@@ -81,7 +81,7 @@ fn a_denied_lint_in_the_probed_configuration_does_not_decide_the_verdict() {
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
 
-    let (hard_spans, condition, _coverage, _ce, _root, _records, unproven) =
+    let (hard_spans, condition, _coverage, _ce, _root, _records, unproven, _) =
         analyze_crate(&ctx, &manifest, "deny_lint_probe", &mut telemetry);
 
     // The failure this fixture reproduces: the probe never compiles, so the span

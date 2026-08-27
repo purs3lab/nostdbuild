@@ -14,12 +14,15 @@ use rustc_driver::Compilation;
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_hir::intravisit::{self, Visitor as HirVisitor};
 use rustc_interface::interface;
-use rustc_middle::ty::{ResolverAstLowering, TyCtxt, TypeckResults};
+use rustc_middle::ty::{
+    self, GenericArgsRef, ResolverAstLowering, Ty, TyCtxt, TypeVisitableExt, TypeckResults,
+};
 use rustc_span::hygiene::ExpnKind;
 use rustc_span::source_map::SourceMap;
 use rustc_span::{Span, Symbol};
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use rustc_plugin::{CrateFilter, RustcPlugin, RustcPluginArgs, Utf8Path};
 
@@ -389,6 +392,212 @@ struct MethodResolver<'a, 'tcx> {
     typeck: &'tcx TypeckResults<'tcx>,
     records: Vec<PathRecord>,
     macro_cfg_map: &'a HashMap<Symbol, Vec<String>>,
+    /// The impls the compiler selected for this crate's trait obligations —
+    /// see [`ImplRecord`] and `record_obligations`.
+    impls: Vec<ImplRecord>,
+    /// Every impl one already-walked obligation needs, its own where-clauses
+    /// included, so a bound that appears at a hundred call sites costs one
+    /// selection. Memoising the *whole* subtree and not just the impl selected
+    /// at the top is what keeps the answer independent of which call site is
+    /// visited first. The records are still emitted per call site: the span is
+    /// what decides whether the no_std build reaches the call, so collapsing
+    /// them would throw the test away.
+    selected: &'a mut HashMap<ty::TraitRef<'tcx>, Vec<SelectedImpl>>,
+}
+
+/// One resolved obligation, cached across the call sites that share it.
+#[derive(Clone)]
+struct SelectedImpl {
+    trait_name: String,
+    self_ty: String,
+    definition_crate: String,
+    impl_span: ReadableSpan,
+    via_macro: Option<String>,
+}
+
+/// How far to follow a selected impl's own where-clauses.
+///
+/// One level is not enough, and unit-sphere 0.4.0 is why: `.norm_squared()` on a
+/// `Vector3<f64>` needs `f64: SimdComplexField`, which simba discharges with an
+/// **ungated** blanket `impl<T: ComplexField> SimdComplexField for T`. The impl
+/// that actually carries the `#[cfg]` is one where-clause further down
+/// (`f64: ComplexField`). Bounded because the chain is a graph and this runs on
+/// every call site in every pass.
+const MAX_OBLIGATION_DEPTH: u32 = 6;
+
+impl<'tcx> MethodResolver<'_, 'tcx> {
+    /// Record the impl the compiler selected for each of this call's trait
+    /// obligations, following each selected impl's own where-clauses.
+    ///
+    /// This is the half of a feature requirement that no amount of source
+    /// analysis recovers (KI-27). `PathRecord` reports what the crate *names*,
+    /// and multiexp 0.4.0 names `zeroize` — the method, which zeroize gates
+    /// behind nothing. What its build needs is `#[cfg(feature = "alloc")]
+    /// impl<Z> Zeroize for Vec<Z>`, an item with no identifier that multiexp's
+    /// source never mentions. The type checker is the only thing in the run that
+    /// knows the call depends on it, so it is asked here.
+    ///
+    /// Nothing is *decided* here: this reports which impl was selected in the
+    /// configuration this pass compiled. Which gate the emitted configuration
+    /// has to satisfy is `driver::impl_availability_requirement`'s question, and
+    /// it reads every impl of the same obligation rather than the one that won
+    /// here — a std-on pass selects the std-gated arm, and requiring *that*
+    /// would be exactly backwards.
+    fn record_obligations(&mut self, hir_id: rustc_hir::HirId, def_id: DefId, site: Span) {
+        let args = self.typeck.node_args(hir_id);
+        let (effective_span, _) = call_site_span(site, self.macro_cfg_map);
+        let krate = self.tcx.crate_name(LOCAL_CRATE).to_string();
+        let span = get_readable_span(&self.tcx, effective_span, &krate);
+        let mut out = Vec::new();
+        let mut on_path = HashSet::new();
+        self.walk_obligations(def_id, args, 0, &mut on_path, &mut out);
+
+        for sel in out {
+            self.impls.push(ImplRecord {
+                span: span.clone(),
+                trait_name: sel.trait_name,
+                self_ty: sel.self_ty,
+                definition_crate: sel.definition_crate,
+                impl_span: sel.impl_span,
+                via_macro: sel.via_macro,
+            });
+        }
+    }
+
+    /// Every impl needed to discharge `def_id`'s where-clauses at `args`,
+    /// appended to `out`. Returns whether the walk ran to completion.
+    ///
+    /// `on_path` is the chain of obligations currently being resolved, not a
+    /// been-here set: a bound reached twice down two different branches has to
+    /// be walked twice, or the memo written for the first branch would be
+    /// missing whatever the second one deduped. It exists only so a cyclic
+    /// bound terminates.
+    ///
+    /// The return value is what keeps the memo honest. A subtree cut short —
+    /// by the depth cap or by a cycle — is an answer about *this* path, not
+    /// about the obligation, so caching it would hand one call site's truncation
+    /// to every other one and make the crate's records depend on visit order.
+    fn walk_obligations(
+        &mut self,
+        def_id: DefId,
+        args: GenericArgsRef<'tcx>,
+        depth: u32,
+        on_path: &mut HashSet<ty::TraitRef<'tcx>>,
+        out: &mut Vec<SelectedImpl>,
+    ) -> bool {
+        if depth > MAX_OBLIGATION_DEPTH {
+            return false;
+        }
+        let mut complete = true;
+        let tcx = self.tcx;
+        for (clause, _) in tcx.clauses_of(def_id).instantiate(tcx, args).into_iter() {
+            let Some(trait_clause) = clause.as_trait_clause() else {
+                continue;
+            };
+            let trait_ref = trait_clause.skip_binder().trait_ref;
+            // Only a fully concrete obligation has an answer. Inside a generic
+            // function the bound is still `T: Zeroize`, and there is no impl to
+            // select — the requirement lands on whoever calls it with a concrete
+            // type, which is the crate this pass is analysing.
+            if trait_ref.has_param() || trait_ref.has_infer() || trait_ref.has_escaping_bound_vars()
+            {
+                continue;
+            }
+            if let Some(hit) = self.selected.get(&trait_ref) {
+                out.extend(hit.iter().cloned());
+                continue;
+            }
+            if !on_path.insert(trait_ref) {
+                complete = false;
+                continue;
+            }
+
+            let mut subtree = Vec::new();
+            let mut subtree_complete = true;
+            let input = ty::TypingEnv::fully_monomorphized().as_query_input(trait_ref);
+            if let Ok(rustc_middle::traits::ImplSource::UserDefined(data)) =
+                tcx.codegen_select_candidate(input)
+            {
+                if let Some(sel) = self.describe_impl(trait_ref, data.impl_def_id) {
+                    subtree.push(sel);
+                }
+                // The selected impl's own where-clauses are obligations of this
+                // call too, and they are where the gate usually is.
+                subtree_complete = self.walk_obligations(
+                    data.impl_def_id,
+                    data.args,
+                    depth + 1,
+                    on_path,
+                    &mut subtree,
+                );
+            }
+
+            on_path.remove(&trait_ref);
+            if subtree_complete {
+                self.selected.insert(trait_ref, subtree.clone());
+            } else {
+                complete = false;
+            }
+            out.extend(subtree);
+        }
+        complete
+    }
+
+    /// The record for one selected impl, or `None` when it constrains nothing a
+    /// dependency's feature set could change.
+    fn describe_impl(
+        &self,
+        trait_ref: ty::TraitRef<'tcx>,
+        impl_did: DefId,
+    ) -> Option<SelectedImpl> {
+        let tcx = self.tcx;
+        // An impl in this crate or in the sysroot is not a dependency's to gate.
+        // `core`'s impls in particular are the overwhelming majority of what a
+        // walk like this turns up, and none of them answers to a cargo feature.
+        if impl_did.krate == LOCAL_CRATE {
+            return None;
+        }
+        let krate = tcx.crate_name(impl_did.krate).to_string();
+        if consts::SYSROOT_CRATE_NAMES.contains(&krate.as_str()) {
+            return None;
+        }
+        let self_ty = ty_head(tcx, trait_ref.self_ty())?;
+        let def_span = tcx.def_span(impl_did);
+        let via_macro = match def_span.ctxt().outer_expn_data().kind {
+            ExpnKind::Macro(_, name) => Some(name.to_string()),
+            _ => None,
+        };
+        Some(SelectedImpl {
+            trait_name: tcx.item_name(trait_ref.def_id).to_string(),
+            self_ty,
+            definition_crate: krate.clone(),
+            // `source_callsite`, not the definition span: an impl written inside
+            // a `macro_rules!` body reports a span in that body, and the `#[cfg]`
+            // deciding whether it exists sits on the *invocation* (simba's
+            // `impl_complex!`). The callsite is the span the crate's own module
+            // tree has a gate for.
+            impl_span: get_readable_span(&tcx, def_span.source_callsite(), &krate),
+            via_macro,
+        })
+    }
+}
+
+/// The head identifier of a type, as the module tree spells it — `Vec` for
+/// `Vec<Vec<u8>>`, `f64` for `f64`. References are looked through, because an
+/// impl is written for the type and not for a borrow of it.
+///
+/// `None` for a type with no name to match on (a closure, a function pointer, a
+/// tuple). Skipping is the safe answer: the requirement is simply not recorded,
+/// which is where every one of them was before.
+fn ty_head<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Option<String> {
+    match ty.kind() {
+        ty::Ref(_, inner, _) => ty_head(tcx, *inner),
+        ty::Adt(def, _) => Some(tcx.item_name(def.did()).to_string()),
+        ty::Bool | ty::Char | ty::Int(_) | ty::Uint(_) | ty::Float(_) | ty::Str => {
+            Some(ty.to_string())
+        }
+        _ => None,
+    }
 }
 
 impl MethodResolver<'_, '_> {
@@ -483,6 +692,7 @@ impl<'tcx> HirVisitor<'tcx> for MethodResolver<'_, 'tcx> {
             && let Some(def_id) = self.typeck.type_dependent_def_id(expr.hir_id)
         {
             self.record(site, def_id);
+            self.record_obligations(expr.hir_id, def_id, site);
         }
         intravisit::walk_expr(self, expr);
     }
@@ -498,8 +708,12 @@ impl<'tcx> HirVisitor<'tcx> for MethodResolver<'_, 'tcx> {
 fn collect_method_records<'tcx>(
     tcx: TyCtxt<'tcx>,
     macro_cfg_map: &HashMap<Symbol, Vec<String>>,
-) -> Vec<PathRecord> {
+) -> (Vec<PathRecord>, Vec<ImplRecord>) {
     let mut records = Vec::new();
+    let mut impls = Vec::new();
+    // One cache for the whole crate, not one per body: the same bound turns up
+    // in every function that touches the type.
+    let mut selected: HashMap<ty::TraitRef<'tcx>, Vec<SelectedImpl>> = HashMap::new();
 
     for owner in tcx.hir_body_owners() {
         // Analysis may have failed for this body (the pass runs even when it
@@ -517,12 +731,43 @@ fn collect_method_records<'tcx>(
             typeck: tcx.typeck(root),
             records: Vec::new(),
             macro_cfg_map,
+            impls: Vec::new(),
+            selected: &mut selected,
         };
         visitor.visit_body(tcx.hir_body_owned_by(owner));
         records.extend(visitor.records);
+        impls.extend(visitor.impls);
     }
 
-    records
+    // One entry per (call site, obligation): the same call in a generic function
+    // instantiated twice resolves to the same impl, and the tree lookup the
+    // driver does per record is not free. Deduped through a set rather than by
+    // sorting, so a crate with a lot of calls does not pay a comparison sort
+    // over the whole list.
+    let mut unique: HashSet<ImplRecord> = HashSet::with_capacity(impls.len());
+    impls.retain(|record| unique.insert(record.clone()));
+    // Sorted for a stable plugin output. On field references, never on a
+    // formatted record: that is a `Debug` render per comparison.
+    impls.sort_by(|a, b| {
+        (
+            &a.definition_crate,
+            &a.trait_name,
+            &a.self_ty,
+            &a.span.file,
+            a.span.start_line,
+            a.span.start_col,
+        )
+            .cmp(&(
+                &b.definition_crate,
+                &b.trait_name,
+                &b.self_ty,
+                &b.span.file,
+                b.span.start_line,
+                b.span.start_col,
+            ))
+    });
+
+    (records, impls)
 }
 
 /// The crate name to report for a resolution.
@@ -648,6 +893,9 @@ impl rustc_driver::Callbacks for MyCompilerCalls {
             records,
             macro_module_imports: macro_imports,
             out_dir: env::var("OUT_DIR").ok(),
+            // The AST pass resolves no obligations; they arrive with the
+            // type-checked pass below.
+            impls: Vec::new(),
         };
         write_output(&output_data);
         self.ast_records = output_data.records;
@@ -679,12 +927,14 @@ impl rustc_driver::Callbacks for MyCompilerCalls {
         }
 
         let mut records = std::mem::take(&mut self.ast_records);
-        records.extend(collect_method_records(tcx, &self.macro_cfg_map));
+        let (method_records, impls) = collect_method_records(tcx, &self.macro_cfg_map);
+        records.extend(method_records);
 
         write_output(&FeatureRunOutput {
             records,
             macro_module_imports: std::mem::take(&mut self.macro_imports),
             out_dir: env::var("OUT_DIR").ok(),
+            impls,
         });
 
         Compilation::Stop

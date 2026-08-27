@@ -100,7 +100,7 @@ fn no_std_on_a_target_predicate_makes_a_host_only_run_inconclusive() {
 
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
-    let (hard_spans, _cond, _cov, _ce, _root, _records, unproven) =
+    let (hard_spans, _cond, _cov, _ce, _root, _records, unproven, _) =
         analyze_crate(&ctx, &manifest, "target_cfg_no_std", &mut telemetry);
 
     assert_eq!(

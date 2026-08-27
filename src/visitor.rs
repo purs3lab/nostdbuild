@@ -518,6 +518,28 @@ pub struct LocalItem<'a> {
     /// `LocalItem`s for these roots would not be — `collect_all_items` feeds
     /// items into the covering-set pool, so it would change feature selection.
     pub extern_roots: Vec<String>,
+    /// For a trait `impl` only: `(trait head, self-type head)` —
+    /// `impl<Z> Zeroize for Vec<Z>` records `("Zeroize", "Vec")`, and a blanket
+    /// `impl<T: ComplexField> SimdComplexField for T`, whose self type is one of
+    /// its own generic parameters, records `("SimdComplexField", "_")`.
+    ///
+    /// An `impl` block has no identifier, so `name` is `None` for one and
+    /// `collect_named_items_with_conditions` skips it — the cfg gating the impl
+    /// is in the tree with nothing to address it by (KI-27). This is that key.
+    ///
+    /// The key groups the *arms* of one impl, which is what
+    /// `driver::impl_availability_requirement` needs to know its alternatives.
+    /// `"_"` is a distinct key and not a wildcard: coherence forbids two
+    /// applicable impls for one type, so an ungated blanket next to a gated
+    /// concrete one (zeroize ships exactly that pair) cannot be the impl a call
+    /// on the concrete type resolved to, and reading it as one would drop the
+    /// requirement.
+    ///
+    /// A *field*, and for the same reason `extern_roots` is one: `name` feeds
+    /// `feature_to_items` and the cross-crate item match, so a synthetic name
+    /// there would change feature selection for every crate in the corpus. Read
+    /// by `collect_trait_impl_gates` and `impl_at_span`, and by nothing else.
+    pub impl_trait: Option<(String, String)>,
 }
 
 impl LocalItem<'_> {
@@ -1045,6 +1067,21 @@ impl<'a> FileVisitor<'a> {
         attrs: &[syn::Attribute],
         span: Span,
     ) -> bool {
+        self.record_item_with(kind, name, attrs, span, None)
+    }
+
+    /// `record_item` for an item that carries an impl key — see
+    /// [`LocalItem::impl_trait`]. Split out rather than added to `record_item`'s
+    /// signature because every other one of its ~30 call sites would pass
+    /// `None`.
+    fn record_item_with(
+        &mut self,
+        kind: &str,
+        name: Option<String>,
+        attrs: &[syn::Attribute],
+        span: Span,
+        impl_trait: Option<(String, String)>,
+    ) -> bool {
         if self.should_skip(attrs) {
             debug!(
                 "Skipping {} {} due to test attribute",
@@ -1063,6 +1100,7 @@ impl<'a> FileVisitor<'a> {
             externally_gated,
             use_path: None,
             extern_roots: Vec::new(),
+            impl_trait,
         });
         true
     }
@@ -1131,6 +1169,7 @@ impl<'a> FileVisitor<'a> {
                     externally_gated: false,
                     use_path: None,
                     extern_roots: Vec::new(),
+                    impl_trait: None,
                 });
             }
         }
@@ -1178,6 +1217,7 @@ impl<'a> FileVisitor<'a> {
                 externally_gated: false,
                 use_path: None,
                 extern_roots: Vec::new(),
+                impl_trait: None,
             });
         }
         for tt in seg {
@@ -1327,6 +1367,7 @@ impl<'a> FileVisitor<'a> {
             // the arm's cfg never learns which dependency it needs linked
             // (caches-0.3.0's `else { use libm; … }`).
             extern_roots: scan_extern_roots(&body.stream()),
+            impl_trait: None,
         });
         // Register `mod X;` declared inside this arm, gated by the arm. syn hands
         // us the cfg_if tokens opaquely, so without this the module is never
@@ -2075,6 +2116,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                     externally_gated: false,
                     use_path: None,
                     extern_roots: Vec::new(),
+                    impl_trait: None,
                 });
             }
         }
@@ -2216,7 +2258,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
     }
 
     fn visit_item_impl(&mut self, i: &'_ syn::ItemImpl) {
-        if self.record_item("impl block", None, &i.attrs, i.span()) {
+        if self.record_item_with("impl block", None, &i.attrs, i.span(), impl_key(i)) {
             syn::visit::visit_item_impl(self, i);
         }
     }
@@ -2332,6 +2374,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 externally_gated,
                 use_path: Some(segments),
                 extern_roots,
+                impl_trait: None,
             });
         }
         syn::visit::visit_item_use(self, i);
@@ -2381,6 +2424,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 externally_gated,
                 use_path: None,
                 extern_roots,
+                impl_trait: None,
             });
         } else {
             self.push_item(LocalItem {
@@ -2390,6 +2434,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 externally_gated,
                 use_path: None,
                 extern_roots,
+                impl_trait: None,
             });
         }
         syn::visit::visit_item_extern_crate(self, i);
@@ -2495,6 +2540,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 externally_gated,
                 use_path: None,
                 extern_roots: Vec::new(),
+                impl_trait: None,
             });
         }
         // A custom macro (e.g. cfg_if-style `cfg_time!`) may take `mod X;` as a
@@ -2594,6 +2640,7 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                 externally_gated,
                 use_path: None,
                 extern_roots: Vec::new(),
+                impl_trait: None,
             });
         }
 
@@ -3434,6 +3481,166 @@ pub fn find_entrypoints(manifest: &str, known_modules: &mut Vec<PathBuf>) -> Pat
     }
 
     crate_dir
+}
+
+/// `(trait head, self-type head)` for a trait `impl`, or `None` when there is
+/// nothing to match on.
+///
+/// An inherent `impl Foo { … }` has no trait and yields `None`; so does a
+/// negative `impl !Send for Foo`, which withdraws an impl rather than providing
+/// one. A self type with no head identifier — a tuple, a function pointer — is
+/// also `None`: the requirement is then simply not expressible, which is where
+/// every one of them already was.
+///
+/// A self type that *is* one of the impl's own generic parameters makes it a
+/// blanket impl, keyed `"_"` — a key of its own, not a wildcard. See
+/// [`LocalItem::impl_trait`] for why the distinction is load-bearing.
+fn impl_key(i: &syn::ItemImpl) -> Option<(String, String)> {
+    let (bang, path, _) = i.trait_.as_ref()?;
+    if bang.is_some() {
+        return None;
+    }
+    let trait_name = path.segments.last()?.ident.to_string();
+    let params: HashSet<String> = i
+        .generics
+        .params
+        .iter()
+        .filter_map(|p| match p {
+            syn::GenericParam::Type(t) => Some(t.ident.to_string()),
+            _ => None,
+        })
+        .collect();
+    let head = type_head(&i.self_ty)?;
+    let head = if params.contains(&head) {
+        "_".to_string()
+    } else {
+        head
+    };
+    Some((trait_name, head))
+}
+
+/// The head identifier of a syn type — `Vec` for `Vec<Z>`, `f64` for `f64`.
+/// References are looked through: an impl is written for the type, not for a
+/// borrow of it. Mirrors `hir_driver::ty_head`, which does the same for the
+/// obligation side, so the two keys meet.
+fn type_head(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Path(p) => Some(p.path.segments.last()?.ident.to_string()),
+        syn::Type::Reference(r) => type_head(&r.elem),
+        syn::Type::Paren(p) => type_head(&p.elem),
+        syn::Type::Group(g) => type_head(&g.elem),
+        _ => None,
+    }
+}
+
+/// The keyed trait `impl` whose span contains `target`, with the condition under
+/// which it exists.
+///
+/// The compiler names *which* impl it selected for an obligation
+/// (`ImplRecord::impl_span`); this is how that answer is read back off the tree.
+/// Anchoring on the span rather than on the `(trait, self-type)` key is what
+/// makes the reading safe in the presence of blanket impls: zeroize declares
+/// both `#[cfg(feature = "alloc")] impl<Z> Zeroize for Vec<Z>` and an ungated
+/// `impl<Z: DefaultIsZeroes> Zeroize for Z`, and coherence guarantees at most
+/// one of them applies to any given type — so the one the compiler picked is the
+/// one whose gate the build has to satisfy, and guessing from the key alone
+/// would let the blanket answer for the `Vec` impl's requirement.
+///
+/// Innermost match wins, the same rule `find_condition_for_span` uses.
+pub fn impl_at_span<'a>(
+    node: &ModNode<'a>,
+    target: &ReadableSpan,
+    ctx: &'a z3::Context,
+) -> Option<((String, String), Option<Bool<'a>>)> {
+    impl_at_span_inner(node, target, ctx, node.entry_condition.clone())
+}
+
+fn impl_at_span_inner<'a>(
+    node: &ModNode<'a>,
+    target: &ReadableSpan,
+    ctx: &'a z3::Context,
+    inherited: Option<Bool<'a>>,
+) -> Option<((String, String), Option<Bool<'a>>)> {
+    let module_gate = match (&inherited, &node.entry_condition) {
+        (Some(i), Some(e)) => Some(Bool::and(ctx, &[i, e])),
+        (Some(i), None) => Some(i.clone()),
+        (None, Some(e)) => Some(e.clone()),
+        (None, None) => None,
+    };
+
+    for child in &node.children {
+        if let Some(found) = impl_at_span_inner(child, target, ctx, module_gate.clone()) {
+            return Some(found);
+        }
+    }
+
+    if node.source_file.to_string_lossy() == target.file {
+        for item in &node.local_items {
+            let Some(key) = item.impl_trait.clone() else {
+                continue;
+            };
+            if !item.span_matches(target) {
+                continue;
+            }
+            let effective = match (&module_gate, &item.own_condition) {
+                (Some(g), Some(c)) => Some(Bool::and(ctx, &[g, c])),
+                (Some(g), None) => Some(g.clone()),
+                (None, Some(c)) => Some(c.clone()),
+                (None, None) => None,
+            };
+            return Some((key, effective));
+        }
+    }
+    None
+}
+
+/// Every trait `impl` in the tree that carries a key, paired with the condition
+/// under which it exists — `(entry_conditions AND own_condition)`, or `None`
+/// when it is unconditional.
+///
+/// `driver::impl_availability_requirement` reads this to answer "which of this
+/// crate's features would give the caller an impl of `Zeroize` for `Vec`". An
+/// ungated one is kept, with `None`: that is the answer "the impl is there
+/// whatever you enable", and dropping it would turn a satisfied requirement into
+/// a demand for a feature.
+pub fn collect_trait_impl_gates<'a>(
+    node: &ModNode<'a>,
+    ctx: &'a z3::Context,
+) -> Vec<((String, String), Option<Bool<'a>>)> {
+    let mut result = vec![];
+    collect_impl_gates_recursive(node, node.entry_condition.clone(), ctx, &mut result);
+    result
+}
+
+fn collect_impl_gates_recursive<'a>(
+    node: &ModNode<'a>,
+    inherited: Option<Bool<'a>>,
+    ctx: &'a z3::Context,
+    out: &mut Vec<((String, String), Option<Bool<'a>>)>,
+) {
+    let module_gate = match (&inherited, &node.entry_condition) {
+        (Some(i), Some(e)) => Some(Bool::and(ctx, &[i, e])),
+        (Some(i), None) => Some(i.clone()),
+        (None, Some(e)) => Some(e.clone()),
+        (None, None) => None,
+    };
+
+    for item in &node.local_items {
+        let Some(key) = item.impl_trait.clone() else {
+            continue;
+        };
+        let effective = match (&module_gate, &item.own_condition) {
+            (Some(g), Some(c)) => Some(Bool::and(ctx, &[g, c])),
+            (Some(g), None) => Some(g.clone()),
+            (None, Some(c)) => Some(c.clone()),
+            (None, None) => None,
+        };
+        out.push((key, effective));
+    }
+
+    for child in &node.children {
+        collect_impl_gates_recursive(child, module_gate.clone(), ctx, out);
+    }
 }
 
 /// Collect (name, full_condition) pairs for every named item in the tree.

@@ -114,30 +114,54 @@ fn process_dep_crate_wrapper(
     deps_to_keep: &HashSet<String>,
 ) -> anyhow::Result<()> {
     let _t = timing::crate_scope("dep_analysis", &dep.crate_name);
+    // The DB answers "what does this dependency need to be no_std", keyed by the
+    // dependency alone. That is parent-independent and the cache is sound for it
+    // — but a KI-27 requirement is not: `zeroize/alloc` is needed because
+    // *multiexp* calls `.zeroize()` on a `Vec`, and a sibling crate that never
+    // does needs nothing. A cached answer would silently skip the constraint,
+    // the same way a cache hit silently skips the analysis a verification run is
+    // testing, so a dependency this crate has impl requirements on is analysed.
+    let dep_package = dep.crate_name.split(':').next().unwrap_or(&dep.crate_name);
+    let dep_crate = parser::dep_crate_name(
+        &parser::determine_manifest_file(&dep.crate_name, Some(&exchange.name_with_version)),
+        dep_package,
+    )
+    .replace('-', "_");
+    let has_impl_requirements = exchange
+        .impl_records
+        .iter()
+        .any(|r| r.definition_crate.replace('-', "_") == dep_crate);
+    if has_impl_requirements {
+        debug!(
+            "Not using the DB for {}: the main crate's calls need impls it may gate",
+            dep.crate_name
+        );
+    }
     // Check the DB first: if we already have a result for this dep, skip the expensive
     // gather_crate_info + analyze_crate_wrapper + process_crate path entirely.
-    let (local_dep_args, dep_disable, dep_enable) =
-        if let Some(db_entry) = db::get_from_db_data(&exchange.db_data, &dep.crate_name) {
-            debug!(
-                "DB hit for dependency {}, skipping analysis",
-                dep.crate_name
-            );
-            let (enable, disable) = (db_entry.features.0.clone(), db_entry.features.1.clone());
-            // DB hit — no dep_root available; pass empty map (no protection check for
-            // this dep). `None` for the entailed-false set for the same reason: the DB
-            // stores the (enable, disable) pair only, so removals fall back to
-            // `disable` and this path behaves exactly as it did before.
-            parser::finalize_dep_crate(
-                exchange,
-                dep,
-                enable,
-                disable,
-                None,
-                std::collections::HashMap::new(),
-            )?
-        } else {
-            parser::process_dep_crate(exchange, dep)?
-        };
+    let (local_dep_args, dep_disable, dep_enable) = if let Some(db_entry) =
+        db::get_from_db_data(&exchange.db_data, &dep.crate_name).filter(|_| !has_impl_requirements)
+    {
+        debug!(
+            "DB hit for dependency {}, skipping analysis",
+            dep.crate_name
+        );
+        let (enable, disable) = (db_entry.features.0.clone(), db_entry.features.1.clone());
+        // DB hit — no dep_root available; pass empty map (no protection check for
+        // this dep). `None` for the entailed-false set for the same reason: the DB
+        // stores the (enable, disable) pair only, so removals fall back to
+        // `disable` and this path behaves exactly as it did before.
+        parser::finalize_dep_crate(
+            exchange,
+            dep,
+            enable,
+            disable,
+            None,
+            std::collections::HashMap::new(),
+        )?
+    } else {
+        parser::process_dep_crate(exchange, dep)?
+    };
 
     println!(
         "Dependency {} enable features: {:?}, disable features: {:?}",
@@ -391,6 +415,7 @@ fn main() -> anyhow::Result<()> {
         telemetry,
         crate_name_rename,
         valid_cross_crate_items: std::collections::HashSet::new(),
+        impl_records: Vec::new(),
         main_enable: Vec::new(),
         protected_dep_features: std::collections::HashSet::new(),
         dep_forbidden_features: std::collections::HashMap::new(),
@@ -453,6 +478,7 @@ fn main() -> anyhow::Result<()> {
         main_root,
         covering_records,
         unproven_std,
+        impl_records,
     ) = driver::analyze_crate_wrapper(
         &ctx,
         &exchange.name_with_version,
@@ -527,6 +553,18 @@ fn main() -> anyhow::Result<()> {
         hard_constraints.as_ref(),
         &ctx,
     );
+
+    // The requirements a *call* carries rather than a name (KI-27), already
+    // filtered to reachable call sites by `analyze_crate`. Read by
+    // `process_dep_crate`, one dependency at a time, against that dependency's
+    // own tree.
+    exchange.impl_records = impl_records;
+    if !exchange.impl_records.is_empty() {
+        debug!(
+            "{} trait impl(s) from dependencies are needed by reachable call sites",
+            exchange.impl_records.len()
+        );
+    }
 
     stats.coverage_comparison = coverage_comparison;
     // Recorded whatever the verdict — they are diagnostics for both outcomes,

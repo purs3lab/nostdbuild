@@ -1,0 +1,19 @@
+# multiexp in miniature: a dependency whose default features the edge turns off,
+# and no feature of this crate that reaches the one the impl is gated behind.
+# `std` is the only route, which is the route a no_std build cannot take.
+[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.gated]
+version = "1.0.0"
+default-features = false
+
+[dependencies.quiet]
+version = "1.0.0"
+default-features = false
+
+[features]
+default = ["std"]
+std = ["gated/std"]

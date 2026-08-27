@@ -60,6 +60,7 @@ fn output(records: Vec<PathRecord>) -> FeatureRunOutput {
         records,
         macro_module_imports: vec![],
         out_dir: None,
+        impls: Vec::new(),
     }
 }
 
@@ -661,6 +662,7 @@ mod import_to_use {
                 externally_gated: true,
                 use_path: None,
                 extern_roots: Vec::new(),
+                impl_trait: None,
             })
             .collect();
         ModNode {

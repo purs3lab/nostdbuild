@@ -1,0 +1,22 @@
+[
+  {
+    "name": "multiexp",
+    "version": "0.4.0",
+    "target": "x86_64-unknown-none",
+    "args": [
+      "+nightly",
+      "build",
+      "--release",
+      "--target",
+      "x86_64-unknown-none",
+      "--manifest-path",
+      "/evaldisk/sourag/downloads/multiexp-0.4.0/Cargo.toml",
+      "--lib",
+      "--no-default-features",
+      "--features",
+      "custom_no_std_feature_enabled"
+    ],
+    "status": "Success",
+    "error": null
+  }
+]

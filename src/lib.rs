@@ -130,6 +130,18 @@ pub struct DataExchange {
     /// no_std-compatible context. Populated before the dep processing loop
     /// so finalize_dep_crate can skip removal of features that gate these items.
     pub valid_cross_crate_items: HashSet<(String, String)>,
+    /// The impls the compiler selected for the main crate's trait obligations,
+    /// restricted to call sites a no_std build reaches. Populated beside
+    /// `valid_cross_crate_items` and read by `process_dep_crate`, which turns
+    /// the ones naming a dependency into a constraint on that dependency's
+    /// feature solve (KI-27, `driver::impl_availability_requirement`).
+    ///
+    /// Separate from `valid_cross_crate_items` because it answers a different
+    /// question. That set says which *named* items the crate uses, and its only
+    /// consumer protects a feature already on an edge from removal. This one is
+    /// a requirement: multiexp 0.4.0 needs `zeroize/alloc`, which is on no edge
+    /// at all, so there is nothing for protection to protect.
+    pub impl_records: Vec<ImplRecord>,
     /// The main crate's no_std enable list — used by finalize_dep_crate to
     /// check if a main [features] entry references a protected dep feature.
     pub main_enable: Vec<String>,

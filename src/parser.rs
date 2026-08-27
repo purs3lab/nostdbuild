@@ -286,7 +286,7 @@ pub fn parse_deps_crate(
 
         // Create a new ctx per dependency
         let ctx = z3::Context::new(&z3::Config::new());
-        let (all_hard, _, _, _, _, _, _) =
+        let (all_hard, _, _, _, _, _, _, _) =
             driver::analyze_crate_wrapper(&ctx, &dep.clone(), Some(main_name), telemetry);
         attributes.push(parse_crate(
             &dep.clone(),
@@ -1842,7 +1842,7 @@ pub fn process_dep_crate(
     let dep_crate_name = dep.crate_name.clone();
     let main_name = exchange.name_with_version.clone();
     let ctx = z3::Context::new(&z3::Config::new());
-    let (_hard_std, hard_constraints, _, _, dep_root, _, _) = driver::analyze_crate_wrapper(
+    let (_hard_std, hard_constraints, _, _, dep_root, _, _, _) = driver::analyze_crate_wrapper(
         &ctx,
         &dep.crate_name,
         Some(&exchange.name_with_version),
@@ -1865,6 +1865,44 @@ pub fn process_dep_crate(
     let dep_manifest = determine_manifest_file(&dep_crate_name, Some(&main_name));
     let dep_requirement = driver::dependency_feature_requirement(&ctx, &dep_manifest);
     let hard_constraints = match (hard_constraints, dep_requirement) {
+        (Some(hard), Some(req)) => Some(Bool::and(&ctx, &[&hard, &req])),
+        (Some(hard), None) => Some(hard),
+        (None, Some(req)) => Some(req),
+        (None, None) => None,
+    };
+
+    // And what its *dependent* demands of it (KI-27). The same shape as the
+    // requirement above and for the same reason — a constraint arriving from
+    // another crate is not a choice this one is offering — except that it
+    // arrives from the other direction: the main crate's calls resolved to impls
+    // this dependency only emits under a `#[cfg]`, and nothing in either crate's
+    // *source* names them. multiexp 0.4.0 writes `groupings.zeroize()` and needs
+    // `#[cfg(feature = "alloc")] impl<Z> Zeroize for Vec<Z>`; zeroize's own solve
+    // has no reason to enable `alloc` and answers `enable: []`, so all 26 targets
+    // fail on `E0599 the method zeroize exists … but its trait bounds were not
+    // satisfied`.
+    //
+    // Conjoined here rather than applied afterwards for the same reason R31-4
+    // gives: a feature forced on by a hard constraint also lands in
+    // `non_minimalizable_features`, which is what stops `minimize` from taking it
+    // back one pass later.
+    let dep_dir = std::path::Path::new(&dep_manifest)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    // The records name the *crate*, and the edge is keyed by the package — see
+    // `dep_crate_name`, which is why `[lib] name = "…"` has to be read rather
+    // than assumed.
+    let dep_package = dep_crate_name.split(':').next().unwrap_or(&dep_crate_name);
+    let impl_requirement = driver::impl_availability_requirement(
+        &ctx,
+        &dep_root,
+        &dep_dir,
+        &crate::parser::dep_crate_name(&dep_manifest, dep_package),
+        &exchange.impl_records,
+        hard_constraints.as_ref(),
+    );
+    let hard_constraints = match (hard_constraints, impl_requirement) {
         (Some(hard), Some(req)) => Some(Bool::and(&ctx, &[&hard, &req])),
         (Some(hard), None) => Some(hard),
         (None, Some(req)) => Some(req),
@@ -4971,7 +5009,7 @@ pub fn recursive_dep_requirement_check(
                 (enable, disable, entailed_true, feature_to_items)
             } else {
                 let ctx = z3::Context::new(&z3::Config::new());
-                let (all_hard, hard_constraints, _, _, dep_root, dep_records, _) =
+                let (all_hard, hard_constraints, _, _, dep_root, dep_records, _, _) =
                     driver::analyze_crate_wrapper(
                         &ctx,
                         &dep_name_with_version,

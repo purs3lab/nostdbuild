@@ -128,6 +128,30 @@ fn test_lazy_exclusive() {
     run_main_test("lazy-exclusive", "1.0.5", "x86_64-unknown-none");
 }
 
+/// The KI-27 case: multiexp writes `groupings.zeroize()` on a `Vec<Vec<u8>>` and
+/// the impl that serves it is `#[cfg(feature = "alloc")] impl<Z> Zeroize for
+/// Vec<Z>` in zeroize — an item with no identifier, that multiexp's source never
+/// names. The method it *does* name is ungated, so the item-usage check finds
+/// nothing to justify `alloc`, and multiexp's only route to it (`std =
+/// ["zeroize/std"]`) is the one route a no_std build cannot take. All 26 targets
+/// used to fail on `E0599 … the method zeroize exists for struct Vec<Vec<u8>>,
+/// but its trait bounds were not satisfied`.
+///
+/// The compiler is what knows the call needs that impl, so the plugin records
+/// which impl each obligation selected and the dependency's own solve is given
+/// the gate as a constraint. `alloc` is then in zeroize's `enable`, no multiexp
+/// feature reaches it, and it is parked in `custom_no_std_feature_enabled` —
+/// which is the emitted config the golden records.
+///
+/// The crate also has **zero** covering runs: without the impl it does not type
+/// check, so every covering pass fails and the default-features pass is the only
+/// compilation in the run that ever resolved the obligation. That is not
+/// incidental to this test — it is the shape the fix has to work in.
+#[cargo_test]
+fn test_multiexp() {
+    run_main_test("multiexp", "0.4.0", "x86_64-unknown-none");
+}
+
 /// The R34-11 case: `tstr`'s own isolated solve asks for `cmp_traits` and
 /// `const_generics` to be no_std, no feature of `repr_offset` reaches either, and
 /// both are parked in `custom_no_std_feature_enabled` and enabled. They are real
