@@ -286,7 +286,7 @@ pub fn parse_deps_crate(
 
         // Create a new ctx per dependency
         let ctx = z3::Context::new(&z3::Config::new());
-        let (all_hard, _, _, _, _, _, _, _) =
+        let (all_hard, _, _, _, _, _, _, _, _) =
             driver::analyze_crate_wrapper(&ctx, &dep.clone(), Some(main_name), telemetry);
         attributes.push(parse_crate(
             &dep.clone(),
@@ -1842,7 +1842,7 @@ pub fn process_dep_crate(
     let dep_crate_name = dep.crate_name.clone();
     let main_name = exchange.name_with_version.clone();
     let ctx = z3::Context::new(&z3::Config::new());
-    let (_hard_std, hard_constraints, _, _, dep_root, _, _, _) = driver::analyze_crate_wrapper(
+    let (_hard_std, hard_constraints, _, _, dep_root, _, _, _, _) = driver::analyze_crate_wrapper(
         &ctx,
         &dep.crate_name,
         Some(&exchange.name_with_version),
@@ -1910,6 +1910,38 @@ pub fn process_dep_crate(
         hard_constraints.as_ref(),
     );
     let hard_constraints = match (hard_constraints, impl_requirement) {
+        (Some(hard), Some(req)) => Some(Bool::and(&ctx, &[&hard, &req])),
+        (Some(hard), None) => Some(hard),
+        (None, Some(req)) => Some(req),
+        (None, None) => None,
+    };
+
+    // And what its dependent's plain *paths* demand of it (R34-6) — the same
+    // question as the impl requirement above, asked of items the main crate
+    // names outright rather than of impls it only calls into.
+    //
+    // Both halves are needed because they fail differently. earcut 0.4.4 writes
+    // `use num_traits::float::Float` and there is no obligation to observe: the
+    // import itself does not resolve, so no call site is ever type-checked and
+    // `impl_records` is empty. What the compiler *did* record is that the path
+    // resolved, in the covering run, to `float.rs:932` — under
+    // `#[cfg(any(feature = "std", feature = "libm"))]`. Read in num-traits' own
+    // tree that is the requirement `std ∨ libm`, and since the dependency must
+    // stay no_std the solve is left with `libm`.
+    //
+    // Filtered to `valid_cross_crate_items` rather than to every record, so an
+    // item named only under a cfg the no_std build never activates demands
+    // nothing — the same reachability rule `impl_records` already carries.
+    let path_items = exchange.cross_crate_items();
+    let path_requirement = driver::path_availability_requirement(
+        &ctx,
+        &dep_root,
+        &dep_dir,
+        &crate::parser::dep_crate_name(&dep_manifest, dep_package),
+        &path_items,
+        hard_constraints.as_ref(),
+    );
+    let hard_constraints = match (hard_constraints, path_requirement) {
         (Some(hard), Some(req)) => Some(Bool::and(&ctx, &[&hard, &req])),
         (Some(hard), None) => Some(hard),
         (None, Some(req)) => Some(req),
@@ -5016,7 +5048,7 @@ pub fn recursive_dep_requirement_check(
                 (enable, disable, entailed_true, feature_to_items)
             } else {
                 let ctx = z3::Context::new(&z3::Config::new());
-                let (all_hard, hard_constraints, _, _, dep_root, dep_records, _, _) =
+                let (all_hard, hard_constraints, _, _, dep_root, dep_records, _, _, _) =
                     driver::analyze_crate_wrapper(
                         &ctx,
                         &dep_name_with_version,

@@ -47,7 +47,7 @@ fn an_unproven_span_reports_the_compiler_error_that_left_it_unproven() {
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
 
-    let (hard_spans, _condition, _coverage, _, _, _, unproven, _) =
+    let (hard_spans, _condition, _coverage, _, _, _, unproven, _, _) =
         analyze_crate(&ctx, &manifest, "probe_failure_attribution", &mut telemetry);
 
     // The verdict itself is unchanged: not proven hard, not proven avoidable.

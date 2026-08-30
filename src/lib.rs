@@ -142,6 +142,24 @@ pub struct DataExchange {
     /// a requirement: multiexp 0.4.0 needs `zeroize/alloc`, which is on no edge
     /// at all, so there is nothing for protection to protect.
     pub impl_records: Vec<ImplRecord>,
+    /// The cross-crate items the main crate names, each with the definition site
+    /// the compiler resolved it to — the plain-path counterpart of
+    /// `impl_records` (R34-6), and derived the same way.
+    ///
+    /// Read by `process_dep_crate`, which turns the ones naming a dependency
+    /// into a constraint on that dependency's feature solve: earcut names
+    /// `num_traits::float::Float`, the definition sits under
+    /// `#[cfg(any(feature = "std", feature = "libm"))]`, and with `std`
+    /// forbidden the solve is left with `libm`.
+    ///
+    /// Separate from `valid_cross_crate_items`, which is a different question
+    /// asked a different way. That set protects a dependency feature from
+    /// *removal*, so it errs wide on purpose and is built only from covering
+    /// runs. This one *adds* a feature, so it uses the stricter reachability
+    /// test — and it needs the fallback to a std-on pass, because a crate
+    /// missing one of these items does not compile and therefore has no
+    /// covering run to be built from at all.
+    pub path_items: Vec<CrossCrateItem>,
     /// The main crate's no_std enable list — used by finalize_dep_crate to
     /// check if a main [features] entry references a protected dep feature.
     pub main_enable: Vec<String>,
@@ -174,6 +192,18 @@ pub struct DataExchange {
     /// the solve did. See `solver::no_std_forced_features` (R31-3).
     pub main_no_std_required: Vec<String>,
     pub main_no_std_forbidden: Vec<String>,
+}
+
+impl DataExchange {
+    /// The cross-crate items whose definition sits in, or below, this
+    /// dependency — the input to `driver::path_availability_requirement` and to
+    /// its `db.bin` guard (R34-6).
+    ///
+    /// A borrow of `path_items`; the filtering by defining crate happens inside
+    /// the requirement, which has the edge graph needed to answer "or below".
+    pub fn cross_crate_items(&self) -> &[CrossCrateItem] {
+        &self.path_items
+    }
 }
 
 /// We store already resolved features for a crate

@@ -210,6 +210,8 @@ impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
                     is_extern_crate: true,
                     // Set by the driver's facade-gateway pass, not here.
                     gateway_anchor: None,
+                    // An `extern crate` names a crate, not an item in one.
+                    definition_span: None,
                 });
             }
             _ => {
@@ -318,6 +320,7 @@ impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
                 is_extern_crate: false,
                 // Set by the driver's facade-gateway pass, not here.
                 gateway_anchor: None,
+                definition_span: definition_span_of(&self.tcx, final_def_id),
             });
         }
 
@@ -665,6 +668,7 @@ impl MethodResolver<'_, '_> {
             is_extern_crate: false,
             // Set by the driver's facade-gateway pass, not here.
             gateway_anchor: None,
+            definition_span: definition_span_of(&self.tcx, def_id),
         });
     }
 }
@@ -705,6 +709,81 @@ impl<'tcx> HirVisitor<'tcx> for MethodResolver<'_, 'tcx> {
 /// tables, so asking for the closure's own would find nothing. The walk itself
 /// does not descend into nested bodies — `hir_body_owners` already yields each
 /// closure separately, and descending as well would record every call twice.
+/// Give every `use` record the span of the item it actually imports (R34-6).
+///
+/// The AST pass cannot answer this. `visit_path` reads `partial_res_map`, which
+/// carries a resolution per *segment*, and for a `use` the final segment is not
+/// in it — import resolutions live on `PerOwnerResolverData::import_res`
+/// instead. So the deepest segment it finds for `use num_traits::float::Float`
+/// is the module `float`, and `def_span` answers with `pub mod float;` — an
+/// ungated line, from which no requirement follows. That is not a near miss: it
+/// is the wrong item, and the gate that matters (`#[cfg(any(feature = "std",
+/// feature = "libm"))]` above `pub trait Float`) is never seen.
+///
+/// HIR is where the question is answerable. `ItemKind::Use` carries a `UsePath`
+/// whose `res` holds the resolution per namespace, already following the import
+/// to what it names. Running here also sidesteps the reason the AST pass cannot
+/// simply ask: `def_span` on a local `DefId` during `after_expansion` steals a
+/// resolver that pass is still holding.
+///
+/// Overwrites rather than fills, because the AST pass's answer for these records
+/// is positively wrong and not merely absent.
+fn fill_import_definition_spans(tcx: TyCtxt<'_>, records: &mut [PathRecord]) {
+    // `(file, line, imported name)` → where that name is defined. The file and
+    // line are the `use` statement's own, which is what the AST record's span
+    // points at; the name disambiguates the leaves of a braced import, which
+    // lower to one HIR item each and therefore share a line.
+    let mut by_site: HashMap<(String, usize, String), ReadableSpan> = HashMap::new();
+
+    for item_id in tcx.hir_free_items() {
+        let item = tcx.hir_item(item_id);
+        let rustc_hir::ItemKind::Use(use_path, _) = item.kind else {
+            continue;
+        };
+        let Some(last) = use_path.segments.last() else {
+            continue;
+        };
+        let name = last.ident.to_string();
+        let loc = tcx.sess.source_map().lookup_char_pos(use_path.span.lo());
+        let file = loc.file.name.prefer_local_unconditionally().to_string();
+
+        for res in use_path.res.present_items() {
+            let Some(def_id) = res.opt_def_id() else {
+                continue;
+            };
+            // Foreign only — the requirement is about a *dependency's* features,
+            // and a local item has no dependency edge to constrain.
+            if def_id.is_local() {
+                continue;
+            }
+            let Some(span) = definition_span_of(&tcx, def_id) else {
+                continue;
+            };
+            by_site.insert((file.clone(), loc.line, name.clone()), span);
+            break;
+        }
+    }
+
+    if by_site.is_empty() {
+        return;
+    }
+
+    for record in records.iter_mut() {
+        if record.context != PathContext::ImportDeclaration {
+            continue;
+        }
+        let leaf = record
+            .path_text
+            .rsplit("::")
+            .next()
+            .unwrap_or(&record.path_text)
+            .to_string();
+        if let Some(span) = by_site.get(&(record.span.file.clone(), record.span.start_line, leaf)) {
+            record.definition_span = Some(span.clone());
+        }
+    }
+}
+
 fn collect_method_records<'tcx>(
     tcx: TyCtxt<'tcx>,
     macro_cfg_map: &HashMap<Symbol, Vec<String>>,
@@ -822,6 +901,42 @@ fn get_readable_span(tcx: &TyCtxt, span: Span, usage_crate: &str) -> ReadableSpa
     }
 }
 
+/// Where `def_id`'s item is written, as a span in the defining crate's own
+/// source — `PathRecord::definition_span`.
+///
+/// `tcx.def_span` answers for a foreign `DefId` as readily as a local one: the
+/// definition's source file rides in the defining crate's metadata, which is how
+/// rustc renders `found an item that was configured out` against a path under
+/// `registry/src/…`. The same call already backs `ImplRecord::impl_span`.
+///
+/// The `usage_crate` recorded is the defining crate, because that is whose tree
+/// the span will be looked up in — `driver::span_in_dep_tree` maps it onto the
+/// on-disk copy of that crate.
+///
+/// **Foreign definitions only, and that is a hard requirement, not a filter.**
+/// The AST pass calls this while it holds the `resolver_for_lowering` steal
+/// guards, and `def_span` on a *local* `DefId` runs a query that lowers the
+/// crate — which tries to steal what is already borrowed and aborts rustc with
+/// `stealing value which is locked`. That kills the whole analysis pass, not
+/// just this record. A foreign `DefId` is answered from the defining crate's
+/// metadata and touches no local query. Cross-crate items are the only ones this
+/// is for, so the guard costs nothing.
+///
+/// `None` for a dummy span, which is what the compiler reports for items it
+/// synthesised rather than read from source; there is no `#[cfg]` above those to
+/// find.
+fn definition_span_of(tcx: &TyCtxt<'_>, def_id: DefId) -> Option<ReadableSpan> {
+    if def_id.is_local() {
+        return None;
+    }
+    let span = tcx.def_span(def_id);
+    if span.is_dummy() {
+        return None;
+    }
+    let krate = reported_crate_name(*tcx, def_id);
+    Some(get_readable_span(tcx, span, &krate))
+}
+
 struct MyCompilerCalls {
     /// A `build_script_build` unit. The script has to be compiled and run for
     /// the crate to build at all, and nothing it contains is the crate's own
@@ -927,6 +1042,7 @@ impl rustc_driver::Callbacks for MyCompilerCalls {
         }
 
         let mut records = std::mem::take(&mut self.ast_records);
+        fill_import_definition_spans(tcx, &mut records);
         let (method_records, impls) = collect_method_records(tcx, &self.macro_cfg_map);
         records.extend(method_records);
 

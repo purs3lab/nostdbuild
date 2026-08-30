@@ -140,10 +140,26 @@ fn process_dep_crate_wrapper(
             dep.crate_name
         );
     }
+    // Same argument for the items the main crate *names* (R34-6). `num-traits`
+    // needs `libm` because earcut imports `num_traits::float::Float`, which is a
+    // fact about earcut; the DB's answer is keyed by the dependency alone and
+    // would skip it.
+    let has_path_requirements = driver::dep_carries_path_requirements(
+        &dep_dir,
+        &dep_crate,
+        &exchange.cross_crate_items(),
+    );
+    if has_path_requirements {
+        debug!(
+            "Not using the DB for {}: the main crate names items it may gate",
+            dep.crate_name
+        );
+    }
     // Check the DB first: if we already have a result for this dep, skip the expensive
     // gather_crate_info + analyze_crate_wrapper + process_crate path entirely.
     let (local_dep_args, dep_disable, dep_enable) = if let Some(db_entry) =
-        db::get_from_db_data(&exchange.db_data, &dep.crate_name).filter(|_| !has_impl_requirements)
+        db::get_from_db_data(&exchange.db_data, &dep.crate_name)
+            .filter(|_| !has_impl_requirements && !has_path_requirements)
     {
         debug!(
             "DB hit for dependency {}, skipping analysis",
@@ -419,6 +435,7 @@ fn main() -> anyhow::Result<()> {
         crate_name_rename,
         valid_cross_crate_items: std::collections::HashSet::new(),
         impl_records: Vec::new(),
+        path_items: Vec::new(),
         main_enable: Vec::new(),
         protected_dep_features: std::collections::HashSet::new(),
         dep_forbidden_features: std::collections::HashMap::new(),
@@ -482,6 +499,7 @@ fn main() -> anyhow::Result<()> {
         covering_records,
         unproven_std,
         impl_records,
+        path_items,
     ) = driver::analyze_crate_wrapper(
         &ctx,
         &exchange.name_with_version,
@@ -562,6 +580,7 @@ fn main() -> anyhow::Result<()> {
     // `process_dep_crate`, one dependency at a time, against that dependency's
     // own tree.
     exchange.impl_records = impl_records;
+    exchange.path_items = path_items;
     if !exchange.impl_records.is_empty() {
         debug!(
             "{} trait impl(s) from dependencies are needed by reachable call sites",

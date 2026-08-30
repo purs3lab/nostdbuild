@@ -338,6 +338,7 @@ version = "0.4"
 
 fn record(usage_crate: &str, expansion_crate: Option<&str>) -> PathRecord {
     PathRecord {
+        definition_span: None,
         path_text: "std".to_string(),
         definition_crate: usage_crate.to_string(),
         context: PathContext::ImportDeclaration,

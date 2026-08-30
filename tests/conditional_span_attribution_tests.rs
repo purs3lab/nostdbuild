@@ -33,6 +33,7 @@ fn span_at(line: usize, usage_crate: Option<&str>) -> ReadableSpan {
 
 fn record(path_text: &str, usage_crate: &str, line: usize) -> PathRecord {
     PathRecord {
+        definition_span: None,
         path_text: path_text.to_string(),
         definition_crate: usage_crate.to_string(),
         context: PathContext::Other,

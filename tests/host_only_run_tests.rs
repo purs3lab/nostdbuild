@@ -77,7 +77,7 @@ fn std_reached_through_a_shim_on_a_host_only_run_is_not_hard_evidence() {
 
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
-    let (hard_spans, _cond, _cov, _ce, _root, _records, unproven, _) =
+    let (hard_spans, _cond, _cov, _ce, _root, _records, unproven, _, _) =
         analyze_crate(&ctx, &manifest, "host_only_shim", &mut telemetry);
 
     assert!(
@@ -132,7 +132,7 @@ fn std_a_dependencys_macro_wrote_is_not_this_crate_naming_std() {
 
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
-    let (hard_spans, _cond, _cov, _ce, _root, _records, unproven, _) =
+    let (hard_spans, _cond, _cov, _ce, _root, _records, unproven, _, _) =
         analyze_crate(&ctx, &manifest, "host_only_macro_std", &mut telemetry);
 
     assert!(

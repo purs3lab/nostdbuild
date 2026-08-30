@@ -1,0 +1,16 @@
+# The intermediate. It forwards mathdep's features and defines the item the
+# consumer actually calls, ungated — so the requirement has to be derived in
+# mathdep's namespace and carried up this edge to mean anything here.
+[package]
+name = "wrapper"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies.mathdep]
+version = "1.0.0"
+default-features = false
+
+[features]
+default = ["std"]
+std = ["mathdep/std"]
+libm = ["mathdep/libm"]

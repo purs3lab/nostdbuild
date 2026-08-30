@@ -77,7 +77,7 @@ fn enabler_feature_is_found_and_makes_the_std_span_provable() {
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
 
-    let (hard_spans, condition, _coverage, _ce, _root, _records, unproven, _) =
+    let (hard_spans, condition, _coverage, _ce, _root, _records, unproven, _, _) =
         analyze_crate(&ctx, &manifest, "build_enabler_libm", &mut telemetry);
 
     assert_eq!(
@@ -132,7 +132,7 @@ fn the_trial_that_compiled_becomes_a_covering_run() {
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
 
-    let (hard_spans, _condition, coverage, _ce, _root, _records, unproven, _) =
+    let (hard_spans, _condition, coverage, _ce, _root, _records, unproven, _, _) =
         analyze_crate(&ctx, &manifest, "build_enabler_shim_method", &mut telemetry);
 
     assert_eq!(
@@ -221,7 +221,7 @@ fn a_pair_of_features_is_found_when_all_on_fails_on_an_optional_dep() {
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
 
-    let (hard_spans, _condition, _coverage, _ce, _root, _records, unproven, _) =
+    let (hard_spans, _condition, _coverage, _ce, _root, _records, unproven, _, _) =
         analyze_crate(&ctx, &manifest, "build_enabler_pair", &mut telemetry);
 
     let mut found = telemetry.build_enabler_features.clone();
@@ -268,7 +268,7 @@ fn a_crate_with_no_std_span_still_gets_the_configuration_that_builds() {
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
 
-    let (hard_spans, condition, _coverage, _ce, _root, _records, unproven, _) =
+    let (hard_spans, condition, _coverage, _ce, _root, _records, unproven, _, _) =
         analyze_crate(&ctx, &manifest, "build_enabler_no_span", &mut telemetry);
 
     assert_eq!(
@@ -319,7 +319,7 @@ fn a_feature_in_a_std_spans_gate_can_still_be_the_enabler() {
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
 
-    let (hard_spans, condition, _coverage, _ce, _root, _records, unproven, _) =
+    let (hard_spans, condition, _coverage, _ce, _root, _records, unproven, _, _) =
         analyze_crate(&ctx, &manifest, "build_enabler_circular", &mut telemetry);
 
     let mut found = telemetry.build_enabler_features.clone();
@@ -416,7 +416,7 @@ fn a_warm_target_cache_from_an_earlier_crate_does_not_skip_the_search() {
     let (_p, manifest) = load_fixture("build_enabler_shim_method");
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
-    let (hard_spans, _condition, _coverage, _ce, _root, _records, unproven, _) =
+    let (hard_spans, _condition, _coverage, _ce, _root, _records, unproven, _, _) =
         analyze_crate(&ctx, &manifest, "build_enabler_shim_method", &mut telemetry);
 
     assert_eq!(

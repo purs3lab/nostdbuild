@@ -1,0 +1,13 @@
+# num-traits in miniature. Perfectly no_std with no features at all, so its own
+# solve answers `enable: []` — which is correct, and is why nothing proposed
+# `libm` before the requirement in `path_availability_requirement` existed.
+[package]
+name = "mathdep"
+version = "1.0.0"
+edition = "2021"
+
+[features]
+default = ["std"]
+std = []
+libm = []
+serde = []

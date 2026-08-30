@@ -3819,6 +3819,63 @@ pub fn collect_named_items_with_conditions<'a>(
     result
 }
 
+/// `(name, condition)` for every named item **in one file** of the tree.
+///
+/// `collect_named_items_with_conditions` answers crate-wide, which is the right
+/// scope for building a feature→items map but the wrong one for asking "what
+/// are this item's alternatives" (R34-6). num-traits defines `abs` in `sign.rs`
+/// ungated *and* as a method of the `std`/`libm`-gated `Float` trait; reading
+/// the first as an alternative for the second concludes the item is always
+/// there, and a real requirement is dropped.
+///
+/// The file is the coarsest scope that separates those two, and it is
+/// deliberately coarse: it under-constrains rather than over-constrains, which
+/// is the safe direction here. Items sharing a name *within* one file — two
+/// traits in `float.rs` each declaring `abs` — still collapse, and that case is
+/// a miss, not a wrong answer. Separating those needs the enclosing item, which
+/// the tree does not index.
+pub fn named_item_conditions_in_file<'a>(
+    node: &ModNode<'a>,
+    file: &str,
+    ctx: &'a z3::Context,
+) -> Vec<(String, Bool<'a>)> {
+    let mut all = Vec::new();
+    collect_named_in_file(node, node.entry_condition.clone(), file, ctx, &mut all);
+    all
+}
+
+fn collect_named_in_file<'a>(
+    node: &ModNode<'a>,
+    inherited: Option<Bool<'a>>,
+    file: &str,
+    ctx: &'a z3::Context,
+    out: &mut Vec<(String, Bool<'a>)>,
+) {
+    let module_gate = match (&inherited, &node.entry_condition) {
+        (Some(i), Some(e)) => Some(Bool::and(ctx, &[i, e])),
+        (Some(i), None) => Some(i.clone()),
+        (None, Some(e)) => Some(e.clone()),
+        (None, None) => None,
+    };
+
+    if node.source_file.to_string_lossy().ends_with(file) {
+        for item in &node.local_items {
+            let Some(ref name) = item.name else { continue };
+            let effective = match (&module_gate, &item.own_condition) {
+                (Some(g), Some(c)) => Bool::and(ctx, &[g, c]),
+                (Some(g), None) => g.clone(),
+                (None, Some(c)) => c.clone(),
+                (None, None) => Bool::from_bool(ctx, true),
+            };
+            out.push((name.clone(), effective));
+        }
+    }
+
+    for child in &node.children {
+        collect_named_in_file(child, module_gate.clone(), file, ctx, out);
+    }
+}
+
 fn collect_named_recursive<'a>(
     node: &ModNode<'a>,
     inherited: Option<Bool<'a>>,

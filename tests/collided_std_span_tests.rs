@@ -36,6 +36,7 @@ fn record(
     local_route: Option<&str>,
 ) -> PathRecord {
     PathRecord {
+        definition_span: None,
         path_text: path_text.to_string(),
         definition_crate: usage_crate.to_string(),
         context,

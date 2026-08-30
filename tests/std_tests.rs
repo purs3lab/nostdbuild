@@ -290,7 +290,7 @@ fn test_unproven_probe_is_reported_but_not_hard() {
     let (_p, manifest) = load_fixture("test_unproven_probe");
     let ctx = z3::Context::new(&z3::Config::new());
     let mut telemetry = Telemetry::default();
-    let (hard_spans, _, _, _, _, _, unproven, _) =
+    let (hard_spans, _, _, _, _, _, unproven, _, _) =
         analyze_crate(&ctx, &manifest, "test_unproven_probe", &mut telemetry);
 
     assert!(

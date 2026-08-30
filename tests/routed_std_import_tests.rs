@@ -44,6 +44,7 @@ fn line_of(name: &str, needle: &str) -> usize {
 fn std_record_at(name: &str, needle: &str, path_text: &str) -> PathRecord {
     let line = line_of(name, needle);
     PathRecord {
+        definition_span: None,
         path_text: path_text.to_string(),
         definition_crate: "std".to_string(),
         context: PathContext::Other,

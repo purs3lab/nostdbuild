@@ -1,0 +1,20 @@
+# earcut in miniature: a dependency whose default features the edge turns off,
+# and an item the crate imports outright that only exists behind two of the
+# dependency's features. No feature of this crate reaches either one.
+[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.mathdep]
+version = "1.0.0"
+default-features = false
+
+# The two-hop edge. The consumer names `wrapper::helper`, which is ungated; the
+# item it imports is defined in `mathdep`, which it reaches only through wrapper.
+[dependencies.wrapper]
+version = "1.0.0"
+default-features = false
+
+[features]
+default = []

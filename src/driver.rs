@@ -2842,6 +2842,7 @@ pub fn analyze_crate_wrapper<'a>(
     HashSet<CrossCrateRef>,
     Vec<ReadableSpan>,
     Vec<ImplRecord>,
+    Vec<CrossCrateItem>,
 ) {
     // The one place that names *whose* analysis follows. Dependencies run the
     // same coverage/probe code as the main crate, so without an ambient crate on
@@ -3081,6 +3082,159 @@ pub fn impls_from_no_std_passes(
         .iter()
         .flat_map(|(output, _, _)| output.impls.iter().cloned())
         .collect()
+}
+
+/// The cross-crate item references seen by the passes whose feature set
+/// satisfies the crate's no_std condition — and by every pass that compiled when
+/// not one of them does. `impls_from_no_std_passes` for plain paths (R34-6).
+///
+/// **The fallback is the whole case, not a hedge**, and earcut 0.4.4 is the
+/// proof. `num_traits::float::Float` lives behind `#[cfg(any(feature = "std",
+/// feature = "libm"))]`, so a pass that turned num-traits' defaults off does not
+/// resolve the import and does not compile: earcut has **zero covering runs**,
+/// exactly as multiexp does. The `default = ["std"]` pass is the only
+/// compilation in the entire run that ever resolved the path, and reading it is
+/// what makes the requirement derivable at all.
+///
+/// Reading a std-on pass costs nothing because no verdict is taken from it.
+/// Which arm it resolved to is a fact about that configuration, and
+/// `path_availability_requirement` asks for that item's *alternatives*, not for
+/// the gate of the arm it happened to get.
+///
+/// Records are projected to `CrossCrateItem` as each pass is read, never
+/// collected as `PathRecord`s — same reason as `CrossCrateRef`, and the same
+/// web-sys memory ceiling.
+pub fn paths_from_no_std_passes(
+    ctx: &Context,
+    manifest: &str,
+    hard: Option<&Bool<'_>>,
+    covering_runs: &[CoveringRun],
+    default_output: Option<&FeatureRunOutput>,
+) -> Vec<CrossCrateItem> {
+    let manifest_toml = read_manifest_toml(manifest);
+    let feat_map = downloader::read_local_features(&manifest_toml);
+    let declared = visitor::declared_features(manifest);
+
+    let compiled_no_std = |feats: &[String], defaults_on: bool| -> bool {
+        let Some(h) = hard else {
+            return true;
+        };
+        let mut on: HashSet<String> = feats.iter().cloned().collect();
+        if defaults_on {
+            on.insert("default".to_string());
+        }
+        let on = parser::close_over_local_features(&on, &feat_map);
+        let solver = z3::Solver::new(ctx);
+        solver.assert(h);
+        for feat in &declared {
+            let var = Bool::new_const(ctx, feat.as_str());
+            if on.contains(feat) {
+                solver.assert(&var);
+            } else {
+                solver.assert(&var.not());
+            }
+        }
+        solver.check() == z3::SatResult::Sat
+    };
+
+    /// An item reference is only usable when the plugin recorded where the
+    /// definition is; nothing about the item's *name* says which `#[cfg]` stands
+    /// above it, and guessing is the thing this design exists to avoid.
+    fn project(output: &FeatureRunOutput, out: &mut HashSet<CrossCrateItem>) {
+        for r in &output.records {
+            if r.definition_crate == "LOCAL" || r.is_extern_crate {
+                continue;
+            }
+            let Some(def_span) = r.definition_span.clone() else {
+                continue;
+            };
+            let item = r.path_text.rsplit("::").next().unwrap_or(&r.path_text);
+            if item.is_empty() {
+                continue;
+            }
+            out.insert(CrossCrateItem {
+                dep: r.definition_crate.replace('-', "_"),
+                item: item.to_string(),
+                use_span: r.span.clone(),
+                def_span,
+            });
+        }
+    }
+
+    // The default pass takes no `--no-default-features`; every covering run does.
+    let passes: Vec<(&FeatureRunOutput, bool, &[String])> = covering_runs
+        .iter()
+        .map(|run| (&run.output, false, run.features.as_slice()))
+        .chain(default_output.map(|out| (out, true, [].as_slice())))
+        .collect();
+
+    let mut any_consistent = false;
+    let mut kept: HashSet<CrossCrateItem> = HashSet::new();
+    for (output, defaults_on, feats) in &passes {
+        if compiled_no_std(feats, *defaults_on) {
+            any_consistent = true;
+            project(output, &mut kept);
+        }
+    }
+    if !any_consistent {
+        debug!(
+            "No pass compiled this crate in a no_std configuration; \
+             reading cross-crate item references off the ones that did compile"
+        );
+        for (output, _, _) in &passes {
+            project(output, &mut kept);
+        }
+    }
+    kept.into_iter().collect()
+}
+
+/// The item references whose **use site** a no_std build can actually reach —
+/// `reachable_impl_records` for plain paths.
+///
+/// Deliberately the same test as that one and **not**
+/// `compute_valid_cross_crate_items`'s, which asks whether the gate holds in a
+/// configuration where the no_std condition does *not*. That is the opposite
+/// question, and it is defensible where it is used because its answer only ever
+/// protects a dependency feature from removal. Here the answer *adds* a feature,
+/// and a feature added on the strength of a reference the emitted configuration
+/// never compiles is a dependency the crate did not need.
+pub fn reachable_path_items<'a>(
+    root: &ModNode<'a>,
+    items: &[CrossCrateItem],
+    hard: Option<&Bool<'a>>,
+    ctx: &'a Context,
+) -> Vec<CrossCrateItem> {
+    // Keyed by span, not by item: a `use` that names three items asks the solver
+    // one question, and the answer is a property of where the reference is.
+    let mut by_span: HashMap<&ReadableSpan, bool> = HashMap::new();
+    let mut out: Vec<CrossCrateItem> = Vec::new();
+    for item in items {
+        let reachable = *by_span.entry(&item.use_span).or_insert_with(|| match hard {
+            None => true,
+            Some(h) => match find_condition_for_span(root, &item.use_span, ctx, None) {
+                None => true,
+                Some(c) => {
+                    let s = z3::Solver::new(ctx);
+                    s.assert(&c);
+                    s.assert(h);
+                    s.check() == z3::SatResult::Sat
+                }
+            },
+        });
+        if reachable {
+            out.push(item.clone());
+        }
+    }
+    out.sort_by(|a, b| {
+        (&a.dep, &a.item, &a.use_span.file, a.use_span.start_line).cmp(&(
+            &b.dep,
+            &b.item,
+            &b.use_span.file,
+            b.use_span.start_line,
+        ))
+    });
+    out.dedup_by(|a, b| a.dep == b.dep && a.item == b.item);
+    out
 }
 
 /// The impl records whose **call site** a no_std build can actually reach.
@@ -3337,6 +3491,37 @@ pub fn dep_carries_impl_requirements(
     !edge_chains_to_crates(dep_dir, &foreign).is_empty()
 }
 
+/// Does any of `items` name an item this dependency would have to define —
+/// itself, or through a crate below it? The `db.bin` guard for R34-6, and the
+/// same argument as `dep_carries_impl_requirements`.
+///
+/// `db.bin` answers "what does this dependency need to be no_std", keyed by the
+/// dependency alone, which is parent-independent and sound for that question. A
+/// path requirement is not: `num-traits/libm` is needed because *earcut* names
+/// `num_traits::float::Float`, and a sibling crate that uses only `NumCast`
+/// needs nothing. Without this guard the constraint is derived correctly and
+/// then skipped for every dependency the cache already holds — the analysis
+/// under test silently not running, which is the failure mode `db.bin` has
+/// produced before.
+pub fn dep_carries_path_requirements(
+    dep_dir: &Path,
+    dep_crate: &str,
+    items: &[CrossCrateItem],
+) -> bool {
+    let wanted = dep_crate.replace('-', "_");
+    let mut foreign: HashSet<String> = HashSet::new();
+    for item in items {
+        if item.dep == wanted {
+            return true;
+        }
+        foreign.insert(item.dep.clone());
+    }
+    if foreign.is_empty() {
+        return false;
+    }
+    !edge_chains_to_crates(dep_dir, &foreign).is_empty()
+}
+
 /// What the crate that **defines** a selected impl has to enable for that impl
 /// to exist, in its own feature namespace — with a human-readable label for the
 /// log line.
@@ -3435,6 +3620,251 @@ fn impl_requirement_in_crate<'a>(
     Some((label, requirement))
 }
 
+/// What one cross-crate item requires of the crate that defines it — the
+/// plain-path counterpart of `impl_requirement_in_crate` (R34-6).
+///
+/// Two lookups, and both are needed. `def_span` locates the definition the
+/// compiler *actually resolved to*, which is the only thing that says the item
+/// is in this crate and is gated at all; a name matched across the tree would
+/// answer for a same-named item somewhere else entirely. The **name** then finds
+/// the item's alternatives, and it is their disjunction that becomes the
+/// requirement.
+///
+/// The alternation is the whole point, exactly as it is for impls. The pass that
+/// resolved `num_traits::float::Float` compiled with `std` on and resolved it to
+/// the arm `#[cfg(any(feature = "std", feature = "libm"))]` guards; asserting the
+/// gate of the arm that won would demand `std`, the one thing the run exists to
+/// remove. Here the cfg is itself a disjunction and the requirement comes back
+/// `std ∨ libm`, which is a choice the solve can act on — `libm`.
+///
+/// Nothing is required when:
+///
+/// * the definition is not in this crate's tree — a re-export, a macro-generated
+///   item, an `include!`d file the pass did not walk. There is no gate here to
+///   read, and inventing one from the item's name is the guess this function
+///   exists to avoid;
+/// * the resolved definition is unconditional, or *some* arm of it is. The item
+///   is there whatever the feature set;
+/// * the name matched nothing. A gated definition whose name the tree does not
+///   carry means the two lookups disagree, and the conservative answer is to ask
+///   for nothing rather than to force the arm that happened to win.
+fn path_requirement_in_crate<'a>(
+    ctx: &'a Context,
+    root: &ModNode<'a>,
+    dir: &Path,
+    by_file: &mut HashMap<String, Vec<(String, Bool<'a>)>>,
+    item: &CrossCrateItem,
+) -> Option<(String, Bool<'a>)> {
+    let span = span_in_dep_tree(&item.def_span, dir)?;
+
+    // Present and gated? `ancestors_for_span` answers `None` for a span it
+    // cannot place *and* for one that is unconditional, and both mean the same
+    // thing here: nothing to ask for.
+    let resolved = visitor::ancestors_for_span(root, &span)?;
+    if resolved.is_empty() {
+        return None;
+    }
+
+    // The alternatives, scoped to the file the definition is in. Crate-wide is
+    // the wrong scope: num-traits defines `abs` ungated in `sign.rs` and again
+    // as a method of the `std`/`libm`-gated `Float`, and reading the first as an
+    // arm of the second drops a real requirement.
+    // Cached per file, not recomputed per item. The lookup walks the whole
+    // module tree, and a crate naming a hundred items from one dependency asked
+    // for that walk a hundred times — tween 2.0.4 and liealg 0.4.1 both stopped
+    // finishing inside an hour before this cache existed.
+    let named = by_file.entry(span.file.clone()).or_insert_with(|| {
+        visitor::named_item_conditions_in_file(root, &span.file, ctx)
+    });
+
+    let mut alternatives: Vec<Bool<'a>> = Vec::new();
+    for (name, cond) in named.iter() {
+        if *name != item.item {
+            continue;
+        }
+        // An arm that is always there settles it for every arm.
+        if *cond == Bool::from_bool(ctx, true) {
+            return None;
+        }
+        alternatives.push(cond.clone());
+    }
+
+    if alternatives.is_empty() {
+        return None;
+    }
+    let requirement = Bool::or(ctx, &alternatives.iter().collect::<Vec<_>>()).simplify();
+    if requirement == Bool::from_bool(ctx, true) {
+        return None;
+    }
+    Some((item.item.clone(), requirement))
+}
+
+/// What a dependency's feature set has to provide so the **items** its
+/// dependent's paths resolved to still exist — `impl_availability_requirement`
+/// for plain paths rather than trait obligations (R34-6).
+///
+/// Same three-step as the impl side and the same routing: an item defined in
+/// this dependency is answered from the tree the caller already built, one
+/// defined below it is answered in the defining crate's own namespace and
+/// carried up the edge chain by `translate_across_edge`.
+///
+/// earcut 0.4.4 is the case it exists for. It writes `use
+/// num_traits::float::Float`, num-traits declares `libm` and is perfectly
+/// no_std without it, and its own solve therefore answers `enable: []` — so the
+/// tool emitted `default-features = false` on the edge and lost all 26 targets
+/// to `E0432 unresolved import`, with rustc pointing at the `#[cfg(any(feature =
+/// "std", feature = "libm"))]` above `pub trait Float`. That cfg is the
+/// requirement, it is derivable from num-traits' own source, and this is where
+/// it enters the solve.
+///
+/// Requirements are dropped rather than asserted under the same two conditions
+/// as the impl side: one already satisfied unconditionally, and one no feature
+/// set can meet while keeping the dependency no_std.
+pub fn path_availability_requirement<'a>(
+    ctx: &'a Context,
+    dep_root: &ModNode<'a>,
+    dep_dir: &Path,
+    dep_crate: &str,
+    items: &[CrossCrateItem],
+    dep_hard: Option<&Bool<'a>>,
+) -> Option<Bool<'a>> {
+    if items.is_empty() {
+        return None;
+    }
+    let wanted = dep_crate.replace('-', "_");
+
+    let mut candidates: Vec<(String, &CrossCrateItem, Bool<'a>)> = Vec::new();
+
+    // One hop: the item is defined in this dependency.
+    debug!(
+        "[path_req] {} (wanted={}): {} item(s) in, deps naming: {:?}",
+        dep_crate,
+        wanted,
+        items.len(),
+        items
+            .iter()
+            .map(|i| i.dep.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+    );
+    let mut by_file: HashMap<String, Vec<(String, Bool<'a>)>> = HashMap::new();
+    let mut foreign: BTreeMap<String, Vec<&CrossCrateItem>> = BTreeMap::new();
+    for item in items {
+        if item.dep != wanted {
+            foreign.entry(item.dep.clone()).or_default().push(item);
+            continue;
+        }
+        if let Some((label, requirement)) =
+            path_requirement_in_crate(ctx, dep_root, dep_dir, &mut by_file, item)
+        {
+            candidates.push((label, item, requirement));
+        }
+    }
+
+    // Two hops and further, through the same edge graph the impl side walks.
+    if !foreign.is_empty() {
+        let chains = edge_chains_to_crates(dep_dir, &foreign.keys().cloned().collect());
+        for (definition_crate, group) in &foreign {
+            let Some(chain) = chains.get(&definition_crate.replace('-', "_")) else {
+                continue;
+            };
+            candidates.extend(transitive_path_requirements(ctx, chain, group));
+        }
+    }
+
+    let mut parts: Vec<Bool<'a>> = Vec::new();
+    for (label, item, requirement) in candidates {
+        let s = z3::Solver::new(ctx);
+        s.assert(&requirement);
+        if let Some(h) = dep_hard {
+            s.assert(h);
+        }
+        if s.check() != z3::SatResult::Sat {
+            debug!(
+                "[path_req] {}: no feature set defines `{}` and keeps the crate no_std; \
+                 leaving the requirement out",
+                dep_crate, label
+            );
+            continue;
+        }
+        println!(
+            "[path_req] {} must define `{}` (defined at {}:{}): {:?}",
+            dep_crate, label, item.def_span.file, item.def_span.start_line, requirement
+        );
+        if !parts.contains(&requirement) {
+            parts.push(requirement);
+        }
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+    Some(Bool::and(ctx, &parts.iter().collect::<Vec<_>>()).simplify())
+}
+
+/// The item requirements a crate two or more hops down places on the direct
+/// dependency at the top of `chain` — `transitive_impl_requirements` for plain
+/// paths.
+fn transitive_path_requirements<'a, 'r>(
+    ctx: &'a Context,
+    chain: &[DepHop],
+    items: &[&'r CrossCrateItem],
+) -> Vec<(String, &'r CrossCrateItem, Bool<'a>)> {
+    let Some(last) = chain.last() else {
+        return Vec::new();
+    };
+    let dir = &last.lower_dir;
+    let manifest = dir.join("Cargo.toml").display().to_string();
+    let Some(entry) = parser::crate_entry_file(dir) else {
+        return Vec::new();
+    };
+    let name = entry
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("lib")
+        .to_string();
+
+    // Same erasure policy as any other tree: a `#[cfg]` naming a feature the
+    // manifest does not declare has no solver variable, so it cannot come back
+    // as a requirement.
+    let known_features = visitor::declared_features(&manifest);
+    let mut collector = ModCollector::with_known_features(ctx, known_features);
+    let root = collector.collect(&entry, &name);
+    // Read each edge once — the translation is a property of the edge, not of
+    // the item, and `declared_features` shells out to `cargo metadata`.
+    let hops: Vec<HopContext> = chain.iter().map(HopContext::read).collect();
+
+    let mut out = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut by_file: HashMap<String, Vec<(String, Bool<'a>)>> = HashMap::new();
+    for item in items {
+        let Some((label, requirement)) =
+            path_requirement_in_crate(ctx, &root, dir, &mut by_file, item)
+        else {
+            continue;
+        };
+        if !seen.insert(format!("{label}|{requirement:?}")) {
+            continue;
+        }
+        if let Some(translated) = translate_chain(ctx, requirement, &hops) {
+            out.push((label, *item, translated));
+        }
+    }
+    out
+}
+
+/// Carry a requirement up a chain of edges, innermost first. `None` as soon as
+/// one hop cannot forward it — see `translate_across_edge`.
+fn translate_chain<'a>(
+    ctx: &'a Context,
+    mut requirement: Bool<'a>,
+    hops: &[HopContext],
+) -> Option<Bool<'a>> {
+    for hop in hops.iter().rev() {
+        requirement = translate_across_edge(ctx, &requirement, hop)?;
+    }
+    Some(requirement)
+}
+
 /// One dependency edge, as the two crate directories it joins plus the edge's
 /// own declaration. `dep_key` is the manifest's *key* for the edge — what a
 /// `features = ["key/feat"]` reference has to match, which is not the package
@@ -3489,7 +3919,7 @@ fn transitive_impl_requirements<'a, 'r>(
     let mut out = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for record in records {
-        let Some((label, mut requirement)) =
+        let Some((label, requirement)) =
             impl_requirement_in_crate(ctx, &root, dir, &all_gates, record)
         else {
             continue;
@@ -3499,18 +3929,8 @@ fn transitive_impl_requirements<'a, 'r>(
         if !seen.insert(format!("{label}|{requirement:?}")) {
             continue;
         }
-        let mut translated = true;
-        for hop in hops.iter().rev() {
-            match translate_across_edge(ctx, &requirement, hop) {
-                Some(next) => requirement = next,
-                None => {
-                    translated = false;
-                    break;
-                }
-            }
-        }
-        if translated {
-            out.push((label, *record, requirement));
+        if let Some(translated) = translate_chain(ctx, requirement, &hops) {
+            out.push((label, *record, translated));
         }
     }
     out
@@ -4189,6 +4609,7 @@ pub fn analyze_crate<'a>(
     HashSet<CrossCrateRef>,
     Vec<ReadableSpan>,
     Vec<ImplRecord>,
+    Vec<CrossCrateItem>,
 ) {
     let (root, mut covering_runs, mut hard_constraints, compile_error_constraints, no_std_conds) =
         find_feature_combs_for_all_code(ctx, manifest, crate_name, telemetry);
@@ -4729,6 +5150,23 @@ pub fn analyze_crate<'a>(
         impl_records.len()
     );
 
+    // The same two steps for the items the crate *names* (R34-6), taken here for
+    // the same reason: `final_condition` is the `hard` both tests need and it is
+    // live at this point, and the runs are consumed just below.
+    let observed_paths = paths_from_no_std_passes(
+        ctx,
+        manifest,
+        final_condition.as_ref(),
+        &covering_runs,
+        default_features_output.as_ref(),
+    );
+    let path_items = reachable_path_items(&root, &observed_paths, final_condition.as_ref(), ctx);
+    debug!(
+        "[path_req] {} cross-crate item reference(s) from no_std-consistent passes,          {} at use sites the emitted configuration compiles",
+        observed_paths.len(),
+        path_items.len()
+    );
+
     // Consume the runs rather than cloning out of them: the records are only
     // needed as `CrossCrateRef`, and holding the originals plus a full copy is
     // what made feature-heavy crates (web-sys) exhaust memory here.
@@ -4758,6 +5196,7 @@ pub fn analyze_crate<'a>(
         covering_records,
         unproven,
         impl_records,
+        path_items,
     )
 }
 

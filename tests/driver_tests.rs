@@ -22,6 +22,7 @@ fn span(usage_crate: Option<&str>) -> ReadableSpan {
 
 fn extern_crate_record(alias: &str, target: &str, defining_module: &str) -> PathRecord {
     PathRecord {
+        definition_span: None,
         path_text: alias.to_string(),
         definition_crate: target.to_string(),
         context: PathContext::ImportDeclaration,
@@ -42,6 +43,7 @@ fn usage_record(
     local_route: Option<&str>,
 ) -> PathRecord {
     PathRecord {
+        definition_span: None,
         path_text: path_text.to_string(),
         definition_crate: definition_crate.to_string(),
         context: PathContext::Other,
@@ -124,6 +126,7 @@ fn facade_does_not_overwrite_already_std() {
 #[test]
 fn facade_ignores_use_imports_not_extern_crate_decls() {
     let use_import = PathRecord {
+        definition_span: None,
         path_text: "std::vec::Vec".to_string(),
         definition_crate: "alloc".to_string(),
         context: PathContext::ImportDeclaration,

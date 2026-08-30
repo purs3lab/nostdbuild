@@ -96,6 +96,31 @@ pub struct CrossCrateRef {
     pub span: ReadableSpan,
 }
 
+/// One cross-crate *item* the crate uses, paired with where that item is
+/// defined — the input to `driver::path_availability_requirement` (R34-6).
+///
+/// The plain-path counterpart of `ImplRecord`, and produced the same way: from
+/// the passes whose feature set satisfies the crate's no_std condition — and
+/// from every pass that compiled when not one of them does — then filtered to
+/// the references a no_std build can reach.
+///
+/// A projection, never a `PathRecord` kept alive. web-sys yields ~865k records
+/// per run and the fat ones must be dropped as the runs are consumed; this
+/// carries the four fields the requirement needs and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CrossCrateItem {
+    /// Defining crate, normalized (`-` → `_`) — matches `CrossCrateRef::dep`.
+    pub dep: String,
+    /// Last `::` segment of the path: `Float`, `many0`, `ArrayQueue`.
+    pub item: String,
+    /// Where the crate *named* it. Read only to decide whether a no_std build
+    /// reaches this reference at all — a path under `#[cfg(feature = "std")]`
+    /// demands nothing of a dependency.
+    pub use_span: ReadableSpan,
+    /// Where that item is written, in the defining crate's own source.
+    pub def_span: ReadableSpan,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum PathContext {
     ImportDeclaration, // This path is part of a `use` statement (The Facade Map)
@@ -137,6 +162,20 @@ pub struct PathRecord {
     /// by the plugin, so this stays absent from the plugin's JSON.
     #[serde(default)]
     pub gateway_anchor: Option<ReadableSpan>,
+    /// Where the resolved item is **defined**, in the crate that defines it —
+    /// the plain-path counterpart of [`ImplRecord::impl_span`], and read for the
+    /// same reason (KI-27's requirement, R34-6).
+    ///
+    /// `span` says where the crate *used* the item; this says where the item it
+    /// got is written. Only the latter can be looked up in the defining crate's
+    /// module tree, which is what turns `use num_traits::float::Float` into the
+    /// requirement `std ∨ libm` — the `#[cfg]` above `pub trait Float` — rather
+    /// than into a guess about which feature of `num-traits` might supply it.
+    ///
+    /// `None` when the compiler had no span for the definition, and for
+    /// `extern crate` records, which name a crate rather than an item in one.
+    #[serde(default)]
+    pub definition_span: Option<ReadableSpan>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
