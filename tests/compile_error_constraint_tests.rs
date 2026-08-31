@@ -784,3 +784,155 @@ fn an_exclusive_choice_is_repaired_by_the_no_std_arm() {
         add
     );
 }
+
+// ---------------------------------------------------------------------------
+// The nesting axis — an enclosing `#[cfg]` is part of the same AND
+// ---------------------------------------------------------------------------
+//
+// cfg stripping is outside-in: `#[cfg(A)] mod m { #[cfg(X)] compile_error!(..) }`
+// removes the whole of `m` before `X` is evaluated, so the crate states ¬(A ∧ X)
+// and says nothing about `X` alone. Both collection sites read only the item's
+// own attributes and emitted the fragment ¬X unconditionally — O-15's defect
+// with `mod` in place of a second stacked attribute, and the same price, because
+// a hard constraint here is the seed veto. Left unfixed as a caveat of F18:
+// "A `compile_error!` inside a `#[cfg]`-ed-out module is read as though the
+// module always compiled."
+
+fn nested_mod_info() -> CrateInfo {
+    crate_info(&[
+        ("enable", &[]),
+        ("cannot", &[]),
+        ("wasm", &[]),
+    ])
+}
+
+/// The whole point, at the entry point that fails crates. With `enable` off the
+/// module does not exist, so `cannot` is unconstrained — and `cannot` is the
+/// feature this fixture's no_std condition turns off, so the fragment ¬cannot
+/// used to veto the covering seed and cost the crate every std-off run.
+#[test]
+fn a_nested_compile_error_does_not_constrain_its_gate_being_off() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut collector = ModCollector::new(&ctx);
+    collector.collect(&fixture("nested_mod_shape.rs"), "lib");
+    assert_eq!(
+        collector.hard_constraints.len(),
+        1,
+        "the item states one constraint, got {:?}",
+        collector.hard_constraints
+    );
+    assert!(
+        constraint_admits(
+            &ctx,
+            &collector.hard_constraints,
+            &[("enable", false), ("cannot", true)]
+        ),
+        "with `enable` off the module is stripped and `cannot` is free: {:?}",
+        collector.hard_constraints
+    );
+}
+
+/// The other half: inside the gate the constraint is exactly what the crate
+/// wrote. Without this the fix passes by dropping the constraint altogether.
+#[test]
+fn a_nested_compile_error_still_binds_inside_its_gate() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut collector = ModCollector::new(&ctx);
+    collector.collect(&fixture("nested_mod_shape.rs"), "lib");
+    assert!(
+        !constraint_admits(
+            &ctx,
+            &collector.hard_constraints,
+            &[("enable", true), ("cannot", true)]
+        ),
+        "`enable` ∧ `cannot` is the combination the crate refuses: {:?}",
+        collector.hard_constraints
+    );
+    assert!(
+        !constraint_admits(
+            &ctx,
+            &collector.hard_constraints,
+            &[("enable", true), ("wasm", true)]
+        ),
+        "the other disjunct is refused too: {:?}",
+        collector.hard_constraints
+    );
+    assert!(
+        constraint_admits(
+            &ctx,
+            &collector.hard_constraints,
+            &[("enable", true), ("cannot", false), ("wasm", false)]
+        ),
+        "`enable` alone is legal: {:?}",
+        collector.hard_constraints
+    );
+}
+
+/// The gate on an out-of-line `mod gated;` is the shape most crates have, and
+/// the file it names carries no `#[cfg]` of its own — the declaration is the
+/// only record that its contents are conditional. `ModCollector` walks that file
+/// under an inherited condition, which is why the constraint has to be built
+/// from the condition stack and not from the attributes in hand.
+#[test]
+fn the_gate_on_an_out_of_line_mod_reaches_the_constraint() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut collector = ModCollector::new(&ctx);
+    collector.collect(&fixture("nested_mod_file/lib.rs"), "lib");
+    assert_eq!(
+        collector.hard_constraints.len(),
+        1,
+        "the file one level down still states its constraint, got {:?}",
+        collector.hard_constraints
+    );
+    assert!(
+        constraint_admits(
+            &ctx,
+            &collector.hard_constraints,
+            &[("enable", false), ("cannot", true)]
+        ),
+        "the file is not compiled with `enable` off: {:?}",
+        collector.hard_constraints
+    );
+    assert!(
+        !constraint_admits(
+            &ctx,
+            &collector.hard_constraints,
+            &[("enable", true), ("cannot", true)]
+        ),
+        "and binds when it is: {:?}",
+        collector.hard_constraints
+    );
+}
+
+/// The `Attributes` half of the same fix, end to end: the closed-world final
+/// check reads `compile_error_attrs`, and an unfolded fragment there reports a
+/// violation for a build that compiles clean — the failure mode
+/// `erased_atom_constraint_is_not_reported_as_violated` covers for O-1.
+#[test]
+fn a_nested_constraint_is_not_reported_as_violated_with_its_gate_off() {
+    let v = violations("nested_mod_shape.rs", &nested_mod_info(), &["cannot"], false);
+    assert!(
+        v.is_empty(),
+        "`enable` is off, so the module carrying the `compile_error!` is not \
+         compiled and nothing is violated, got {:?}",
+        v
+    );
+}
+
+/// Control for the above, on the same fixture: with the gate on, the violation
+/// is real and must still be reported.
+#[test]
+fn a_nested_constraint_is_reported_as_violated_inside_its_gate() {
+    let v = violations(
+        "nested_mod_shape.rs",
+        &nested_mod_info(),
+        &["enable", "cannot"],
+        false,
+    );
+    assert_eq!(
+        v.len(),
+        1,
+        "`enable` ∧ `cannot` is the refused combination, got {:?}",
+        v
+    );
+}

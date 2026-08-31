@@ -200,6 +200,35 @@ impl<'a> Visit<'a> for ItemExternCratesAll {
 /// `target_family` one and kept `¬no_std` alone — a fragment asserted where the
 /// rule says say nothing.
 pub fn negated_compile_error_cfg(attrs: &[Attribute]) -> Option<Attribute> {
+    negated_compile_error_cfg_within(&[], attrs)
+}
+
+/// [`negated_compile_error_cfg`], with the `#[cfg]`s of the enclosing modules
+/// folded in.
+///
+/// cfg stripping is outside-in, so the enclosing gates are part of the same AND
+/// the stacked attributes are: `#[cfg(A)] mod m { #[cfg(X)] compile_error!(…) }`
+/// removes the whole of `m` before `X` is looked at, and therefore states
+/// ¬(A ∧ X). Emitting the fragment ¬X is O-15's defect on the nesting axis, and
+/// costs the same — it is a seed veto, so a crate whose no_std solve never
+/// wanted `A` loses every std-off run to a constraint the crate did not write.
+///
+/// Folding the ambient in *before* `parser::compile_error_constraint` is also
+/// what makes O-1's rule apply to it: `#[cfg(unix)] mod m { #[cfg(feature =
+/// "std")] compile_error!(…) }` now drops the whole constraint for naming an
+/// atom policy G erases, instead of asserting the ¬std half of it alone.
+///
+/// `ambient` empty reproduces the un-nested case byte for byte, which matters
+/// because `Attributes::visit_attribute` compares these attributes for equality.
+///
+/// An item with no `#[cfg]` of its own still yields `None` even under a
+/// non-empty `ambient`: an unconditional `compile_error!` inside `#[cfg(A)] mod
+/// m` does state ¬A, but the crate has no such constraint today and
+/// manufacturing one is the over-strong direction — the expensive one.
+pub fn negated_compile_error_cfg_within(
+    ambient: &[TokenStream],
+    attrs: &[Attribute],
+) -> Option<Attribute> {
     let mut streams: Vec<TokenStream> = Vec::new();
     for attr in attrs.iter().filter(|a| a.path().is_ident("cfg")) {
         match &attr.meta {
@@ -207,10 +236,16 @@ pub fn negated_compile_error_cfg(attrs: &[Attribute]) -> Option<Attribute> {
             other => debug!("Unexpected meta type for compile_error cfg: {:?}", other),
         }
     }
-    match streams.len() {
+    if streams.is_empty() {
         // No `#[cfg]` on the item: an unconditional `compile_error!`, or one
-        // carrying only attributes this does not model. Nothing to negate.
-        0 => None,
+        // carrying only attributes this does not model. Nothing to negate, and
+        // the ambient alone does not make one (see above).
+        return None;
+    }
+    // Outermost gate first, so the fold reads in source order.
+    let mut streams: Vec<TokenStream> = ambient.iter().cloned().chain(streams).collect();
+    streams.dedup_by(|a, b| a.to_string() == b.to_string());
+    match streams.len() {
         // `all(X)` and `X` are the same condition; emitting the bare form keeps
         // the single-attribute case — nearly the whole corpus — byte-identical
         // to the attribute every other site in the tool builds, which matters
@@ -331,7 +366,13 @@ impl<'a> Visit<'a> for Attributes {
             // declaration as if the other attributes were not there, and
             // panicked outright on a `compile_error!` carrying attributes none
             // of which is a `cfg`. See `negated_compile_error_cfg` — O-15.
-            let Some(negated) = negated_compile_error_cfg(&i.attrs) else {
+            // …and the `#[cfg]`s of the enclosing inline `mod`s, for the same
+            // reason: cfg stripping is outside-in, so `#[cfg(A)] mod m {
+            // #[cfg(X)] compile_error!(…) }` states ¬(A ∧ X) and the fragment ¬X
+            // is again strictly stronger than the crate wrote. See
+            // `negated_compile_error_cfg_within`.
+            let ambient = self.mod_cfg_stack.clone();
+            let Some(negated) = negated_compile_error_cfg_within(&ambient, &i.attrs) else {
                 debug!("No cfg attribute found for compile_error macro");
                 return;
             };
@@ -346,7 +387,19 @@ impl<'a> Visit<'a> for Attributes {
     fn visit_item_mod(&mut self, i: &'a syn::ItemMod) {
         if i.ident != "test" {
             debug!("Visiting module: {}", i.ident);
+            // Every item inside an inline `mod` is gated by the module's
+            // `#[cfg]`s as well as its own. Only `compile_error!` reads this
+            // stack — the positive gates in `attributes` are collected per item
+            // and per module already, and are consumed as a set rather than as a
+            // path through the tree.
+            let depth = self.mod_cfg_stack.len();
+            for attr in i.attrs.iter().filter(|a| a.path().is_ident("cfg")) {
+                if let Meta::List(list) = &attr.meta {
+                    self.mod_cfg_stack.push(list.tokens.clone());
+                }
+            }
             syn::visit::visit_item_mod(self, i);
+            self.mod_cfg_stack.truncate(depth);
         }
     }
 
@@ -2553,7 +2606,46 @@ impl<'a> Visit<'_> for FileVisitor<'a> {
                     self.known_features.as_deref(),
                 )
             {
-                self.hard_constraints.push(c);
+                // …and the item's own `#[cfg]`s are not the only AND. cfg
+                // stripping is outside-in: an enclosing `#[cfg(A)] mod m` that
+                // does not hold removes the whole subtree *before* the inner cfg
+                // is ever evaluated, so
+                // `#[cfg(A)] mod m { #[cfg(X)] compile_error!(…) }` states
+                // ¬(A ∧ X), not ¬X. Asserting the fragment ¬X is O-15's defect on
+                // the nesting axis instead of the stacking one, and just as
+                // expensive: this is the seed veto, so a crate whose no_std solve
+                // never wanted `A` loses every std-off run to a constraint the
+                // crate did not write. (Left unfixed as a caveat of F18 in
+                // ALL_TARGET_FAILURES.md; no corpus crate is attributed to it
+                // yet — the shape was found by reading, not by a run.)
+                //
+                // `c` is already ¬X, so the constraint is A → ¬X, i.e. `A → c`.
+                // `current_condition()` is the ambient the stack already models:
+                // inline `mod`s, the inherited gate an out-of-line `mod m;` file
+                // is walked under, `cfg_if!` arms, `macro_rules!` gates.
+                //
+                // Where policy G erased a non-feature atom out of the ambient,
+                // `A` is an approximation, and both directions land better than
+                // today: under `all(unix, feature = "x")` the erased `A` is
+                // weaker than the truth, so `A → c` is over-strong but still
+                // strictly weaker than the unconditional `c` this used to push;
+                // under `any(…)` it is stronger, so the constraint comes out
+                // weaker than the truth and a violation is caught after the build
+                // by `violated_compile_error_constraints` and its repair. Only
+                // the over-strong direction is unrecoverable, and no case here
+                // moves toward it.
+                //
+                // An ambient with no own `#[cfg]` is deliberately NOT turned into
+                // ¬A: `negated_compile_error_cfg` returns None there and nothing
+                // is pushed, as before. That would manufacture a constraint the
+                // crate does not have today — the over-strong direction — and it
+                // would bypass `compile_error_constraint`'s erased-atom drop,
+                // which only ever sees the item's own cfg.
+                let constraint = match self.current_condition() {
+                    Some(ambient) => ambient.implies(&c),
+                    None => c,
+                };
+                self.hard_constraints.push(constraint);
             }
         } else {
             // The item's own `#[cfg]` (if any) ANDed with the gate its macro's

@@ -3,7 +3,7 @@
 use anyhow::Context;
 use bincode::{Decode, Encode};
 use lazy_static::lazy_static;
-use proc_macro2::Span;
+use proc_macro2::{Span, TokenStream};
 use serde::{Deserialize, Serialize};
 use std::{fs, path, sync::Mutex};
 use syn::Attribute;
@@ -106,6 +106,20 @@ pub struct Attributes {
     pub hir_spans: Vec<ReadableSpan>,
     /// The current file being parsed.
     pub current_file: String,
+    /// The `#[cfg(...)]` token streams of the inline `mod`s currently being
+    /// walked, outermost first — traversal state, not a result.
+    ///
+    /// cfg stripping is outside-in, so a `compile_error!` nested in
+    /// `#[cfg(A)] mod m { .. }` fires only under `A ∧ <its own cfg>`; without
+    /// the enclosing gates the negation pushed to `compile_error_attrs` is the
+    /// fragment `¬<own cfg>`, which is strictly stronger than anything the crate
+    /// wrote. See `visitor::negated_compile_error_cfg_within`.
+    ///
+    /// Inline modules only: this walk is flat and file-by-file, so the gate on
+    /// an out-of-line `mod m;` (or a file's own `#![cfg]`) is not visible from
+    /// inside `m`'s file. `ModCollector`, which does build the module tree,
+    /// covers that case for the hard constraint.
+    pub(crate) mod_cfg_stack: Vec<TokenStream>,
     /// How many source files `visit` actually read *and* handed to `syn`
     /// successfully.
     ///
