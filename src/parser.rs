@@ -1555,7 +1555,43 @@ pub fn finalize_dep_crate(
     // `disable`, and reading that as proof would switch protection off for every
     // cached dependency.
     let entailed_known = entailed_false.is_some();
-    let removable: Vec<String> = entailed_false.unwrap_or_else(|| disable.clone());
+    let mut removable: Vec<String> = entailed_false.unwrap_or_else(|| disable.clone());
+
+    // And what the crates *below* this one prove about it (R34-20). The lists
+    // above are the dependency's own solve, and for the crates this repairs that
+    // solve is silent: sha3 0.10.8 is `#![no_std]`, uses no std and needs
+    // nothing, so `disable` is empty and its edge kept `default = ["std"]` —
+    // which reaches `crypto-common/std` two hops down and links std there.
+    //
+    // Merged into `removable` rather than into `disable` because that is what it
+    // is: a feature some crate in this subtree cannot be no_std with, proved from
+    // that crate's own source, not one the model happened to leave false
+    // ([[dep-edge-feature-stripping]]). `removable` is dependency-scoped —
+    // `dep_forbidden_features`, the edge's own removals and the default decision
+    // — so nothing here reaches the main crate's feature passes.
+    {
+        let ctx = z3::Context::new(&z3::Config::new());
+        let below =
+            transitive_forbidden_dep_features(&dep.crate_name, &exchange.name_with_version, &ctx);
+        if !below.is_empty() {
+            println!(
+                "[finalize] dep={} must keep {:?} off: a crate below it links std with them on",
+                dep.crate_name,
+                {
+                    let mut v: Vec<_> = below.iter().collect();
+                    v.sort();
+                    v
+                }
+            );
+            for feat in below {
+                if !removable.contains(&feat) {
+                    removable.push(feat);
+                }
+            }
+        }
+    }
+    let removable = removable;
+
     debug!(
         "Dependency {}: enable: {:?}, disable: {:?}, removable: {:?}",
         dep.crate_name, enable, disable, removable
@@ -2594,6 +2630,230 @@ pub fn features_that_must_be_off(
             removable.iter().any(|r| closed.contains(r))
         })
         .collect()
+}
+
+/// The features of one crate that must stay **off** for it to be no_std,
+/// derived from its own source alone — no compile, no solve.
+///
+/// Two shapes carry the answer and a crate can have both:
+///
+/// * `#![cfg_attr(<cond>, no_std)]` — the crate is no_std when `<cond>` holds.
+/// * `#[cfg(<cond>)] extern crate std;` — it links std when `<cond>` holds, so
+///   being no_std is the negation. `crypto-common 0.1.6` is `#![no_std]`
+///   unconditionally and still links std this way under `feature = "std"`,
+///   which is why the crate-root attribute alone is not the answer.
+///
+/// This is the cheap half of what `process_crate` derives for a *direct*
+/// dependency: the same two reads, without `analyze_crate_wrapper`'s plugin
+/// passes. That price difference is the reason it exists — measured on
+/// `ml-dsa 0.0.4`, the walk that already visits every crate in the tree costs
+/// 215 ms, and `recursive_dep_requirement_check`, which computes this the
+/// expensive way after every target has failed, costs 42 s of a 176 s run.
+pub fn std_gate_features(
+    name_with_version: &str,
+    main_name: Option<&str>,
+    ctx: &z3::Context,
+    crate_info: &CrateInfo,
+) -> HashSet<String> {
+    let manifest = determine_manifest_file(name_with_version, main_name);
+    let mut entrypoints: Vec<PathBuf> = Vec::new();
+    crate::visitor::find_entrypoints(&manifest, &mut entrypoints);
+    entrypoints.retain(|p| p.exists());
+    let entry_files = (!entrypoints.is_empty()).then_some(entrypoints.as_slice());
+    let attrs = parse_crate(name_with_version, false, main_name, &[], entry_files);
+
+    let mut equation: Option<Bool> = parse_main_attributes(&attrs, ctx).1;
+
+    let items = parse_item_extern_crates(name_with_version, main_name);
+    for std_attr in get_item_extern_std(&items) {
+        let (eq, _) = parse_main_attributes_direct(&std_attr, ctx);
+        let Some(eq) = eq else {
+            continue;
+        };
+        let neg = eq.not();
+        equation = Some(match equation {
+            Some(prev) => Bool::and(ctx, &[&prev, &neg]),
+            None => neg,
+        });
+    }
+
+    let Some(eq) = equation else {
+        return HashSet::new();
+    };
+    solver::no_std_forced_features(ctx, &eq, crate_info)
+        .1
+        .into_iter()
+        .collect()
+}
+
+/// The edges of `manifest_toml` that are in the *target* build and always
+/// linked, as `(key, spec)` — the subset of [`dependency_edges`] this walk may
+/// reason about.
+///
+/// Two exclusions, and each is a way to be wrong about std:
+///
+/// * `[build-dependencies]`. A build script runs on the host and is *supposed*
+///   to link std; forbidding a feature because a build dependency does would
+///   turn off a default the target build never needed.
+/// * `optional` edges. `find_sibling_crate_dir` searches the whole shared
+///   `<main>_deps/` directory by name, so an optional dependency some *other*
+///   crate pulls in non-optionally is found there whether or not this edge
+///   activates it. Skipping them under-reports — an enabled optional edge's
+///   subtree goes unexamined — which leaves the current behaviour in place,
+///   where over-reporting would take a default off a build that needed it.
+fn linked_dependency_edges(manifest_toml: &toml::Value) -> Vec<(String, toml::Value)> {
+    let mut edges = Vec::new();
+    let mut collect = |table: Option<&toml::Value>| {
+        let Some(table) = table.and_then(|t| t.as_table()) else {
+            return;
+        };
+        for (key, value) in table {
+            let spec = if value.is_table() {
+                value.clone()
+            } else {
+                toml::Value::Table(toml::map::Map::new())
+            };
+            if spec.get("optional").and_then(|o| o.as_bool()) == Some(true) {
+                continue;
+            }
+            edges.push((key.clone(), spec));
+        }
+    };
+    collect(manifest_toml.get("dependencies"));
+    if let Some(targets) = manifest_toml.get("target").and_then(|t| t.as_table()) {
+        for cfg in targets.values() {
+            collect(cfg.get("dependencies"));
+        }
+    }
+    edges
+}
+
+/// How deep below a direct dependency to look for a crate that links std.
+/// The same bound `driver::edge_chains_to_crates` uses, for the same reason:
+/// deep enough for the chains that occur — `sha3 → digest → crypto-common` is
+/// two hops — without walking a whole dependency closure per edge.
+const MAX_FORBIDDEN_DEPTH: usize = 4;
+
+/// The features of a **direct** dependency that must stay off because a crate
+/// *below* it links std when they are on (R34-20).
+///
+/// `solver::disable_in_default` decides `default-features = false` from the
+/// dependency's *own* `disable` list, and that list is empty for exactly the
+/// crates this repairs: `sha3 0.10.8` is `#![no_std]`, uses no std, and needs
+/// nothing — so its edge was left at `default = ["std"]`, and `sha3/std →
+/// digest/std → crypto-common/std` reaches a `#[cfg(feature = "std")] extern
+/// crate std` two hops down. `ml-dsa 0.0.4` fails `E0463` on that chain while
+/// `num-traits` on the same manifest gets `default-features = false`, because
+/// num-traits' own condition says so and sha3's says nothing.
+///
+/// Nothing in the tool composed a feature chain across edges before this:
+/// `solver::all_enabled_for_feat` expands one manifest's table and
+/// `features_that_must_be_off` closes over one manifest. Each hop up is
+/// `local_features_enabling_dep_feature`, the same substitution
+/// `driver::translate_across_edge` makes for an impl requirement, asked in the
+/// forbidding direction.
+///
+/// A hop that reaches nothing ends that chain: a feature no ancestor can turn
+/// off is not one the root manifest can repair, which is
+/// `DEP_TREE_TRANSITIVE_STD`'s boundary and deliberately left there.
+///
+/// Optional edges drop out for free — the download phase reads dependencies
+/// with `skip_optional=true`, so an optional dependency that was never enabled
+/// has no directory and `find_sibling_crate_dir` returns `None`.
+pub fn transitive_forbidden_dep_features(
+    dep_name_with_version: &str,
+    main_name: &str,
+    ctx: &z3::Context,
+) -> HashSet<String> {
+    let dep_manifest = determine_manifest_file(dep_name_with_version, Some(main_name));
+    let Some(dep_dir) = Path::new(&dep_manifest).parent().map(Path::to_path_buf) else {
+        return HashSet::new();
+    };
+
+    let mut forbidden: HashSet<String> = HashSet::new();
+    let mut visited: HashSet<PathBuf> = HashSet::from([dep_dir.clone()]);
+    // Each frontier entry carries the chain of `(upper manifest, edge key)`
+    // hops from the direct dependency down to it, which is what a verdict
+    // found at the bottom is translated back up through.
+    let mut frontier: Vec<(PathBuf, Vec<(String, String)>)> = vec![(dep_dir, Vec::new())];
+
+    for _ in 0..MAX_FORBIDDEN_DEPTH {
+        let mut next: Vec<(PathBuf, Vec<(String, String)>)> = Vec::new();
+        for (dir, chain) in frontier {
+            let manifest = dir.join("Cargo.toml").display().to_string();
+            let manifest_toml = driver::read_manifest_toml(&manifest);
+            for (dep_key, edge) in linked_dependency_edges(&manifest_toml) {
+                let package = edge
+                    .get("package")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or(&dep_key)
+                    .to_string();
+                let Some(child) = find_sibling_crate_dir(&manifest, &package) else {
+                    continue;
+                };
+                if !visited.insert(child.clone()) {
+                    continue;
+                }
+                let mut extended = chain.clone();
+                extended.push((manifest.clone(), dep_key.clone()));
+
+                if crate_dir_is_proc_macro(&child) {
+                    continue;
+                }
+                // `<name>-<version>`, split at the last `-` so a hyphenated
+                // crate name survives — the same read `find_sibling_crate_dir`
+                // does one line up.
+                let Some(child_name) = child
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(|n| n.rsplit_once('-'))
+                    .map(|(stem, version)| format!("{}:{}", stem, version))
+                else {
+                    continue;
+                };
+                let (.., child_info) =
+                    match downloader::gather_crate_info(&child_name, true, Some(main_name)) {
+                        Ok(info) => info,
+                        Err(e) => {
+                            debug!("No crate info for {}: {}", child_name, e);
+                            continue;
+                        }
+                    };
+                for feat in std_gate_features(&child_name, Some(main_name), ctx, &child_info) {
+                    if let Some(at_top) = translate_forbidden_up(&extended, &feat) {
+                        forbidden.extend(at_top);
+                    }
+                }
+                next.push((child, extended));
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    forbidden
+}
+
+/// Re-express "`feat` must be off in the crate at the bottom of `chain`" as a
+/// set of features of the crate at the top.
+///
+/// `None` when some hop reaches nothing: no feature of the upper crate turns
+/// the lower one on, so no edit at the top can turn it off either.
+fn translate_forbidden_up(chain: &[(String, String)], feat: &str) -> Option<HashSet<String>> {
+    let mut current: HashSet<String> = HashSet::from([feat.to_string()]);
+    for (manifest, dep_key) in chain.iter().rev() {
+        let toml = driver::read_manifest_toml(manifest);
+        let mut up: HashSet<String> = HashSet::new();
+        for f in &current {
+            up.extend(local_features_enabling_dep_feature(&toml, dep_key, f));
+        }
+        if up.is_empty() {
+            return None;
+        }
+        current = up;
+    }
+    Some(current)
 }
 
 /// Does enabling `feat` turn on a feature the crate's no_std condition forbids?

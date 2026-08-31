@@ -468,7 +468,19 @@ pub fn final_feature_list_dep(
             panic!("Dependency {} not found in the list of dependencies", name);
         });
 
-    if disable_in_default(dep_crate_info, disable) && dep_crate_info.default_features {
+    // `removable` as well as `disable`, and the difference is the whole of
+    // R34-20. `disable` is what this dependency's own solve left false, which is
+    // empty for a crate that is `#![no_std]` and clean — sha3 0.10.8 — while
+    // `removable` also carries what the crates below it proved
+    // (`parser::transitive_forbidden_dep_features`), closed over this
+    // dependency's own `[features]` table on the way up. Reading only `disable`
+    // is why `ml-dsa 0.0.4` got `default-features = false` on `num-traits`,
+    // whose own condition names `std`, and nothing on `sha3`, whose `default =
+    // ["std"]` links std three hops down.
+    if (disable_in_default(dep_crate_info, disable)
+        || disable_in_default(dep_crate_info, removable))
+        && dep_crate_info.default_features
+    {
         update_default_config = true;
     }
 

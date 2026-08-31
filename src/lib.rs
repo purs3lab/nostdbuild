@@ -460,12 +460,14 @@ pub struct Telemetry {
     pub direct_extern_std_usage_main: bool,
     /// List of dependencies having `extern crate std;` statement
     pub direct_extern_std_usage_deps: Vec<String>,
-    /// If the main crate is unconditional no_std, does it have a dependency which has `extern crate std;` statement
-    pub indirect_extern_std_usage: bool,
-    /// If the above is true, what is the depth of the dependency which has `extern crate std;` statement
+    /// How deep `parse_top_level_externs`' search went. Written on **every**
+    /// exit, including the one that found nothing, so a non-zero value says the
+    /// search ran and not that a usage exists — 1519 rows of the corpus carry
+    /// one against 369 that name a crate. Read `indirect_extern_std_usage_crate`
+    /// for the finding.
     pub indirect_extern_std_usage_depth: u32,
-    /// If the above is true, what is the name of the dependency which has `extern crate std;` statement.
-    /// This will be None if the crate is using conditional no_std or is unconditional no_std without any extern crate std usage
+    /// The dependency below this crate that carries a cfg-gated `extern crate
+    /// std`, when `parse_top_level_externs` found one. `None` when it did not.
     pub indirect_extern_std_usage_crate: Option<String>,
     /// Does the main crate import files conditionally using `cfg` attributes
     pub conditional_file_import_main: bool,
