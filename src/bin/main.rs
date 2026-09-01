@@ -514,6 +514,17 @@ fn run() -> anyhow::Result<()> {
         &mut exchange.telemetry,
     );
 
+    // The feature sets that compiled bare-metal for the MAIN crate, taken now.
+    // `analyze_crate` runs again for every dependency and clears the record each
+    // time, so reading it after the dependency passes would hand the retry below
+    // the last dependency's answer — KI-28's mistake, one flag down. Cheap: one
+    // clone of a handful of short vectors.
+    let main_bare_metal_sets = driver::bare_metal_compiling_sets();
+    debug!(
+        "Feature sets that compiled bare-metal for {}: {:?}",
+        exchange.name_with_version, main_bare_metal_sets
+    );
+
     // What this crate's dependencies demand of its feature set (R31-4). The
     // translation existed and only the covering runs read it: glamour 0.16.0's
     // log says `Dependency glam's compile_error constrains this crate: (default
@@ -1259,6 +1270,127 @@ fn run() -> anyhow::Result<()> {
                     !disable_default,
                 );
                 println!("Final args after compile_error repair: {:?}", final_args);
+            }
+        }
+    }
+
+    // KI-30: the emitted configuration is one the crate has never been compiled
+    // in, and nothing asked whether it can be.
+    //
+    // `driver::discover_build_enablers` is the search for "a feature this crate
+    // does not build without", and during analysis it is gated on
+    // `CRATE_REACHED_BARE_METAL` — has this crate ever compiled bare-metal. That
+    // is a fact about *a* configuration. mavlink-core 0.13.1 selects its IO
+    // prelude by feature: of 13 plugin passes exactly one compiles
+    // (`--features embedded-hal-02`), which closes the gate, and the solve then
+    // emits `std`, `embedded` and `embedded-hal-02` all off — a set with no arm
+    // at all, 9 × `E0405 cannot find trait Read`, with rustc naming both
+    // alternatives in its notes.
+    //
+    // The set that was emitted is only known here, so the question is asked here,
+    // and only after that set has failed on every target — the same shape as the
+    // three retries above. `set_is_witnessed` is the cheap half: when some set
+    // that compiled bare-metal is a subset of what shipped, this build stands
+    // where a build has stood before and the failure is somewhere else, so not a
+    // probe is spent. Unwitnessed, the search costs at most `MAX_ENABLER_PROBES`
+    // plugin passes pinned to one triple, and the answer is kept only if the
+    // rebuild succeeds.
+    if no_std && !one_succeeded {
+        // What was actually on in the failed build: `main_features` closed over
+        // the crate's own table, plus `default` only when defaults are not
+        // disabled. `main_features` rather than `combined_features` because the
+        // latter carries the `<dep>/<feat>` entries too and the question is which
+        // of *this* crate's features were on; an earlier retry that failed left
+        // it as it shipped. And deliberately not
+        // `active_features_for_pin_set`, which inserts `default` unconditionally
+        // — that widening is right for the question R34-1 asks (what may be on at
+        // any later point) and wrong for this one, which is a statement about the
+        // build that just failed.
+        let mut seed: HashSet<String> = main_features.iter().cloned().collect();
+        if !disable_default {
+            seed.insert("default".to_string());
+        }
+        let selection = parser::close_over_local_features(&seed, &exchange.crate_info.features);
+
+        if driver::set_is_witnessed(&main_bare_metal_sets, &selection) {
+            debug!("Emitted feature set is one a bare-metal build has already compiled in");
+        } else {
+            // What the crate's own no_std condition entails false, plus every
+            // feature that enabling would turn one of those on. Deliberately
+            // *not* the solve's `disable` list: that is "the model left it
+            // false", which mixes proof with don't-care, and the enabler is
+            // exactly the kind of feature no constraint mentions — excluding
+            // every unchosen feature would exclude the answer. `std` is normally
+            // forbidden here anyway, and where it is not the oracle still rules
+            // it out: a configuration that links std does not compile for a
+            // bare-metal target, and only a bare-metal success counts.
+            let exclude = parser::features_that_must_be_off(
+                &exchange.crate_info.features,
+                &exchange.main_no_std_forbidden,
+            );
+
+            let found = {
+                let _t = timing::scope("emitted_set_enablers", &exchange.name_with_version);
+                driver::enablers_for_selection(
+                    &main_manifest,
+                    &exchange.name_with_version,
+                    &selection,
+                    &exclude,
+                )
+            };
+            if !found.is_empty() {
+                let mut repaired = main_features.clone();
+                repaired.extend(found.iter().cloned());
+                repaired.sort();
+                repaired.dedup();
+                let (repair_args, repair_combined, repair_len) =
+                    assemble_final_args(disable_default, &repaired, &deps_args);
+                println!(
+                    "Build failed for every target and no bare-metal build of this crate \
+                     stands on the emitted set; retrying with {:?}: {:?}",
+                    found, repair_args
+                );
+                // A scout target is enough: the trials that produced `found`
+                // already compiled the crate for a bare-metal triple, so what is
+                // in question is whether the whole verification build agrees, not
+                // which triple.
+                let scout = compiler::scout_target(&stats, &before_build);
+                if compiler::try_alternative(
+                    &exchange.name_with_version,
+                    &target,
+                    &repair_args,
+                    "retry_with_emitted_set_enablers",
+                    &before_build,
+                    scout.as_deref(),
+                    &mut stats,
+                    &mut exchange.telemetry,
+                )? {
+                    // The DB hands this crate's features to every later build that
+                    // depends on it, so a feature the retry proved load-bearing has
+                    // to change sides there too.
+                    for feat in &found {
+                        if !enable.contains(feat) {
+                            enable.push(feat.clone());
+                        }
+                    }
+                    disable.retain(|feat| !found.contains(feat));
+                    exchange.telemetry.emitted_set_enabler_features = found;
+                    final_args = repair_args;
+                    combined_features = repair_combined;
+                    final_features_len = repair_len;
+                    one_succeeded = true;
+                    // Re-derived from the set that shipped, like the repair above:
+                    // only the check gets to make a statement about the emitted
+                    // config.
+                    violated = parser::violated_compile_error_constraints(
+                        &ctx,
+                        &main_attributes,
+                        &exchange.crate_info,
+                        &emitted_features(&combined_features),
+                        !disable_default,
+                    );
+                    println!("Final args after adding the build enabler(s): {:?}", final_args);
+                }
             }
         }
     }

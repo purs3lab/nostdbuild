@@ -644,6 +644,15 @@ pub struct Telemetry {
     /// the repaired build failed too — in the last two cases
     /// `compile_error_constraint_unsatisfied` still names the crate.
     pub compile_error_repair_features: Vec<String>,
+    /// Features added after a build that failed on every target because the
+    /// emitted configuration was one the crate has never been compiled in, and
+    /// kept because the rebuild then succeeded (`driver::enablers_for_selection`,
+    /// KI-30). Distinct from `build_enabler_features`, which is the *analysis*
+    /// -time search over a solved base: this one starts from the set that
+    /// actually shipped. Empty when the emitted set was witnessed by a
+    /// bare-metal-compiling run, when no candidate makes the crate build, or when
+    /// the repaired build failed too.
+    pub emitted_set_enabler_features: Vec<String>,
     /// Did we remove any unnecessary features from main crate features that main enabled for any of its dependencies
     pub unnecessary_features_removed: Vec<(String, bool)>,
     /// Features that were moved for the above case

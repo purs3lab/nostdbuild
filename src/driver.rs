@@ -66,6 +66,24 @@ static LAST_GOOD_TARGET: Mutex<Option<&'static str>> = Mutex::new(None);
 /// into this one. Set wherever `LAST_GOOD_TARGET` is.
 static CRATE_REACHED_BARE_METAL: Mutex<bool> = Mutex::new(false);
 
+/// The feature sets that compiled for a bare-metal target, for the crate
+/// *currently* under analysis.
+///
+/// [`CRATE_REACHED_BARE_METAL`] is the same evidence collapsed to a bool, and
+/// collapsing it is what KI-30 is: "this crate compiled bare-metal once" is a
+/// fact about *a* configuration, and the configuration the solve goes on to
+/// emit is usually a different one. mavlink-core 0.13.1 is the shape — 13
+/// plugin passes, exactly one of them (`--features embedded-hal-02`) compiles,
+/// and the emitted set contains none of `std`, `embedded` or `embedded-hal-02`,
+/// which leaves the crate with no IO prelude at all (9 × `E0405 cannot find
+/// trait Read`). Keeping the sets lets a later stage ask the question the bool
+/// cannot answer: *is the set about to be emitted one this crate has actually
+/// compiled in?*
+///
+/// Written and reset wherever `CRATE_REACHED_BARE_METAL` is, and read only
+/// through [`bare_metal_compiling_sets`].
+static CRATE_BARE_METAL_SETS: Mutex<Vec<Vec<String>>> = Mutex::new(Vec::new());
+
 /// Does the crate under analysis declare `#![no_std]` on a *target* predicate
 /// that the host does not satisfy?
 ///
@@ -108,6 +126,42 @@ pub fn reset_target_cache() {
     *LAST_GOOD_TARGET.lock().unwrap() = None;
     *HOST_NOT_NO_STD.lock().unwrap() = false;
     *CRATE_REACHED_BARE_METAL.lock().unwrap() = false;
+    CRATE_BARE_METAL_SETS.lock().unwrap().clear();
+}
+
+/// The feature sets that compiled for a bare-metal target for the crate last
+/// analysed. Empty when none did — the case the enabler search already covers.
+pub fn bare_metal_compiling_sets() -> Vec<Vec<String>> {
+    CRATE_BARE_METAL_SETS.lock().unwrap().clone()
+}
+
+/// Is `selection` a configuration this crate has actually compiled in?
+///
+/// True when some set that compiled bare-metal is a *subset* of the selection:
+/// everything that build had, this one has too. Not a proof that the selection
+/// compiles — features are not monotone, and `embedded` + `embedded-hal-02`
+/// together are a `compile_error!` in the crate this was written for — but it
+/// is the honest cheap answer to "has the crate been seen standing on these
+/// features", and it is used only to decide whether spending builds on a search
+/// is worth it. A crate with no compiling set is never witnessed.
+///
+/// ⚠ Reads the live per-crate record, so it answers for **whichever crate was
+/// analysed last** — `analyze_crate` runs for every dependency too and clears
+/// the record each time. Only a caller that runs immediately after the crate's
+/// own analysis may use it; `bin/main` asks about the main crate after every
+/// dependency has been analysed, so it snapshots
+/// [`bare_metal_compiling_sets`] first and calls [`set_is_witnessed`]. That
+/// distinction is KI-28 one flag down.
+pub fn selection_is_witnessed(selection: &HashSet<String>) -> bool {
+    set_is_witnessed(&CRATE_BARE_METAL_SETS.lock().unwrap(), selection)
+}
+
+/// The subset rule of [`selection_is_witnessed`], over an explicit list of
+/// compiling sets so it can be tested without a compile.
+pub fn set_is_witnessed(compiled_sets: &[Vec<String>], selection: &HashSet<String>) -> bool {
+    compiled_sets
+        .iter()
+        .any(|compiled| compiled.iter().all(|f| selection.contains(f)))
 }
 
 /// The `--target` the user pinned on the command line, if any. When set, the
@@ -1543,6 +1597,12 @@ pub fn run_rustc_plugin_pass_with(
             // once, and a search for the feature it cannot build without would be
             // searching for something that does not exist.
             *CRATE_REACHED_BARE_METAL.lock().unwrap() = true;
+            // …and the set it compiled with, which is the half the bool throws
+            // away (KI-30). `enable` is exactly what went on `--features`.
+            CRATE_BARE_METAL_SETS
+                .lock()
+                .unwrap()
+                .push(enable.to_vec());
             debug!("cargo hir succeeded for {} on target {}", crate_name, t);
         }
         None if std_inconclusive && host_not_no_std => debug!(
@@ -2267,6 +2327,7 @@ pub fn find_feature_combs_for_all_code<'a>(
     // linked once is still the right first guess, while "has *this* crate reached
     // bare metal" has to start false for every crate — main and dependency alike.
     *CRATE_REACHED_BARE_METAL.lock().unwrap() = false;
+    CRATE_BARE_METAL_SETS.lock().unwrap().clear();
 
     for entry_path in &entrypoints {
         if !entry_path.exists() {
@@ -4370,6 +4431,96 @@ pub fn discover_build_enablers<'a>(
         candidates
     );
 
+    search_enablers(manifest, crate_name, &base, candidates, &declared)
+}
+
+/// Features the *emitted* configuration cannot build bare-metal without (KI-30).
+///
+/// [`discover_build_enablers`] runs during analysis, gated on
+/// [`CRATE_REACHED_BARE_METAL`] — "has this crate ever compiled bare-metal". That
+/// is a fact about *a* configuration, and the one the solve goes on to emit is
+/// usually a different one: mavlink-core 0.13.1 compiles with
+/// `--features embedded-hal-02`, which closes the gate, and then ships a set with
+/// no IO prelude at all. This is the same search asked about the set that was
+/// actually emitted, and it is called only after that set has failed to build on
+/// every target — so the evidence is a real build, not a prediction, and a crate
+/// that builds today never reaches it.
+///
+/// `selection` is what went on `--features`, already closed over the crate's own
+/// feature table (and `default` when defaults are on) — the trials pass
+/// `--no-default-features`, so a default that is on has to be named.
+/// `exclude` is what the solve settled and this search must not undo: the
+/// features it proved false, and the ones the crate's no_std condition forbids.
+/// `std` is normally in there, and where it is not, the oracle still rules it
+/// out — a configuration that links std does not compile for a bare-metal
+/// target, and only a bare-metal success counts (`allow_host_fallback = false`).
+///
+/// Returns the empty vector when there is nothing to try or nothing works, so a
+/// caller can treat "no answer" and "no search" alike.
+pub fn enablers_for_selection(
+    manifest: &str,
+    crate_name: &str,
+    selection: &HashSet<String>,
+    exclude: &HashSet<String>,
+) -> Vec<String> {
+    // The tool's own three bookkeeping features are in the rewritten manifest and
+    // `declared_features` reports them, but none of them is an answer to "what
+    // does this crate need to build". `custom_default_features` is the parked
+    // list of edge features a *proof* took off the no_std path — turning it back
+    // on is undoing the one edit this tool makes on evidence — and
+    // `custom_no_std_feature_enabled` is already on wherever it belongs (R34-15
+    // has five rows where it is what breaks the build). Excluded by name so they
+    // do not cost trials either; sma-proto 1.1.1 spent three of its six on them.
+    const SYNTHETIC: [&str; 3] = [
+        consts::CUSTOM_FEATURES_DISABLED,
+        consts::CUSTOM_FEATURES_ENABLED,
+        consts::DEP_UNNECESSARY_FEATURES,
+    ];
+    let declared = visitor::declared_features(manifest);
+    let mut candidates: Vec<String> = declared
+        .iter()
+        .filter(|f| !selection.contains(*f) && !exclude.contains(*f))
+        .filter(|f| !SYNTHETIC.contains(&f.as_str()))
+        .cloned()
+        .collect();
+    candidates.sort();
+    if candidates.is_empty() {
+        debug!("[enablers] emitted set has no unselected feature to try");
+        return Vec::new();
+    }
+
+    let base: Vec<String> = {
+        let mut b: Vec<String> = selection.iter().cloned().collect();
+        b.sort();
+        b
+    };
+    debug!(
+        "[enablers] emitted set {:?} built on no target; trying {} candidate feature(s): {:?}",
+        base,
+        candidates.len(),
+        candidates
+    );
+    let (found, _adopted) = search_enablers(manifest, crate_name, &base, candidates, &declared);
+    found
+}
+
+/// The compile-and-shrink half of [`discover_build_enablers`], over a base set
+/// and candidate list the caller has already chosen.
+///
+/// Split out so the same search can be run from a set that is *not* a Z3 model.
+/// [`discover_build_enablers`] solves its base out of the crate's constraints
+/// during analysis, which is the only set available then; the post-failure retry
+/// in `bin/main` starts from the configuration that was actually emitted and
+/// actually failed (KI-30). Everything below — the all-on trial, the
+/// optional-dep retry, the halving and removal passes, the adopted run — is
+/// common to both and cares only that `base` compiles or does not.
+fn search_enablers(
+    manifest: &str,
+    crate_name: &str,
+    base: &[String],
+    candidates: Vec<String>,
+    declared: &HashSet<String>,
+) -> (Vec<String>, Option<CoveringRun>) {
     let budget = std::cell::Cell::new(MAX_ENABLER_PROBES);
     // Only the first trial is allowed to sweep `TARGET_LIST` looking for a triple
     // that works; after that every trial is pinned to one. A trial that succeeds
@@ -4400,7 +4551,7 @@ pub fn discover_build_enablers<'a>(
             (true, None) => Some(consts::TARGET_LIST[0]),
         };
         pinned.set(true);
-        let mut feats = base.clone();
+        let mut feats = base.to_vec();
         feats.extend(extra.iter().cloned());
         let trial = timing::scope("enabler_trial", extra.join(","));
         let outcome = run_rustc_plugin_pass_with(manifest, crate_name, &feats, None, false, pin);
@@ -4449,7 +4600,7 @@ pub fn discover_build_enablers<'a>(
         let dep_adding = std::fs::read_to_string(manifest)
             .ok()
             .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
-            .map(|toml| downloader::dep_adding_features(&toml, &declared))
+            .map(|toml| downloader::dep_adding_features(&toml, declared))
             .unwrap_or_default();
         let no_new_crates: Vec<String> = candidates
             .iter()

@@ -14,6 +14,7 @@
 //! `driver::discover_build_enablers` searches for such a feature and pins it for
 //! the probes and for the emitted config.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -438,4 +439,91 @@ fn a_warm_target_cache_from_an_earlier_crate_does_not_skip_the_search() {
         "no span should be left unproven once the compiling run is counted: {unproven:?}"
     );
     assert_eq!(telemetry.unproven_std_spans, 0);
+}
+
+/// KI-30: the analysis-time gate asks whether the crate has *ever* compiled
+/// bare-metal, and the configuration the solve emits is a different one.
+///
+/// `build_enabler_no_arm` compiles for a bare-metal target with `embedded` on,
+/// so `CRATE_REACHED_BARE_METAL` is set and the search is skipped — that half is
+/// today's behaviour and this test pins it, because the repair deliberately does
+/// not widen the gate. What the repair adds is the evidence the bool throws
+/// away: the *set* that compiled. With it, the configuration the solve reaches
+/// (`std` off, `embedded` off, which has no `Text` at all) is visibly one no
+/// build has ever stood on, and the same search asked about that set returns the
+/// arm.
+#[cargo_test]
+fn the_emitted_set_is_not_the_set_that_compiled() {
+    let _serial = isolated();
+    let (_p, manifest) = load_fixture("build_enabler_no_arm");
+
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut telemetry = Telemetry::default();
+    let _ = analyze_crate(&ctx, &manifest, "build_enabler_no_arm", &mut telemetry);
+
+    assert!(
+        telemetry.build_enabler_features.is_empty(),
+        "the crate reached bare metal, so the analysis-time search is skipped — \
+         the seam KI-30 names, not a regression: {:?}",
+        telemetry.build_enabler_features
+    );
+
+    let compiled = nostd::driver::bare_metal_compiling_sets();
+    assert!(
+        compiled.iter().any(|set| set.contains(&"embedded".to_string())),
+        "`embedded` is the only configuration that compiles bare metal, so it \
+         must be the set on record: {compiled:?}"
+    );
+
+    // The set the solve emits: `std` off (the crate's no_std condition), and
+    // nothing else, because no `#[cfg]` of this crate mentions `embedded`.
+    let emitted: HashSet<String> = HashSet::new();
+    assert!(
+        !nostd::driver::selection_is_witnessed(&emitted),
+        "no bare-metal build of this crate stands on the empty set: {compiled:?}"
+    );
+
+    // And the search, asked about that set instead of a solved base, finds the
+    // arm. `std` is excluded the way the retry excludes the solve's `disable`
+    // list; it would fail the bare-metal oracle anyway.
+    let exclude: HashSet<String> = HashSet::from(["std".to_string(), "default".to_string()]);
+    let found = nostd::driver::enablers_for_selection(
+        &manifest,
+        "build_enabler_no_arm",
+        &emitted,
+        &exclude,
+    );
+    assert_eq!(
+        found,
+        vec!["embedded".to_string()],
+        "the emitted set has no `Text` at all and `embedded` is what supplies it"
+    );
+}
+
+/// The cheap half of the check, without a compile: a selection is witnessed when
+/// some set that compiled is a *subset* of it — everything that build had, this
+/// one has too.
+#[cargo_test]
+fn witnessed_is_subset_not_equality() {
+    let compiled = vec![vec!["embedded".to_string()]];
+    let set = |xs: &[&str]| -> HashSet<String> { xs.iter().map(|s| s.to_string()).collect() };
+
+    assert!(
+        nostd::driver::set_is_witnessed(&compiled, &set(&["embedded", "tcp", "udp"])),
+        "a superset of a compiling set is witnessed: the emitted config is \
+         minimised and never equals a covering run"
+    );
+    assert!(
+        !nostd::driver::set_is_witnessed(&compiled, &set(&["tcp", "udp"])),
+        "mavlink-core's shape — the one set that compiled had `embedded-hal-02` \
+         and the emitted set has none of the arms"
+    );
+    assert!(
+        !nostd::driver::set_is_witnessed(&[], &set(&["anything"])),
+        "a crate that never compiled bare metal witnesses nothing"
+    );
+    assert!(
+        nostd::driver::set_is_witnessed(&[vec![]], &set(&[])),
+        "the featureless build compiling witnesses the featureless selection"
+    );
 }

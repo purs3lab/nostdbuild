@@ -1,0 +1,18 @@
+[package]
+name = "build_enabler_no_arm"
+description = "A crate whose only IO prelude is behind a feature — with every arm off it has no such name at all"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "build_enabler_no_arm"
+
+# mavlink-core 0.13.1 in miniature. `std` and `embedded` are the two arms that
+# define `Text`; exactly one of them compiles for a bare-metal target, and
+# neither is forced by anything the solve can see, because the *use* of `Text`
+# is ungated and only its definition is behind a `#[cfg]`.
+[features]
+default = ["std"]
+std = []
+embedded = []
