@@ -84,7 +84,7 @@ fn parse_file_lenient(path: &Path) -> syn::File {
             return empty;
         }
     };
-    match syn::parse_file(&content) {
+    match crate::with_syn_stack(|| syn::parse_file(&content)) {
         Ok(f) => f,
         Err(e) => {
             note_syn_failure(path, &e);
@@ -2863,7 +2863,7 @@ impl<'a> ModCollector<'a> {
             false,
             self.known_features.clone(),
         );
-        visitor.visit_file(&syntax);
+        crate::with_syn_stack(|| visitor.visit_file(&syntax));
         let (
             local_items,
             mut children,
@@ -3019,7 +3019,7 @@ impl<'a> ModCollector<'a> {
                 child.externally_gated,
                 known_features.clone(),
             );
-            fv.visit_file(&syntax);
+            crate::with_syn_stack(|| fv.visit_file(&syntax));
             let (
                 local_items,
                 mut grandchildren,

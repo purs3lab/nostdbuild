@@ -26,6 +26,42 @@ pub mod hir_driver;
 use crate::types::*;
 use std::collections::{HashMap, HashSet};
 
+/// Stack the recursive-descent passes over a `syn` tree are guaranteed to get.
+///
+/// `syn` parses and `syn::visit` walks by recursive descent, so depth in a type
+/// tree is depth on the stack. Generated files reach depths no hand-written
+/// source does — `typenum`'s `src/gen/consts.rs` is 280 KB of
+/// `UInt<UInt<UInt<…>>>` aliases nested hundreds deep, and it overflows a
+/// 2 MiB stack in a debug build (KI-32). Size is not the predictor: typenum's
+/// *larger* `tests/generated.rs` parses fine.
+///
+/// Without this the depth the tool can absorb is whatever stack the calling
+/// thread happens to have — 8 MiB on the main thread, 2 MiB on a libtest
+/// thread — and a stack overflow is a process abort, so `catch_unwind` cannot
+/// turn it into the "treat the file as empty" miss that
+/// [`visitor::parse_file_lenient`] records. Skipping big files instead would be
+/// wrong twice over: wrong predictor, and a silently dropped file becomes a
+/// false positive downstream.
+const SYN_STACK_SIZE: usize = 64 * 1024 * 1024;
+
+/// Grow before dropping below this much headroom. Larger than any stack a
+/// caller is likely to supply, so the first `with_syn_stack` on a thread
+/// switches to a `SYN_STACK_SIZE` segment and every nested one is a cheap
+/// pointer compare inside it.
+const SYN_STACK_RED_ZONE: usize = 16 * 1024 * 1024;
+
+/// Run `f` with at least [`SYN_STACK_RED_ZONE`] bytes of stack, switching to a
+/// fresh segment on the *same* thread if the current one is short.
+///
+/// Same-thread matters: `syn::File` holds `proc_macro2::Span`, which is
+/// `!Send`, so a parsed tree cannot be handed back from a worker thread. Wrap
+/// every `syn::parse_file` and every `Visit::visit_file` over a syn tree; hoist
+/// one call as high as convenient (`bin/main.rs` does) so a whole run pays for
+/// a single segment.
+pub fn with_syn_stack<R>(f: impl FnOnce() -> R) -> R {
+    stacker::maybe_grow(SYN_STACK_RED_ZONE, SYN_STACK_SIZE, f)
+}
+
 lazy_static! {
     // This is a list of all dependencies for a crate.
     // TODO: Convert this to a variable passed between functions instead of a global variable

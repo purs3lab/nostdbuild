@@ -42,6 +42,7 @@ rustc_plugin = "=0.15.2-nightly-2026-05-01"
 which = "8.0.0"
 cargo-test-support = "0.9.1"
 strsim = "0.11.1"
+stacker = "0.1.24"
 uuid = {version = "1.23.1", features = ["v4"] }
 itertools = "0.14.0"
 

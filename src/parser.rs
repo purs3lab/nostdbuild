@@ -6128,7 +6128,7 @@ where
                 continue;
             }
         };
-        let file = match syn::parse_file(&content) {
+        let file = match crate::with_syn_stack(|| syn::parse_file(&content)) {
             Ok(file) => file,
             Err(e) => {
                 debug!("Failed to parse file {:?}: {}", filename, e);
@@ -6146,7 +6146,7 @@ where
             filename
         };
         parsed_count += 1;
-        visiter_type.visit_file(&file);
+        crate::with_syn_stack(|| visiter_type.visit_file(&file));
         if let Some(spans) = visiter_type.get_spans() {
             // Newly added spans will have None as filename.
             // We fill it with the current filename.

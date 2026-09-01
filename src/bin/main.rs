@@ -286,6 +286,13 @@ fn process_dep_crate_wrapper(
 }
 
 fn main() -> anyhow::Result<()> {
+    // One stack segment for the whole run: every `syn` parse and visit below
+    // asks for the same headroom, and inside this call each of those asks is a
+    // pointer compare rather than another allocation. See `with_syn_stack`.
+    nostd::with_syn_stack(run)
+}
+
+fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     env_logger::init();
     // Starts the clock every later scope is measured against. `AllStats::dump`
