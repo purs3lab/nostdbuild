@@ -228,3 +228,112 @@ fn a_call_path_under_a_feature_that_is_off_does_not_pin_its_dep() {
         "with the gating feature off nothing names the dep, got {pinned:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// R34-1: the set the pin question is asked against
+// ---------------------------------------------------------------------------
+//
+// Every test above hands `deps_pinned_by_active_use` an active set built by
+// hand, so none of them can see the defect that actually shipped: the set
+// `bin/main.rs` builds is the solve's answer at one instant, and
+// `process_dep_crate_wrapper` grows it afterwards. `final_feature_list_main`,
+// asked what a *dependency* forbids, re-derives the main crate's `default` list
+// and hands back members the main solve had just disabled — so any member of
+// `default` can be on by the time `minimize` consults the set, and the set has
+// to say so. `parser::active_features_for_pin_set` is that rule.
+
+/// bevy_input-0.16.0's feature table, in the shape `CrateInfo` carries: `default`
+/// lists `smol_str` by bare name, and `smol_str` both activates the optional dep
+/// and forwards to another crate. Mirrors `MANIFEST` above.
+fn feature_table() -> Vec<(String, nostd::types::TupleVec)> {
+    vec![
+        (
+            "default".to_string(),
+            vec![
+                ("std".to_string(), "std".to_string()),
+                ("smol_str".to_string(), "smol_str".to_string()),
+            ],
+        ),
+        (
+            "std".to_string(),
+            vec![("chrono".to_string(), "chrono".to_string())],
+        ),
+        (
+            "smol_str".to_string(),
+            vec![
+                ("smol_str".to_string(), "dep:".to_string()),
+                ("bevy_reflect".to_string(), "smol_str".to_string()),
+            ],
+        ),
+        (
+            "async".to_string(),
+            vec![(
+                "embedded-hal-async".to_string(),
+                "embedded-hal-async".to_string(),
+            )],
+        ),
+    ]
+}
+
+/// The regression itself. bevy_input's solve turned `smol_str` off, so
+/// `main_features` is `["libm"]` when the pin set is computed — but `smol_str`
+/// is in `default`, `bevy_utils`' pass re-derives `default` and puts it back, and
+/// the emitted command line carries it. The set must say `smol_str` is reachable
+/// even though the solve of the moment says it is off, or the dep is unlinked out
+/// from under an import that does compile.
+#[test]
+fn a_default_member_the_solve_turned_off_is_still_reachable() {
+    let active = nostd::parser::active_features_for_pin_set(
+        &["libm".to_string()],
+        &feature_table(),
+    );
+
+    assert!(
+        active.contains("smol_str"),
+        "`smol_str` is in `default`, so a dependency pass can re-add it after the pin \
+         set is computed; it must count as active, got {active:?}"
+    );
+}
+
+/// And the consequence, through the real predicate: with that set the dependency
+/// is pinned, so `minimize` is not free to delete `dep:smol_str` out of the
+/// feature that is about to go out on the command line.
+#[test]
+fn the_reachable_default_member_pins_its_dep() {
+    let active = nostd::parser::active_features_for_pin_set(
+        &["libm".to_string()],
+        &feature_table(),
+    );
+    let pinned = pins(&active);
+
+    assert!(
+        pinned.contains("smol_str"),
+        "R34-1: `#[cfg(feature = \"smol_str\")] use smol_str::SmolStr` compiles under the \
+         emitted configuration, so the dep must not be unlinked, got {pinned:?}"
+    );
+}
+
+/// The control that keeps the widening honest, and the one F1 exists for.
+/// watchface-0.4.0 is `default = ["std"]`, `std = ["chrono"]`, and `chrono` has no
+/// `[features]` entry of its own — it is cargo's synthesised feature, the one
+/// thing deleting the entry really does switch off. Widening the active set must
+/// not save it: `deps_pinned_by_active_use` pins it false regardless, so the
+/// strip still happens and watchface keeps its no_std build.
+#[test]
+fn widening_does_not_save_an_implicit_feature_from_the_strip() {
+    let active = nostd::parser::active_features_for_pin_set(
+        &["libm".to_string()],
+        &feature_table(),
+    );
+
+    assert!(
+        active.contains("chrono"),
+        "the closure reaches `chrono` through `default -> std`, got {active:?}"
+    );
+    assert!(
+        !pins(&active).contains("chrono"),
+        "`chrono` is an implicit feature: the unlink does turn its gate off, so it must \
+         stay strippable however wide the active set is, got {:?}",
+        pins(&active)
+    );
+}

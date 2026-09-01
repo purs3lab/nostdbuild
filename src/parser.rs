@@ -2603,6 +2603,40 @@ pub fn close_over_local_features(
     }
 }
 
+/// The features that may be on at *any* point after the pin set is decided —
+/// the input `deps_pinned_by_active_use` has to be judged against, not the
+/// selection that happens to hold when it is called.
+///
+/// `main_features` is the solve's answer at that moment. It is not the last word:
+/// `process_dep_crate_wrapper` calls `solver::final_feature_list_main` once per
+/// dependency, that call re-derives the **main** crate's `default` list while
+/// answering a question about the dependency, and every member it hands back is
+/// added to `main_features` — including members the main solve had just disabled.
+/// So `default` and its closure are reachable whether or not defaults are
+/// disabled on the command line, and this function puts them in unconditionally.
+///
+/// That is R34-1. bevy_input-0.16.0's solve disabled `smol_str`; the pin set was
+/// computed without it, read `#[cfg(feature = "smol_str")] use smol_str::SmolStr`
+/// as dead code, and let `minimize` delete `dep:smol_str` out of the `smol_str`
+/// feature — which `bevy_utils`' pass then put back on the command line. E0432 on
+/// every target. `bevy_transform`, `devela` and `swash` are the same shape.
+///
+/// Widening errs towards keeping a dependency linked, which is the direction this
+/// question is already biased in (non-`feature` cfg atoms are left free for the
+/// same reason). It does **not** weaken the strip F1 exists to preserve: a
+/// dependency whose only same-named feature is the one cargo synthesises —
+/// watchface's `chrono` — is pinned false by `deps_pinned_by_active_use` itself,
+/// whatever this set says. Only a feature the manifest declares can read as live,
+/// and those are exactly the ones a later pass can re-add.
+pub fn active_features_for_pin_set(
+    main_features: &[String],
+    features: &[(String, TupleVec)],
+) -> HashSet<String> {
+    let mut active: HashSet<String> = main_features.iter().cloned().collect();
+    active.insert("default".to_string());
+    close_over_local_features(&active, features)
+}
+
 /// Every feature of a crate that enabling would turn on one of `removable` —
 /// `removable` itself plus everything that reaches it through the crate's own
 /// `[features]` table.

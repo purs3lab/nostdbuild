@@ -80,6 +80,31 @@ fn run_main_test(crate_name: &str, crate_version: &str, arch: &str) {
         .join("compilation_results.json");
 
     common::compare_json_files(&actual_json_path, &expected_json_path);
+
+    // R34-1: whatever this run emitted, no feature on its command line may carry a
+    // `dep:` entry the run parked. Applies to every golden, so F1's prose list of
+    // "must keep building" crates is now checked wherever a golden exists rather
+    // than nowhere. See `common::assert_no_parked_dep_under_a_live_feature`.
+    let emitted_args: Vec<String> = std::fs::read_to_string(&actual_json_path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| {
+            v.as_array()?
+                .first()?
+                .get("args")?
+                .as_array()?
+                .iter()
+                .map(|a| a.as_str().map(str::to_string))
+                .collect::<Option<Vec<String>>>()
+        })
+        .unwrap_or_default();
+    common::assert_no_parked_dep_under_a_live_feature(
+        consts::DOWNLOAD_PATH,
+        consts::CUSTOM_FEATURES_DISABLED,
+        crate_name,
+        crate_version,
+        &emitted_args,
+    );
 }
 
 #[cargo_test]
@@ -181,6 +206,17 @@ fn test_assertr() {
 /// the failure is `wg`'s own `#![deny(warnings)]` meeting the nightly
 /// `fetch_update` → `try_update` rename in `src/no_std.rs`, which no emitted
 /// feature set can dodge — `DENY_LINT_FALLOUT`, not a tool regression.
+///
+/// **Re-blessed 2026-08-31 with R34-1**, `alloc,parking_lot,triomphe` →
+/// `alloc,triomphe`, and the old args were carrying a second defect this comment
+/// did not know about. `parking_lot = ["dep:parking_lot"]` had its entry parked
+/// while the feature stayed on the command line, and `src/sync.rs:32` is
+/// `#[cfg(feature = "parking_lot")] use parking_lot::{Condvar, Mutex}` — an import
+/// with no crate to resolve against, invisible only because the deny-lint error
+/// aborts the compile first. With the dependency pinned, `minimize` drops the
+/// feature instead of hollowing it out, the `#[cfg(not(feature = "parking_lot"))]`
+/// arm compiles, and the manifest is coherent. The `DENY_LINT_FALLOUT` failure is
+/// unchanged and is still what this golden records.
 #[cargo_test]
 fn test_wg() {
     run_main_test("wg", "0.9.2", "x86_64-unknown-none");

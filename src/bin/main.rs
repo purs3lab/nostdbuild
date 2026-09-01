@@ -803,15 +803,17 @@ fn main() -> anyhow::Result<()> {
     // cargo synthesises for the dependency, which nothing in `enable`/`main_features`
     // ever names. Evaluated against `main_features` plus the `default` closure, since
     // it is the features that are actually ON — not the solver's `enable` — that decide
-    // whether an import's cfg is live. The dep passes below can still add to
-    // `main_features`, so this is the smallest active set the build can have; a later
-    // addition can only switch more gates on, and a dep pinned here stays pinned.
-    let mut active_features: HashSet<String> = main_features.iter().cloned().collect();
-    if !disable_default {
-        active_features.insert("default".to_string());
-    }
+    // whether an import's cfg is live.
+    //
+    // Which features count as ON is `parser::active_features_for_pin_set`, and the
+    // answer is *not* the selection of this moment: the set is consulted once, here,
+    // then handed to the three later `minimize` calls unchanged while
+    // `process_dep_crate_wrapper` grows `main_features` in between. That is R34-1 —
+    // bevy_input's solve disabled `smol_str`, `bevy_utils`' pass put it back, and
+    // `minimize` unlinked the dependency out of the feature that then went out on the
+    // command line. The rule and its `watchface` control live on that function.
     let active_features =
-        parser::close_over_local_features(&active_features, &exchange.crate_info.features);
+        parser::active_features_for_pin_set(&main_features, &exchange.crate_info.features);
     let deps_to_keep = driver::deps_pinned_by_active_use(
         &ctx,
         &main_manifest_toml,
