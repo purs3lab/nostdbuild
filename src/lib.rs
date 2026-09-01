@@ -375,6 +375,48 @@ pub struct UnreachableProcMacro {
     pub records: usize,
 }
 
+/// A crate below a direct dependency that links std under a feature **no edit
+/// to the root manifest can turn off**, because some crate on the way up hands
+/// that feature over on a non-optional edge (R34-20's residual).
+///
+/// `parser::transitive_forbidden_dep_features` translates a leaf's verdict up
+/// the edges it was reached through, and a hop it cannot express ends the chain
+/// — that silence is `DEP_TREE_TRANSITIVE_STD`'s boundary and is deliberate.
+/// The silence is right for *this* run and wrong for the ecosystem: the edge
+/// that hard-enables the feature is a line in a published manifest, and the
+/// repair is an upstream one. Recorded so those edges can be reported rather
+/// than only survived.
+///
+/// Non-optional is the whole of it. The same shape on an optional edge *is*
+/// repairable — the features that activate the dependency are named instead —
+/// so nothing here is a case the tool could have handled and did not.
+#[derive(Debug, Serialize)]
+pub struct UnrepairableStdEdge {
+    /// `name:version` of the crate whose feature is forced on.
+    pub crate_name: String,
+    /// The feature of `crate_name` that nothing above can turn off.
+    pub feature: String,
+    /// `name:version` of the crate whose edge supplies it — where an upstream
+    /// fix would go.
+    pub supplier: String,
+    /// The key `supplier`'s manifest spells that edge with, which is what a
+    /// patch has to edit (it is the package name unless the edge renames it).
+    pub dep_key: String,
+    /// How the edge supplies it: `"features"` for a name in the edge's own
+    /// `features = [...]` list, `"default"` for the dependency's `default`
+    /// closure reaching it with `default-features` left on.
+    pub via: String,
+    /// `name:version` of the crate at the bottom of the chain, the one that
+    /// actually links std.
+    pub links_std: String,
+    /// The feature of `links_std` that links it.
+    pub std_feature: String,
+    /// `name:version` of the main crate's direct dependency the chain starts
+    /// at — the edge the root *can* rewrite, and which this finding says would
+    /// not be enough on its own.
+    pub direct_dep: String,
+}
+
 /// A proc-macro dependency of the main crate, which the no_std walk skips and
 /// `driver::park_injecting_proc_macros` then examines for what it injects.
 ///
@@ -517,6 +559,14 @@ pub struct Telemetry {
     pub default_list_modified_list: Vec<(String, Vec<String>)>,
     /// Did we change the default-features to false for any dependency
     pub default_true_unset_deps: Vec<(String, bool)>,
+    /// Edges below a direct dependency that hand a std-linking feature over
+    /// non-optionally, so no root-manifest edit reaches them (R34-20 residual).
+    ///
+    /// The walk that carries a leaf's verdict up an edge chain stops at such a
+    /// hop and claims nothing, which is correct and is also the whole of what
+    /// the run can do about it. Each entry names the published manifest line
+    /// that would have to change, for an upstream report.
+    pub unrepairable_std_edges: Vec<UnrepairableStdEdge>,
     /// Proc-macro defaults parked on the edge, as `<package>/<feature>` (O-9). A
     /// proc-macro's features are the *consumer's* — they select which tokens the
     /// macro injects into this crate — so one of them is turned off like any

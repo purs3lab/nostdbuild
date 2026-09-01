@@ -14,8 +14,8 @@ use z3::{self, ast::Bool};
 use strsim::levenshtein;
 
 use crate::{
-    Attributes, CrateInfo, DBData, DEPENDENCIES, DataExchange, DepNoStdFailure, Telemetry, consts,
-    db, downloader, driver,
+    Attributes, CrateInfo, DBData, DEPENDENCIES, DataExchange, DepNoStdFailure, Telemetry,
+    UnrepairableStdEdge, consts, db, downloader, driver,
     solver::{self, model_to_features},
     visitor::{GetItemExternCrate, ItemExternCrates, ItemExternCratesAll, ParsedAttr},
 };
@@ -1571,8 +1571,12 @@ pub fn finalize_dep_crate(
     // — so nothing here reaches the main crate's feature passes.
     {
         let ctx = z3::Context::new(&z3::Config::new());
-        let below =
-            transitive_forbidden_dep_features(&dep.crate_name, &exchange.name_with_version, &ctx);
+        let below = transitive_forbidden_dep_features(
+            &dep.crate_name,
+            &exchange.name_with_version,
+            &ctx,
+            &mut exchange.telemetry,
+        );
         if !below.is_empty() {
             println!(
                 "[finalize] dep={} must keep {:?} off: a crate below it links std with them on",
@@ -2720,21 +2724,26 @@ pub fn std_gate_features(
         .collect()
 }
 
-/// The edges of `manifest_toml` that are in the *target* build and always
-/// linked, as `(key, spec)` — the subset of [`dependency_edges`] this walk may
-/// reason about.
+/// The edges of `manifest_toml` that are in the *target* build, as
+/// `(key, spec)` — the subset of [`dependency_edges`] this walk may reason
+/// about.
 ///
-/// Two exclusions, and each is a way to be wrong about std:
+/// One exclusion: `[build-dependencies]`. A build script runs on the host and
+/// is *supposed* to link std; forbidding a feature because a build dependency
+/// does would turn off a default the target build never needed.
 ///
-/// * `[build-dependencies]`. A build script runs on the host and is *supposed*
-///   to link std; forbidding a feature because a build dependency does would
-///   turn off a default the target build never needed.
-/// * `optional` edges. `find_sibling_crate_dir` searches the whole shared
-///   `<main>_deps/` directory by name, so an optional dependency some *other*
-///   crate pulls in non-optionally is found there whether or not this edge
-///   activates it. Skipping them under-reports — an enabled optional edge's
-///   subtree goes unexamined — which leaves the current behaviour in place,
-///   where over-reporting would take a default off a build that needed it.
+/// `optional` edges **are** included, and translating a verdict found under one
+/// is [`translate_forbidden_up`]'s job, not this filter's. They were excluded
+/// when the walk landed, on the reasoning that `find_sibling_crate_dir` resolves
+/// a crate out of the row's flat `<main>_deps/` directory by name and so finds
+/// an optional dependency whether or not this edge activates it. That is true,
+/// and it is an argument about *directory presence* — which is worth nothing
+/// either way, because the download walk reads dependencies with
+/// `skip_optional = false` (`downloader::download_all_dependencies`), so an optional
+/// dependency nothing enables is downloaded like any other. Enablement is
+/// decided from the feature tables instead: a verdict under an optional edge is
+/// re-expressed as the features that *activate* the dependency, which is sound
+/// whether or not this run happens to set them.
 fn linked_dependency_edges(manifest_toml: &toml::Value) -> Vec<(String, toml::Value)> {
     let mut edges = Vec::new();
     let mut collect = |table: Option<&toml::Value>| {
@@ -2747,9 +2756,6 @@ fn linked_dependency_edges(manifest_toml: &toml::Value) -> Vec<(String, toml::Va
             } else {
                 toml::Value::Table(toml::map::Map::new())
             };
-            if spec.get("optional").and_then(|o| o.as_bool()) == Some(true) {
-                continue;
-            }
             edges.push((key.clone(), spec));
         }
     };
@@ -2791,13 +2797,25 @@ const MAX_FORBIDDEN_DEPTH: usize = 4;
 /// off is not one the root manifest can repair, which is
 /// `DEP_TREE_TRANSITIVE_STD`'s boundary and deliberately left there.
 ///
-/// Optional edges drop out for free — the download phase reads dependencies
-/// with `skip_optional=true`, so an optional dependency that was never enabled
-/// has no directory and `find_sibling_crate_dir` returns `None`.
+/// Optional edges are walked and their verdicts translated through the features
+/// that *activate* the dependency (R34-20's residual, step 1). They were skipped
+/// when this landed, on a claim about directory presence that does not hold —
+/// see [`linked_dependency_edges`]. `generic-array 0.14.9` is the shape: its
+/// `zeroize` edge is optional, zeroize links std under `std`, and the edge is
+/// `default-features = false`, so nothing generic-array can be asked for reaches
+/// `zeroize/std` and the answer is **no constraint**. The old
+/// `parse_top_level_externs` path answers `¬zeroize` for the same tree, off the
+/// `#[cfg]` on the *top* hop rather than the one where std is linked.
+///
+/// A hop that hands a std-linking feature over on a **non-optional** edge is
+/// unrepairable from above and is recorded in `telemetry.unrepairable_std_edges`
+/// rather than only ending the chain: the line that would have to change is in
+/// somebody's published manifest, which makes it an upstream report.
 pub fn transitive_forbidden_dep_features(
     dep_name_with_version: &str,
     main_name: &str,
     ctx: &z3::Context,
+    telemetry: &mut Telemetry,
 ) -> HashSet<String> {
     let dep_manifest = determine_manifest_file(dep_name_with_version, Some(main_name));
     let Some(dep_dir) = Path::new(&dep_manifest).parent().map(Path::to_path_buf) else {
@@ -2806,13 +2824,13 @@ pub fn transitive_forbidden_dep_features(
 
     let mut forbidden: HashSet<String> = HashSet::new();
     let mut visited: HashSet<PathBuf> = HashSet::from([dep_dir.clone()]);
-    // Each frontier entry carries the chain of `(upper manifest, edge key)`
-    // hops from the direct dependency down to it, which is what a verdict
-    // found at the bottom is translated back up through.
-    let mut frontier: Vec<(PathBuf, Vec<(String, String)>)> = vec![(dep_dir, Vec::new())];
+    // Each frontier entry carries the chain of hops from the direct dependency
+    // down to it, which is what a verdict found at the bottom is translated
+    // back up through.
+    let mut frontier: Vec<(PathBuf, Vec<ForbiddenHop>)> = vec![(dep_dir, Vec::new())];
 
     for _ in 0..MAX_FORBIDDEN_DEPTH {
-        let mut next: Vec<(PathBuf, Vec<(String, String)>)> = Vec::new();
+        let mut next: Vec<(PathBuf, Vec<ForbiddenHop>)> = Vec::new();
         for (dir, chain) in frontier {
             let manifest = dir.join("Cargo.toml").display().to_string();
             let manifest_toml = driver::read_manifest_toml(&manifest);
@@ -2825,11 +2843,25 @@ pub fn transitive_forbidden_dep_features(
                 let Some(child) = find_sibling_crate_dir(&manifest, &package) else {
                     continue;
                 };
+                // An optional edge nothing in this manifest can activate ends
+                // every chain through it, whatever is below — so do not pay for
+                // the subtree. In practice this is rare: cargo's implicit
+                // `<key>` feature is an activator unless a `dep:<key>`
+                // reference suppresses it.
+                if edge.get("optional").and_then(|o| o.as_bool()) == Some(true)
+                    && local_features_enabling_dep(&manifest_toml, &dep_key).is_empty()
+                {
+                    continue;
+                }
                 if !visited.insert(child.clone()) {
                     continue;
                 }
                 let mut extended = chain.clone();
-                extended.push((manifest.clone(), dep_key.clone()));
+                extended.push(ForbiddenHop {
+                    upper_manifest: manifest.clone(),
+                    dep_key: dep_key.clone(),
+                    child_manifest: child.join("Cargo.toml").display().to_string(),
+                });
 
                 if crate_dir_is_proc_macro(&child) {
                     continue;
@@ -2853,8 +2885,14 @@ pub fn transitive_forbidden_dep_features(
                             continue;
                         }
                     };
+                let origin = ForbiddenOrigin {
+                    leaf: &child_name,
+                    direct_dep: dep_name_with_version,
+                };
                 for feat in std_gate_features(&child_name, Some(main_name), ctx, &child_info) {
-                    if let Some(at_top) = translate_forbidden_up(&extended, &feat) {
+                    if let Some(at_top) =
+                        translate_forbidden_up(&extended, &feat, &origin, telemetry)
+                    {
                         forbidden.extend(at_top);
                     }
                 }
@@ -2869,18 +2907,115 @@ pub fn transitive_forbidden_dep_features(
     forbidden
 }
 
+/// One hop of an edge chain: the manifest that declares the edge, the key it
+/// declares it under, and the manifest at the far end of it.
+///
+/// The child's manifest is carried rather than re-resolved because the hop up
+/// needs the *dependency's* `[features]` table to know what the edge's own
+/// `default-features` reaches ([`edge_supplied_dep_features`]).
+#[derive(Clone)]
+struct ForbiddenHop {
+    upper_manifest: String,
+    dep_key: String,
+    child_manifest: String,
+}
+
+/// What a chain is about, for the record a hop that cannot express it leaves
+/// behind. Not needed to translate — only to report.
+struct ForbiddenOrigin<'a> {
+    /// `name:version` of the crate at the bottom, the one that links std.
+    leaf: &'a str,
+    /// `name:version` of the main crate's direct dependency the chain starts at.
+    direct_dep: &'a str,
+}
+
+/// `name:version` for a manifest, from its own `[package]` table.
+fn manifest_crate_id(manifest_toml: &toml::Value) -> String {
+    let read = |key: &str| {
+        manifest_toml
+            .get("package")
+            .and_then(|p| p.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+    };
+    format!("{}:{}", read("name"), read("version"))
+}
+
+/// The edge `manifest_toml` declares under `dep_key`, from `[dependencies]` or
+/// any `[target.<cfg>.dependencies]`, normalised to a table so a plain
+/// `foo = "1"` and a `foo = { version = "1" }` read alike.
+fn edge_spec(manifest_toml: &toml::Value, dep_key: &str) -> toml::Value {
+    let empty = toml::Value::Table(toml::map::Map::new());
+    let from = |table: Option<&toml::Value>| -> Option<toml::Value> {
+        let value = table
+            .and_then(|t| t.as_table())
+            .and_then(|t| t.get(dep_key))?;
+        Some(if value.is_table() {
+            value.clone()
+        } else {
+            empty.clone()
+        })
+    };
+    if let Some(spec) = from(manifest_toml.get("dependencies")) {
+        return spec;
+    }
+    if let Some(targets) = manifest_toml.get("target").and_then(|t| t.as_table()) {
+        for cfg in targets.values() {
+            if let Some(spec) = from(cfg.get("dependencies")) {
+                return spec;
+            }
+        }
+    }
+    empty
+}
+
 /// Re-express "`feat` must be off in the crate at the bottom of `chain`" as a
 /// set of features of the crate at the top.
 ///
 /// `None` when some hop reaches nothing: no feature of the upper crate turns
 /// the lower one on, so no edit at the top can turn it off either.
-fn translate_forbidden_up(chain: &[(String, String)], feat: &str) -> Option<HashSet<String>> {
+///
+/// Three ways a hop can go, and the middle one is R34-20's residual:
+///
+/// * the edge does not supply the feature — the crate above turns it on through
+///   its own table or not at all, which is [`local_features_enabling_dep_feature`];
+/// * the edge supplies it (named in `features = [...]`, or reached by the
+///   dependency's `default` with `default-features` left on) and is **optional**
+///   — then the feature is on whenever the dependency is linked, so what has to
+///   go off is the *activation*, and the answer is the features that activate
+///   it. This is what an optional edge could not say before, and why the walk
+///   said nothing about `generic-array`'s `zeroize`;
+/// * the edge supplies it and is **not** optional — the feature is on for as
+///   long as the edge exists, and no ancestor can help. The chain ends, as it
+///   always did, and the hop is recorded for an upstream report.
+fn translate_forbidden_up(
+    chain: &[ForbiddenHop],
+    feat: &str,
+    origin: &ForbiddenOrigin,
+    telemetry: &mut Telemetry,
+) -> Option<HashSet<String>> {
     let mut current: HashSet<String> = HashSet::from([feat.to_string()]);
-    for (manifest, dep_key) in chain.iter().rev() {
-        let toml = driver::read_manifest_toml(manifest);
+    for hop in chain.iter().rev() {
+        let toml = driver::read_manifest_toml(&hop.upper_manifest);
+        let child_toml = driver::read_manifest_toml(&hop.child_manifest);
+        let edge = edge_spec(&toml, &hop.dep_key);
+        let optional = edge.get("optional").and_then(|o| o.as_bool()) == Some(true);
+        let supplied = edge_supplied_dep_features(&edge, &child_toml);
+
         let mut up: HashSet<String> = HashSet::new();
         for f in &current {
-            up.extend(local_features_enabling_dep_feature(&toml, dep_key, f));
+            if !supplied.contains(f) {
+                up.extend(local_features_enabling_dep_feature(&toml, &hop.dep_key, f));
+                continue;
+            }
+            if optional {
+                // A superset of the features that reach `<dep_key>/<f>`: a
+                // strong `<dep_key>/…` reference activates the dependency too,
+                // so it is already an activator.
+                up.extend(local_features_enabling_dep(&toml, &hop.dep_key));
+                continue;
+            }
+            record_unrepairable_edge(telemetry, hop, &toml, &child_toml, &edge, f, feat, origin);
         }
         if up.is_empty() {
             return None;
@@ -2888,6 +3023,47 @@ fn translate_forbidden_up(chain: &[(String, String)], feat: &str) -> Option<Hash
         current = up;
     }
     Some(current)
+}
+
+/// File a hop whose edge hands `f` over non-optionally, deduplicated: one entry
+/// per (crate, feature, supplier), however many chains and features reach it.
+#[allow(clippy::too_many_arguments)]
+fn record_unrepairable_edge(
+    telemetry: &mut Telemetry,
+    hop: &ForbiddenHop,
+    upper_toml: &toml::Value,
+    child_toml: &toml::Value,
+    edge: &toml::Value,
+    f: &str,
+    std_feature: &str,
+    origin: &ForbiddenOrigin,
+) {
+    let named_on_edge = edge
+        .get("features")
+        .and_then(|v| v.as_array())
+        .is_some_and(|arr| arr.iter().filter_map(|v| v.as_str()).any(|v| v == f));
+    let record = UnrepairableStdEdge {
+        crate_name: manifest_crate_id(child_toml),
+        feature: f.to_string(),
+        supplier: manifest_crate_id(upper_toml),
+        dep_key: hop.dep_key.clone(),
+        via: if named_on_edge { "features" } else { "default" }.to_string(),
+        links_std: origin.leaf.to_string(),
+        std_feature: std_feature.to_string(),
+        direct_dep: origin.direct_dep.to_string(),
+    };
+    if telemetry.unrepairable_std_edges.iter().any(|e| {
+        e.crate_name == record.crate_name
+            && e.feature == record.feature
+            && e.supplier == record.supplier
+    }) {
+        return;
+    }
+    println!(
+        "[forbidden-walk] {}/{} is on for as long as {} declares `{}`: no root-manifest edit reaches it",
+        record.crate_name, record.feature, record.supplier, record.dep_key
+    );
+    telemetry.unrepairable_std_edges.push(record);
 }
 
 /// Does enabling `feat` turn on a feature the crate's no_std condition forbids?
@@ -3717,6 +3893,69 @@ pub fn edge_supplied_dep_features(
 
     let features = crate::downloader::read_local_features(dep_toml);
     close_over_local_features(&on, &features)
+}
+
+/// This crate's features that put the dependency `dep_key` into the graph at
+/// all — cargo's implicit `<dep_key>` feature, an explicit `dep:<dep_key>`
+/// activation, a strong `<dep_key>/<feat>` reference, or a feature that enables
+/// one of those.
+///
+/// The manifest-only counterpart of `downloader::optional_dep_enablers`, which
+/// asks the same question but takes the declared-feature set `cargo metadata`
+/// produces. The forbidden-edge walk visits every crate in a dependency subtree
+/// and has no reason to pay for a `cargo metadata` per crate, so the implicit
+/// feature is derived here from cargo's own rule: a dependency gets one unless
+/// some feature in the table names it as `dep:<dep_key>`, which suppresses it.
+///
+/// Weak references are excluded, as everywhere else: `dep?/feat` turns a feature
+/// on only if something else already linked the dependency, so it activates
+/// nothing by itself.
+pub fn local_features_enabling_dep(manifest_toml: &toml::Value, dep_key: &str) -> HashSet<String> {
+    let features = manifest_toml.get("features").and_then(|f| f.as_table());
+    let marker = format!("dep:{}", dep_key);
+
+    let suppressed = features.is_some_and(|table| {
+        table.values().any(|values| {
+            values
+                .as_array()
+                .is_some_and(|arr| arr.iter().filter_map(|v| v.as_str()).any(|v| v == marker))
+        })
+    });
+
+    let mut enabling: HashSet<String> = HashSet::new();
+    if !suppressed {
+        enabling.insert(dep_key.to_string());
+    }
+    let Some(features) = features else {
+        return enabling;
+    };
+
+    loop {
+        let mut grew = false;
+        for (name, values) in features {
+            if enabling.contains(name) {
+                continue;
+            }
+            let Some(arr) = values.as_array() else {
+                continue;
+            };
+            let hit =
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .any(|entry| match entry.split_once('/') {
+                        // `dep?/feat` is weak and links nothing; `dep/feat` on this
+                        // dependency links it.
+                        Some((dep, _)) => dep == dep_key,
+                        None => entry == marker || enabling.contains(entry),
+                    });
+            if hit && enabling.insert(name.clone()) {
+                grew = true;
+            }
+        }
+        if !grew {
+            return enabling;
+        }
+    }
 }
 
 /// This crate's features that reach `<dep_key>/<dep_feature>`, directly or by
