@@ -938,9 +938,10 @@ fn definition_span_of(tcx: &TyCtxt<'_>, def_id: DefId) -> Option<ReadableSpan> {
 }
 
 struct MyCompilerCalls {
-    /// A `build_script_build` unit. The script has to be compiled and run for
-    /// the crate to build at all, and nothing it contains is the crate's own
-    /// std usage, so both callbacks stand aside and let it through.
+    /// A build-script unit, per [`is_build_script_unit`]. The script has to be
+    /// compiled *and run* for the crate to build at all, and nothing it contains
+    /// is the crate's own std usage, so both callbacks stand aside and let it
+    /// through to codegen.
     build_script: bool,
     /// The AST pass's records, held for `after_analysis` to extend with the
     /// method calls only type checking can resolve.
@@ -1116,6 +1117,65 @@ fn cap_lints_for_analysis(mut compiler_args: Vec<String>) -> Vec<String> {
     compiler_args
 }
 
+/// The value cargo passed for `flag`, accepting both `--flag value` and
+/// `--flag=value`.
+fn flag_value<'a>(compiler_args: &'a [String], flag: &str) -> Option<&'a str> {
+    let mut args = compiler_args.iter();
+    while let Some(arg) = args.next() {
+        if let Some(rest) = arg.strip_prefix(flag) {
+            return match rest.strip_prefix('=') {
+                Some(inline) => Some(inline),
+                None if rest.is_empty() => args.next().map(String::as_str),
+                // A longer flag that merely starts with this one.
+                None => continue,
+            };
+        }
+    }
+    None
+}
+
+/// Is this rustc invocation the build script of the crate under analysis?
+///
+/// Cargo names a build-script unit `build_script_<stem of the manifest's `build`
+/// key>`, so the name is only `build_script_build` for the default `build.rs`.
+/// `mavlink 0.13.1` declares `build = "build/main.rs"` and gets
+/// `build_script_main`; the old equality test missed it, both callbacks ran, and
+/// `after_analysis`'s `Stop` landed before codegen, so no `build_script_main`
+/// executable was ever written. Cargo then reported the script as *never
+/// executed* — `No such file or directory` on a path inside an `out/` that does
+/// not exist — with no compile error to explain it, and every pass that decides
+/// something by compiling the crate got "no" for free (KI-29).
+///
+/// The prefix alone would be wrong. `RUSTC_WORKSPACE_WRAPPER` is what puts this
+/// driver in front of rustc, and cargo applies that to workspace members only —
+/// `CrateFilter::AllCrates` relaxes the driver's `CARGO_PRIMARY_PACKAGE` test but
+/// does not widen the wrapper — so the only units reaching here are the root
+/// crate and its build script. A root crate whose *own* lib is named
+/// `build_script_…` would therefore be waved through, `write_output` would never
+/// run, and the crate would read as having no std usage at all: a silent false
+/// no_std verdict. The index holds three (`build-script-cfg`,
+/// `build_script_file_gen`, `build-script-utils`; `build_script` itself lacks the
+/// trailing underscore and never matched).
+///
+/// `--crate-type bin` is what rules them out. The pass runs under `cargo check`,
+/// where every analysed target is `--crate-type lib --emit=dep-info,metadata` and
+/// only a unit cargo must really produce a binary for is
+/// `--crate-type bin --emit=dep-info,link`. Measured on mavlink: its build script
+/// is `--crate-name build_script_main … --crate-type bin`, its lib
+/// `--crate-name mavlink … --crate-type lib`.
+///
+/// **Boundary.** A *bin-only* crate named `build_script_…` is still skipped:
+/// `driver.rs` withholds `--lib` when the package has no lib target, so its bin
+/// does arrive as `--crate-type bin`. No such crate exists in the index today —
+/// all three candidates above are libraries. Testing `--emit` for `link` instead
+/// would close it, but that also changes what happens to a proc-macro root, which
+/// is not this fix's business.
+fn is_build_script_unit(compiler_args: &[String]) -> bool {
+    flag_value(compiler_args, "--crate-name")
+        .is_some_and(|name| name.starts_with("build_script_"))
+        && flag_value(compiler_args, "--crate-type").is_some_and(|kind| kind == "bin")
+}
+
 impl RustcPlugin for Plugin {
     type Args = PluginArgs;
 
@@ -1143,7 +1203,7 @@ impl RustcPlugin for Plugin {
         _plugin_args: Self::Args,
     ) -> rustc_interface::interface::Result<()> {
         let mut callbacks = MyCompilerCalls {
-            build_script: compiler_args.iter().any(|arg| arg == "build_script_build"),
+            build_script: is_build_script_unit(&compiler_args),
             ast_records: Vec::new(),
             macro_imports: Vec::new(),
             macro_cfg_map: HashMap::new(),
@@ -1151,5 +1211,110 @@ impl RustcPlugin for Plugin {
         let compiler_args = cap_lints_for_analysis(compiler_args);
         rustc_driver::run_compiler(&compiler_args, &mut callbacks);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod build_script_unit_tests {
+    use super::is_build_script_unit;
+
+    fn args(raw: &[&str]) -> Vec<String> {
+        raw.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The two shapes measured off `cargo check -vv` on `mavlink 0.13.1`.
+    #[test]
+    fn custom_build_path_is_a_build_script() {
+        assert!(is_build_script_unit(&args(&[
+            "rustc",
+            "--crate-name",
+            "build_script_main",
+            "build/main.rs",
+            "--crate-type",
+            "bin",
+            "--emit=dep-info,link",
+        ])));
+    }
+
+    #[test]
+    fn default_build_rs_still_matches() {
+        assert!(is_build_script_unit(&args(&[
+            "rustc",
+            "--crate-name",
+            "build_script_build",
+            "build.rs",
+            "--crate-type",
+            "bin",
+        ])));
+    }
+
+    #[test]
+    fn the_analysed_lib_is_not_a_build_script() {
+        assert!(!is_build_script_unit(&args(&[
+            "rustc",
+            "--crate-name",
+            "mavlink",
+            "src/lib.rs",
+            "--crate-type",
+            "lib",
+            "--emit=dep-info,metadata",
+        ])));
+    }
+
+    /// The false positive a bare prefix test would introduce: three crates in the
+    /// index are libraries whose own name starts with `build_script_`, and waving
+    /// one through costs it every std record it has.
+    #[test]
+    fn a_lib_named_build_script_is_still_analysed() {
+        for name in ["build_script_cfg", "build_script_file_gen", "build_script_utils"] {
+            assert!(
+                !is_build_script_unit(&args(&[
+                    "rustc",
+                    "--crate-name",
+                    name,
+                    "src/lib.rs",
+                    "--crate-type",
+                    "lib",
+                ])),
+                "{name} was skipped as a build script"
+            );
+        }
+    }
+
+    /// `build_script` proper has no trailing underscore and never matched.
+    #[test]
+    fn the_crate_named_build_script_does_not_match() {
+        assert!(!is_build_script_unit(&args(&[
+            "rustc",
+            "--crate-name",
+            "build_script",
+            "src/lib.rs",
+            "--crate-type",
+            "bin",
+        ])));
+    }
+
+    #[test]
+    fn inline_flag_values_are_read() {
+        assert!(is_build_script_unit(&args(&[
+            "rustc",
+            "--crate-name=build_script_main",
+            "--crate-type=bin",
+        ])));
+    }
+
+    /// The old test was `any(|arg| arg == "build_script_build")`, which any
+    /// argv element could satisfy — a `--cfg` value, say.
+    #[test]
+    fn only_the_crate_name_operand_counts() {
+        assert!(!is_build_script_unit(&args(&[
+            "rustc",
+            "--crate-name",
+            "somecrate",
+            "--cfg",
+            "feature=\"build_script_build\"",
+            "--crate-type",
+            "lib",
+        ])));
     }
 }
