@@ -4446,9 +4446,17 @@ pub fn discover_build_enablers<'a>(
 /// every target — so the evidence is a real build, not a prediction, and a crate
 /// that builds today never reaches it.
 ///
-/// `selection` is what went on `--features`, already closed over the crate's own
-/// feature table (and `default` when defaults are on) — the trials pass
-/// `--no-default-features`, so a default that is on has to be named.
+/// `selection` is this crate's own features as emitted, closed over its feature
+/// table (and `default` when defaults are on — the trials pass
+/// `--no-default-features`, so a default that is on has to be named). It decides
+/// what is *not* a candidate, and it is main-crate features only because that is
+/// what the compiled-set record holds. `dep_features` is the rest of the emitted
+/// `--features` list — the `<dep>/<feat>` entries — which never becomes a
+/// candidate but must be in every trial, or the trial is not the configuration
+/// that failed. emissary-core 0.2.0 is why: its emitted set carries
+/// `lazy_static/spin_no_std`, and a trial without it dies on `E0463 can't find
+/// crate for std` inside lazy_static, which says nothing about the feature under
+/// test.
 /// `exclude` is what the solve settled and this search must not undo: the
 /// features it proved false, and the ones the crate's no_std condition forbids.
 /// `std` is normally in there, and where it is not, the oracle still rules it
@@ -4461,6 +4469,7 @@ pub fn enablers_for_selection(
     manifest: &str,
     crate_name: &str,
     selection: &HashSet<String>,
+    dep_features: &[String],
     exclude: &HashSet<String>,
 ) -> Vec<String> {
     // The tool's own three bookkeeping features are in the rewritten manifest and
@@ -4491,7 +4500,13 @@ pub fn enablers_for_selection(
 
     let base: Vec<String> = {
         let mut b: Vec<String> = selection.iter().cloned().collect();
+        b.extend(dep_features.iter().cloned());
         b.sort();
+        // `deps_args` accumulates one entry per dependency pass and repeats the
+        // synthetic feature they share, so without this the trial argv carries
+        // `custom_no_std_feature_enabled` three times (observed on
+        // emissary-core 0.2.0). Cargo does not care; the log does.
+        b.dedup();
         b
     };
     debug!(

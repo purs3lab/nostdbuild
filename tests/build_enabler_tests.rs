@@ -491,6 +491,7 @@ fn the_emitted_set_is_not_the_set_that_compiled() {
         &manifest,
         "build_enabler_no_arm",
         &emitted,
+        &[],
         &exclude,
     );
     assert_eq!(

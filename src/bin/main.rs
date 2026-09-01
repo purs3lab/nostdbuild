@@ -1305,7 +1305,9 @@ fn run() -> anyhow::Result<()> {
         // `active_features_for_pin_set`, which inserts `default` unconditionally
         // — that widening is right for the question R34-1 asks (what may be on at
         // any later point) and wrong for this one, which is a statement about the
-        // build that just failed.
+        // build that just failed. The `<dep>/<feat>` half of the emitted list goes
+        // to the search separately: it is never a candidate, but every trial has
+        // to carry it or the trial is not the configuration that failed.
         let mut seed: HashSet<String> = main_features.iter().cloned().collect();
         if !disable_default {
             seed.insert("default".to_string());
@@ -1335,6 +1337,7 @@ fn run() -> anyhow::Result<()> {
                     &main_manifest,
                     &exchange.name_with_version,
                     &selection,
+                    &deps_args,
                     &exclude,
                 )
             };
