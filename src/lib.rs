@@ -644,6 +644,16 @@ pub struct Telemetry {
     /// bare-metal-compiling run, when no candidate makes the crate build, or when
     /// the repaired build failed too.
     pub emitted_set_enabler_features: Vec<String>,
+    /// `<dep>/<feat>` pairs added after a build that failed on every target,
+    /// because a direct dependency's own configuration left it in a state
+    /// nothing had shown compiles (R34-16, `parser::dep_edge_retry_candidates`).
+    /// Candidates come from that dependency's own declared features, never the
+    /// main crate's, and the pair is kept only because the rebuild then
+    /// succeeded — the same "retry, not a smarter solve" shape as
+    /// `emitted_set_enabler_features`, one edge down. Empty when every direct
+    /// dependency's emitted edge already compiles, or when every retry failed
+    /// too.
+    pub dep_edge_enabler_features: Vec<(String, String)>,
     /// Did we remove any unnecessary features from main crate features that main enabled for any of its dependencies
     pub unnecessary_features_removed: Vec<(String, bool)>,
     /// Features that were moved for the above case

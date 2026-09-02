@@ -275,6 +275,18 @@ fn test_watchface() {
     run_main_test("watchface", "0.4.0", "x86_64-unknown-none");
 }
 
+/// R34-16's guard row: the tool never touches the `clock_source` edge at all
+/// (nothing in its own solve finds anything to disable), and at its published
+/// defaults `clock_source` references `time_clock`, which is not one of its
+/// own dependencies — a defect in the dependency's own default wiring no
+/// std/no_std judgment could find. Only a build that fails on every target
+/// and then retries with `clock_source/custom`
+/// (`parser::dep_edge_retry_candidates`) gets past it.
+#[cargo_test]
+fn test_etime() {
+    run_main_test("etime", "0.1.8", "x86_64-unknown-none");
+}
+
 /// Regression: a crate whose only std usage lives in an auto-discovered bin
 /// target. `chainable-if` is a no_std-clean library shipping the stock
 /// `fn main() { println!("Hello, world!"); }` alongside it.

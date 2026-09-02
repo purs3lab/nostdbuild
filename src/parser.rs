@@ -17,7 +17,7 @@ use crate::{
     Attributes, CrateInfo, DBData, DEPENDENCIES, DataExchange, DepNoStdFailure, Telemetry,
     UnrepairableStdEdge, consts, db, downloader, driver,
     solver::{self, model_to_features},
-    visitor::{GetItemExternCrate, ItemExternCrates, ItemExternCratesAll, ParsedAttr},
+    visitor::{self, GetItemExternCrate, ItemExternCrates, ItemExternCratesAll, ParsedAttr},
 };
 
 use crate::types::*;
@@ -4532,6 +4532,71 @@ fn update_main_crate_default_list(
             .unwrap(),
     )
     .unwrap();
+}
+
+/// R34-16: the `<dep>/<feat>` pairs worth trying on a direct dependency edge
+/// after a build that failed on every target, when nothing else repaired it.
+/// This is a broader question than "did this pass turn `default-features`
+/// off" (`default_true_unset_deps`) — `etime-0.1.8`'s `clock_source` is the
+/// case this was built and guarded against, and the tool never touched that
+/// edge at all: no features, no `default-features = false`, because nothing
+/// in `clock_source`'s own solve found anything to disable. It still does not
+/// compile — its *default* build references `time_clock`, which is not one of
+/// its own dependencies, a defect in the dependency's own default wiring that
+/// no std/no_std judgment could have found. `custom` is the published escape
+/// hatch, and only a failed build points at it.
+///
+/// Candidates are every feature the dependency itself declares, minus
+/// `default` — re-adding the whole default set is `update_main_crate_default_list`'s
+/// call on entailed-false evidence, not this search's to relitigate. Not
+/// filtered against what is already active on the edge: the caller only
+/// reaches this after the emitted configuration as a whole has already
+/// failed, so a redundant candidate costs one wasted probe, never a wrong
+/// answer — cargo accepts a `dep/feat` flag whether or not the feature is
+/// already on.
+///
+/// Deliberately not filtered for "looks std-linked by name" either: nothing
+/// here can tell a no_std-safe feature from a std-linking one without
+/// compiling it, so every declared feature is a candidate and the retry build
+/// is the oracle — the same reasoning `driver::enablers_for_selection`
+/// already relies on for the main crate's own candidates. A configuration
+/// that truly still links std will not compile for a bare-metal target
+/// either way.
+///
+/// Returns empty when `dep_name_with_version` was never downloaded under
+/// `main_name`'s `_deps/` tree — true of a declared dependency this run never
+/// reached (an optional dep nobody enabled, a target-gated one) — so the
+/// caller does not have to know which of `crate_info.deps_and_features` were
+/// actually processed.
+pub fn dep_edge_retry_candidates(
+    dep_name_with_version: &str,
+    main_name: &str,
+    crate_name_rename: &[(String, String)],
+) -> Vec<String> {
+    let dep_dir = Path::new(consts::DOWNLOAD_PATH)
+        .join(format!("{}_deps", main_name.replace(':', "-")))
+        .join(dep_name_with_version.replace(':', "-"));
+    if !dep_dir.exists() {
+        return Vec::new();
+    }
+    let dep_manifest = determine_manifest_file(dep_name_with_version, Some(main_name));
+    let dep_original_name = dep_name_with_version
+        .split(':')
+        .next()
+        .unwrap_or(dep_name_with_version);
+    let edge_name = crate_name_rename
+        .iter()
+        .find(|(_, name)| name == dep_original_name)
+        .map(|(renamed, _)| renamed.as_str())
+        .unwrap_or(dep_original_name);
+
+    let mut candidates: Vec<String> = visitor::declared_features(&dep_manifest)
+        .into_iter()
+        .filter(|f| f != "default")
+        .map(|f| format!("{edge_name}/{f}"))
+        .collect();
+    candidates.sort();
+    candidates
 }
 
 /// Remove a given list of features from the declared features

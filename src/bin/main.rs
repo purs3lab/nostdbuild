@@ -1409,6 +1409,97 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
+    // R34-16: after every repair above has failed, ask whether each direct
+    // dependency's own configuration is even buildable on its own — a
+    // question none of them ask, since they all vary the *main* crate's
+    // features or the emitted set as a whole. etime-0.1.8's `clock_source` is
+    // the row this is built and guarded against: this pass never touched
+    // that edge at all (nothing in `clock_source`'s own solve found anything
+    // to disable), and it still does not compile — its default build
+    // references `time_clock`, not one of its own dependencies, a defect in
+    // the dependency's own default wiring no std/no_std judgment could have
+    // found. `clock_source/custom` is the published fix, one edge feature
+    // away, and only a failed build points at it.
+    //
+    // Bounded to a small probe budget: a crate can have many direct
+    // dependencies, most of which are not the problem, and every candidate
+    // here is a full retry build behind `try_alternative`'s cheap scout
+    // pre-filter.
+    if no_std && !one_succeeded {
+        const DEP_EDGE_RETRY_BUDGET: usize = 8;
+        let mut budget = DEP_EDGE_RETRY_BUDGET;
+        let mut direct_deps: Vec<String> = exchange
+            .crate_info
+            .deps_and_features
+            .iter()
+            .filter(|(dep, _)| !dep.optional || enabled_optional_deps.contains(&dep.name))
+            .map(|(dep, _)| format!("{}:{}", dep.name, dep.version))
+            .collect();
+        direct_deps.sort();
+        direct_deps.dedup();
+
+        'dep_edges: for dep in direct_deps {
+            let candidates = parser::dep_edge_retry_candidates(
+                &dep,
+                &exchange.name_with_version,
+                &exchange.crate_name_rename,
+            );
+            for candidate in candidates {
+                if budget == 0 {
+                    break 'dep_edges;
+                }
+                budget -= 1;
+
+                let mut retry_deps = deps_args.clone();
+                retry_deps.push(candidate.clone());
+                let (retry_args, retry_combined, retry_len) =
+                    assemble_final_args(disable_default, &main_features, &retry_deps);
+                if retry_args == final_args {
+                    continue;
+                }
+                println!(
+                    "Build failed for every target; retrying dependency edge {} with {:?}: {:?}",
+                    dep, candidate, retry_args
+                );
+                let scout = compiler::scout_target(&stats, &before_build);
+                if compiler::try_alternative(
+                    &exchange.name_with_version,
+                    &target,
+                    &retry_args,
+                    "retry_with_dep_edge_enabler",
+                    &before_build,
+                    scout.as_deref(),
+                    &mut stats,
+                    &mut exchange.telemetry,
+                )? {
+                    // Nothing downstream reads `deps_args` again — this is the
+                    // last retry in the chain — so unlike the earlier blocks
+                    // there is no `deps_args = retry_deps` to keep in sync.
+                    final_args = retry_args;
+                    combined_features = retry_combined;
+                    final_features_len = retry_len;
+                    exchange
+                        .telemetry
+                        .dep_edge_enabler_features
+                        .push((dep.clone(), candidate));
+                    one_succeeded = true;
+                    println!("Final args after dependency edge retry: {:?}", final_args);
+                    // Re-derived from the set that shipped, like the repairs
+                    // above: only the check gets to make a statement about the
+                    // emitted config.
+                    violated = parser::violated_compile_error_constraints(
+                        &ctx,
+                        &main_attributes,
+                        &exchange.crate_info,
+                        &emitted_features(&combined_features),
+                        !disable_default,
+                    );
+                    break 'dep_edges;
+                }
+            }
+        }
+    }
+
     exchange.telemetry.final_features_length = final_features_len;
 
     if !violated.is_empty() {
