@@ -1,0 +1,14 @@
+[package]
+name = "plugin_pass_cache"
+description = "Trivial bare-metal-compilable no_std crate, used only to compile fast twice"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "plugin_pass_cache"
+
+[features]
+default = []
+
+[workspace]

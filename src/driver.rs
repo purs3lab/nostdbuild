@@ -896,36 +896,39 @@ pub fn run_default_features_pass(manifest: &str, crate_name: &str) -> PassOutcom
 
     let attempt = timing::scope("cargo_hir", "host");
     attempt.meta("features", "<default>");
-    let output = match Command::new("cargo")
-        .args(args)
-        .env(PLUGIN_OUTPUT_ENV, &output_path)
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
+    let has_lib = args.contains(&"--lib");
+    let cargo_hir_result = run_cargo_hir_cached(
+        manifest,
+        &args,
+        &output_path,
+        crate_name,
+        "<default>",
+        None,
+        has_lib,
+    );
+    let (success, stderr, exit_code) = match cargo_hir_result {
+        CargoHirAttempt::SpawnFailed(e) => {
             attempt.meta("success", "false");
             return PassOutcome::CompileFailed {
-                stderr: format!("failed to spawn cargo: {}", e),
+                stderr: e,
                 exit_code: None,
             };
         }
+        CargoHirAttempt::Compiled { .. } => (true, String::new(), None),
+        CargoHirAttempt::CompileFailed { stderr, exit_code } => (false, stderr, exit_code),
     };
-    attempt.meta("success", output.status.success().to_string());
+    attempt.meta("success", success.to_string());
     drop(attempt);
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    if !success {
         debug!(
             "default-features pass failed for {} (exit {}): {}",
             crate_name,
-            output.status.code().unwrap_or(-1),
+            exit_code.unwrap_or(-1),
             stderr
         );
         let _ = fs::remove_file(&output_path);
-        return PassOutcome::CompileFailed {
-            stderr,
-            exit_code: output.status.code(),
-        };
+        return PassOutcome::CompileFailed { stderr, exit_code };
     }
 
     if !output_path.exists() {
@@ -1353,6 +1356,211 @@ pub fn compute_coverage_comparison(
     }
 }
 
+/// The smallest set of inputs that determines one `cargo hir` compile's
+/// result: which manifest, which features, which target, and whether `--lib`
+/// was passed. Two calls with an equal key run the identical `cargo` command
+/// against byte-identical inputs.
+///
+/// Sound because of what this tool does *not* touch: every `fs::write` under
+/// `src/` that reaches a crate's own directory writes a `Cargo.toml` — never a
+/// `.rs` file, never `Cargo.lock`. A dependency's source tree is immutable for
+/// the life of a process once downloaded, so hashing the two manifests it
+/// *can* rewrite is exactly the surface a repeat call could differ on.
+#[derive(Hash, Eq, PartialEq, Clone)]
+struct CargoHirCacheKey {
+    manifest_hash: u64,
+    feats_sorted: String,
+    target: Option<&'static str>,
+    has_lib: bool,
+}
+
+/// What survived the compile — everything a cache hit needs to answer without
+/// re-running it. `output_json` is the plugin's own file content, so a hit
+/// restores it exactly as a fresh run would have written it.
+#[derive(Clone)]
+enum CargoHirCacheValue {
+    Succeeded { output_json: Vec<u8> },
+    SucceededNoOutput,
+    Failed { stderr: String, exit_code: Option<i32> },
+}
+
+/// Process-lifetime memo of every `cargo hir` compile this run has already
+/// paid for. Two independent search mechanisms — the CEGAR covering-set loop
+/// and `phases.rs`'s per-span satisfiability check — routinely re-derive the
+/// same `(dependency, feature set, target)` question; measured on
+/// `bridge-runtime-common-0.21.0`, 393 of 1150 plugin-pass calls (57%) were
+/// exact repeats of an earlier call in the same run, 2.06 of the 3.64 hours
+/// spent compiling. Neither mechanism knows about the other, so the fix sits
+/// under both: this caches the one thing they both eventually call rather
+/// than teaching either search to remember what the other already asked.
+static CARGO_HIR_CACHE: std::sync::LazyLock<Mutex<HashMap<CargoHirCacheKey, CargoHirCacheValue>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Hash of a manifest's bytes. `None` when it cannot even be read — the
+/// caller treats that as "do not cache this attempt" rather than guessing at
+/// a key for a file that is not there.
+///
+/// Deliberately **not** `Cargo.lock` too, despite `cargo hir` reading one:
+/// a from-scratch compile *creates* the lock file for a dependency that did
+/// not ship one, which most published libraries do not — measured directly,
+/// the guard test below caught this the first time it was tried. Hashing
+/// `Cargo.lock` alongside the manifest then makes every second call compute
+/// a different key from the first (no lock existed yet vs. one now does),
+/// permanently missing the cache it was meant to make safer. Cargo.toml
+/// alone is sufficient: it is the tool's entire write surface (every
+/// `fs::write` under `src/` that reaches a crate's directory targets a
+/// `Cargo.toml`, never a `.rs` file or `Cargo.lock`), and once a lock is
+/// resolved from an unchanged manifest, cargo does not silently re-resolve
+/// it to something else mid-run.
+fn hash_manifest(manifest: &str) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let bytes = fs::read(manifest).ok()?;
+    bytes.hash(&mut h);
+    Some(h.finish())
+}
+
+/// Count of cache hits this process has served. Test-only signal: cache size
+/// alone cannot distinguish "hit" from "never tried to cache" (both leave the
+/// map unchanged), so a guard needs this to assert a hit actually happened
+/// rather than that nothing regressed.
+///
+/// Not `#[cfg(test)]`: integration tests under `tests/` link against this
+/// crate built the ordinary way, so a `cfg(test)` item here would not exist
+/// for them to call — the same reason [`clear_cargo_hir_cache_for_test`] and
+/// its neighbours below are plain `pub fn`, matching how `analyze_crate` and
+/// the rest of this module's test-facing API are already exposed.
+static CARGO_HIR_CACHE_HITS: Mutex<u64> = Mutex::new(0);
+
+/// One `cargo hir` attempt, cached. Scoped to exactly the subprocess call —
+/// every caller keeps its own target-selection, retry loop and side-effect
+/// bookkeeping (`LAST_GOOD_TARGET` and friends) untouched, so a cache hit
+/// cannot skip any of the reasoning those callers do, only the compile
+/// itself, which `CargoHirCacheKey` is built to be a pure function of.
+enum CargoHirAttempt {
+    /// Cargo exited 0. `wrote_json` is false for the plugin-succeeded-but-no-
+    /// output-file case, which callers treat as an infrastructure fault.
+    Compiled { wrote_json: bool },
+    /// Cargo ran and exited non-zero — an ordinary "this target/feature set
+    /// does not build" result, not a tool fault.
+    CompileFailed {
+        stderr: String,
+        exit_code: Option<i32>,
+    },
+    /// The `cargo` process could not even be spawned. Distinguished from
+    /// `CompileFailed` because every caller treats this as immediately fatal
+    /// rather than "try the next target."
+    SpawnFailed(String),
+}
+
+/// Run `cargo hir` once, or reuse a prior identical result within this
+/// process. `args` must already carry every flag that affects the compile
+/// (`--features`, `--target`, `--lib`, …); `feats`/`target`/`has_lib` are
+/// passed separately only to build the cache key and the debug log line.
+fn run_cargo_hir_cached(
+    manifest: &str,
+    args: &[&str],
+    output_path: &Path,
+    crate_name: &str,
+    feats: &str,
+    target: Option<&'static str>,
+    has_lib: bool,
+) -> CargoHirAttempt {
+    let key = hash_manifest(manifest).map(|manifest_hash| {
+        let mut sorted: Vec<&str> = feats.split(',').filter(|s| !s.is_empty()).collect();
+        sorted.sort_unstable();
+        CargoHirCacheKey {
+            manifest_hash,
+            feats_sorted: sorted.join(","),
+            target,
+            has_lib,
+        }
+    });
+
+    if let Some(k) = &key
+        && let Some(cached) = CARGO_HIR_CACHE.lock().unwrap().get(k).cloned()
+    {
+        debug!(
+            "cargo hir cache hit for {} on target [{}] (features [{}])",
+            crate_name,
+            target.unwrap_or("host"),
+            feats
+        );
+        *CARGO_HIR_CACHE_HITS.lock().unwrap() += 1;
+        return match cached {
+            CargoHirCacheValue::Succeeded { output_json } => {
+                let _ = fs::write(output_path, &output_json);
+                CargoHirAttempt::Compiled { wrote_json: true }
+            }
+            CargoHirCacheValue::SucceededNoOutput => {
+                CargoHirAttempt::Compiled { wrote_json: false }
+            }
+            CargoHirCacheValue::Failed { stderr, exit_code } => {
+                CargoHirAttempt::CompileFailed { stderr, exit_code }
+            }
+        };
+    }
+
+    let output = match Command::new("cargo")
+        .args(args)
+        .env(PLUGIN_OUTPUT_ENV, output_path)
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => return CargoHirAttempt::SpawnFailed(format!("failed to spawn cargo: {}", e)),
+    };
+    let success = output.status.success();
+    let wrote_json = success && output_path.exists();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let exit_code = output.status.code();
+
+    if let Some(k) = key {
+        let value = if wrote_json {
+            match fs::read(output_path) {
+                Ok(bytes) => CargoHirCacheValue::Succeeded { output_json: bytes },
+                Err(_) => CargoHirCacheValue::SucceededNoOutput,
+            }
+        } else if success {
+            CargoHirCacheValue::SucceededNoOutput
+        } else {
+            CargoHirCacheValue::Failed {
+                stderr: stderr.clone(),
+                exit_code,
+            }
+        };
+        CARGO_HIR_CACHE.lock().unwrap().insert(k, value);
+    }
+
+    if success {
+        CargoHirAttempt::Compiled { wrote_json }
+    } else {
+        CargoHirAttempt::CompileFailed { stderr, exit_code }
+    }
+}
+
+/// Test-only: forget every cached `cargo hir` result. `cargo test` runs many
+/// tests in one process against this one `static`, so a test asserting on
+/// hit/miss behaviour needs a clean slate regardless of what ran before it.
+pub fn clear_cargo_hir_cache_for_test() {
+    CARGO_HIR_CACHE.lock().unwrap().clear();
+    *CARGO_HIR_CACHE_HITS.lock().unwrap() = 0;
+}
+
+/// Test-only: how many cached `cargo hir` results this process is holding.
+/// Lets a test assert a second identical call did not grow the cache (it hit
+/// the first entry) without depending on timing.
+pub fn cargo_hir_cache_len_for_test() -> usize {
+    CARGO_HIR_CACHE.lock().unwrap().len()
+}
+
+/// Test-only: how many cache hits this process has served since the last
+/// [`clear_cargo_hir_cache_for_test`]. Cache size alone cannot tell "hit"
+/// apart from "never tried to cache" — both leave the map the same size — so
+/// a guard needs this to assert a hit actually happened.
+pub fn cargo_hir_cache_hits_for_test() -> u64 {
+    *CARGO_HIR_CACHE_HITS.lock().unwrap()
+}
+
 pub fn run_rustc_plugin_pass(
     manifest: &str,
     crate_name: &str,
@@ -1513,26 +1721,34 @@ pub fn run_rustc_plugin_pass_with(
         // event shows that the pass cost N failed builds plus one that linked.
         let attempt = timing::scope("cargo_hir", target.unwrap_or("host"));
         attempt.meta("features", &feats);
-        let output = match Command::new("cargo")
-            .args(&args)
-            .env(PLUGIN_OUTPUT_ENV, &output_path)
-            .output()
-        {
-            Ok(o) => o,
-            Err(e) => {
+        let cargo_hir_result = run_cargo_hir_cached(
+            manifest,
+            &args,
+            &output_path,
+            crate_name,
+            &feats,
+            target,
+            has_lib,
+        );
+        let (success, wrote_json, last_stderr_this, last_exit_this) = match cargo_hir_result {
+            CargoHirAttempt::SpawnFailed(e) => {
                 attempt.meta("success", "false");
                 attempt.meta("outcome", "spawn_failed");
                 return PassOutcome::CompileFailed {
-                    stderr: format!("failed to spawn cargo: {}", e),
+                    stderr: e,
                     exit_code: None,
                 };
             }
+            CargoHirAttempt::Compiled { wrote_json } => (true, wrote_json, String::new(), None),
+            CargoHirAttempt::CompileFailed { stderr, exit_code } => {
+                (false, false, stderr, exit_code)
+            }
         };
-        attempt.meta("success", output.status.success().to_string());
+        attempt.meta("success", success.to_string());
         drop(attempt);
 
-        if output.status.success() {
-            if output_path.exists() {
+        if success {
+            if wrote_json {
                 succeeded_on = Some(target);
                 break;
             }
@@ -1549,8 +1765,8 @@ pub fn run_rustc_plugin_pass_with(
             };
         }
 
-        last_stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        last_exit = output.status.code();
+        last_stderr = last_stderr_this;
+        last_exit = last_exit_this;
         if target.is_some() && compile_failure_names_crate(&last_stderr, crate_name) {
             bare_metal_reached_crate = true;
         }
