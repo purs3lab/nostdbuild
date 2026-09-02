@@ -7,7 +7,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-use syn::{Attribute, ItemExternCrate, Meta, visit::Visit};
+use syn::{Attribute, Meta, visit::Visit};
 use walkdir::WalkDir;
 use z3::{self, ast::Bool};
 
@@ -462,36 +462,13 @@ pub fn process_crate(
             // We need to negate the equation since we are
             // trying to remove std features.
             equation = equation.map(|eq| eq.not());
-        } else if !is_main {
-            debug!("Leaf level crate reached {}", name_with_version);
-            let (name, version) = name_with_version.split_once(':').unwrap();
-            if let Some(dep_and_features) = get_deps_and_features(name, version, crate_info) {
-                let names_and_versions: TupleVec = dep_and_features
-                    .iter()
-                    .map(|(dep, _)| (dep.name.clone(), dep.version.clone()))
-                    .collect();
-                let externs = get_item_extern_dep(&items, &names_and_versions);
-                match parse_top_level_externs(
-                    ctx,
-                    &names_and_versions,
-                    &externs,
-                    &mut exchange.telemetry,
-                    &exchange.name_with_version,
-                    Some(name_with_version),
-                ) {
-                    Ok((eq, attr)) => {
-                        if let Some(eq) = eq {
-                            equation = Some(eq.not());
-                            parsed_attr = attr;
-                        }
-                    }
-                    Err(e) => {
-                        debug!("Failed to parse extern crates: {}", e);
-                        return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
-                    }
-                }
-            }
         }
+        // A dependency that reaches here (unconditional no_std, no local
+        // `extern crate std`) contributes no constraint from this source: the
+        // subtree question is answered by `transitive_forbidden_dep_features`,
+        // walked from the parent side through the features that activate this
+        // edge (R34-20 residual). `equation`/`parsed_attr` stay whatever
+        // `parse_main_attributes` produced above.
     }
     let equations = parse_attributes(attrs, ctx);
     let mut filtered = filter_equations(&equations, &parsed_attr.features);
@@ -2804,8 +2781,9 @@ const MAX_FORBIDDEN_DEPTH: usize = 4;
 /// `zeroize` edge is optional, zeroize links std under `std`, and the edge is
 /// `default-features = false`, so nothing generic-array can be asked for reaches
 /// `zeroize/std` and the answer is **no constraint**. The old
-/// `parse_top_level_externs` path answers `¬zeroize` for the same tree, off the
-/// `#[cfg]` on the *top* hop rather than the one where std is linked.
+/// `parse_top_level_externs` path (deleted, R34-20 residual step 3) answered
+/// `¬zeroize` for the same tree, off the `#[cfg]` on the *top* hop rather than
+/// the one where std is linked — a condition that never governed the outcome.
 ///
 /// A hop that hands a std-linking feature over on a **non-optional** edge is
 /// unrepairable from above and is recorded in `telemetry.unrepairable_std_edges`
@@ -5878,191 +5856,6 @@ fn feat_available_for_dep(main_crate_info: &CrateInfo, dep_name: &str, feat: &st
     })
 }
 
-fn parse_top_level_externs<'a>(
-    ctx: &'a z3::Context,
-    names_and_versions: &[(String, String)],
-    externs: &Vec<ItemExternCrate>,
-    telemetry: &mut Telemetry,
-    main_name: &str,
-    parent_name: Option<&str>,
-) -> Result<(Option<Bool<'a>>, ParsedAttr), anyhow::Error> {
-    let mut worklist = Vec::new();
-    for ex in externs {
-        let (equation, parsed_attr) = parse_main_attributes_direct(ex.attrs.first().unwrap(), ctx);
-        // If there is no attribute gating the extern crate,
-        // then we can't control it.
-        if equation.is_none() {
-            continue;
-        }
-        let version = names_and_versions
-            .iter()
-            .find(|(name, _)| name == &ex.ident.to_string())
-            .map(|(_, version)| version);
-        if version.is_none() {
-            continue;
-        }
-        let name_with_version = downloader::clone_from_crates(
-            &ex.ident.to_string(),
-            version,
-            Some(main_name),
-            parent_name,
-        )?;
-        let items = parse_item_extern_crates(&name_with_version, Some(main_name));
-        if items.itemexterncrates.is_empty() {
-            continue;
-        }
-        let std_attrs = get_item_extern_std(&items);
-        if !std_attrs.is_empty() {
-            telemetry.indirect_extern_std_usage_depth = 1;
-            telemetry.indirect_extern_std_usage_crate = Some(name_with_version.clone());
-            return Ok((equation, parsed_attr));
-        }
-        worklist.push((name_with_version, equation, parsed_attr));
-    }
-
-    Ok(parse_n_level_externs_entry(
-        &mut worklist,
-        telemetry,
-        main_name,
-    ))
-}
-
-fn parse_n_level_externs_entry<'a>(
-    worklist: &mut Vec<(String, Option<Bool<'a>>, ParsedAttr)>,
-    telemetry: &mut Telemetry,
-    main_name: &str,
-) -> (Option<Bool<'a>>, ParsedAttr) {
-    let mut worklists = Vec::new();
-    let mut depth = 2;
-
-    worklist.iter().for_each(|(name_with_version, _, _)| {
-        let (name, version) = name_with_version.split_once(':').unwrap();
-        let dep_names = downloader::read_dep_names_and_versions(name, version, false, main_name)
-            .unwrap_or_default();
-        let initial_worklist = dep_names
-            .iter()
-            .map(|(dep_name, dep_version)| format!("{}:{}", dep_name, dep_version))
-            .collect::<Vec<String>>();
-        worklists.push((name_with_version.clone(), initial_worklist));
-    });
-
-    let mut visited: HashSet<String> = HashSet::new();
-
-    loop {
-        if worklists.iter().all(|(_, remaining)| remaining.is_empty()) {
-            telemetry.indirect_extern_std_usage_depth = depth;
-            return (None, ParsedAttr::default());
-        }
-        for (name_with_version, equation, parsed_attr) in worklist.iter() {
-            let local_worklist = worklists
-                .iter_mut()
-                .find(|(name, _)| name == name_with_version)
-                .unwrap();
-            // TODO: BFS across all top-level crates simultaneously - returns on the first
-            // extern crate std hit at the shallowest depth. A crate with a deeper violation
-            // may be missed if another crate hits first at a shallower depth. Consider
-            // exhaustive per-crate traversal if full coverage is needed.
-            if parse_n_level_externs(
-                &mut local_worklist.1,
-                telemetry,
-                main_name,
-                Some(name_with_version),
-                &mut visited,
-            ) {
-                telemetry.indirect_extern_std_usage_depth = depth;
-                return (equation.clone(), parsed_attr.clone());
-            }
-        }
-        depth += 1;
-    }
-}
-
-/// TODO: this and `parse_top_level_externs` still reach `get_all_rs_files`
-/// through `parse_item_extern_crates`, so they parse bin sources, `examples/`,
-/// `benches/` and unreachable files. They walk deps by name with no `ModNode` in
-/// scope, which is why they were left on the old sweep — see the comment on
-/// `get_all_rs_files` for what converting them would take.
-fn parse_n_level_externs(
-    worklist: &mut Vec<String>,
-    telemetry: &mut Telemetry,
-    main_name: &str,
-    parent_name: Option<&str>,
-    visited: &mut HashSet<String>,
-) -> bool {
-    let mut local_worklist = Vec::new();
-    for name_with_version in worklist.drain(..) {
-        if !visited.insert(name_with_version.clone()) {
-            continue;
-        }
-        let (name, version) = name_with_version.split_once(':').unwrap();
-        let new_name_with_version = downloader::clone_from_crates(
-            name,
-            Some(&version.to_string()),
-            Some(main_name),
-            parent_name,
-        )
-        .unwrap();
-        let (name, version) = new_name_with_version
-            .split_once(':')
-            .unwrap_or((name, version));
-        let names_and_versions =
-            downloader::read_dep_names_and_versions(name, version, false, main_name).unwrap();
-        let unfiltered = parse_item_extern_crates(&new_name_with_version, Some(main_name));
-        let std_attrs = get_item_extern_std(&unfiltered);
-        if !std_attrs.is_empty() {
-            telemetry.indirect_extern_std_usage_crate = Some(new_name_with_version);
-            return true;
-        }
-        let externs = get_item_extern_dep(&unfiltered, &names_and_versions);
-        externs.iter().for_each(|ex| {
-            let version = names_and_versions
-                .iter()
-                .find(|(name, _)| name == &ex.ident.to_string())
-                .map(|(_, version)| version);
-            local_worklist.push(format!(
-                "{}:{}",
-                ex.ident,
-                version.unwrap_or(&"latest".to_string())
-            ));
-        });
-    }
-    worklist.extend(local_worklist);
-    false
-}
-
-fn get_item_extern_dep(
-    itemexterncrates: &ItemExternCrates,
-    names: &[(String, String)],
-) -> Vec<ItemExternCrate> {
-    let mut externs = Vec::new();
-    for i in itemexterncrates.itemexterncrates.iter() {
-        debug!("Checking ident: {}", i.ident);
-        names.iter().for_each(|(name, _)| {
-            if i.ident == *name.replace("-", "_") {
-                debug!("Found ident: {}", i.ident);
-                externs.push(i.clone());
-            }
-        });
-    }
-    externs
-}
-
-fn get_deps_and_features<'a>(
-    name: &str,
-    version: &str,
-    crate_info: &'a CrateInfo,
-) -> Option<&'a Vec<(CrateInfo, Vec<String>)>> {
-    if crate_info.name == name && crate_info.version == version {
-        return Some(&crate_info.deps_and_features);
-    }
-    for (dep, _) in &crate_info.deps_and_features {
-        if let Some(res) = get_deps_and_features(name, version, dep) {
-            return Some(res);
-        }
-    }
-    None
-}
-
 fn extract_key(s: &str) -> &str {
     s.split_once("/").map_or(s, |(_, value)| value)
 }
@@ -6387,12 +6180,13 @@ fn parse_meta_for_cfg_attr<'a>(
 ///   * it has no notion of reachability, so dead files that no `mod`
 ///     declaration references are parsed anyway.
 ///
-/// The blocker for the remaining callers (`parse_top_level_externs` /
-/// `parse_n_level_externs`) is that they have no `ModNode` in scope, and the
-/// tree is only complete after a covering run — macro-expansion-generated
-/// modules arrive via the plugin's `macro_modules` and OUT_DIR `include!` files
-/// via `resolve_pending_includes`. Converting them means either threading a root
-/// through or accepting the syn-reachable subset.
+/// The blocker for the remaining callers (`parse_item_extern_crates_for_files`,
+/// and `visit`'s fallback when no `ModNode`-derived file list is passed in) is
+/// that they have no `ModNode` in scope, and the tree is only complete after a
+/// covering run — macro-expansion-generated modules arrive via the plugin's
+/// `macro_modules` and OUT_DIR `include!` files via `resolve_pending_includes`.
+/// Converting them means either threading a root through or accepting the
+/// syn-reachable subset.
 fn get_all_rs_files(path: &Path, recurse: bool, main_name: Option<&str>) -> Vec<PathBuf> {
     if path.is_file() && path.extension().unwrap_or_default() == "rs" {
         return vec![path.to_path_buf()];

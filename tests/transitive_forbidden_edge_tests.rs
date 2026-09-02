@@ -261,9 +261,9 @@ fn an_optional_edge_that_cannot_reach_the_leafs_std_feature_forbids_nothing() {
     // generic-array declares `zeroize = { optional = true, default-features =
     // false }` and forwards nothing to it, so no feature of generic-array turns
     // `zeroize/std` on and the honest answer is that there is nothing to forbid.
-    // The old `parse_top_level_externs` path answers `¬zeroize` here, off the
-    // `#[cfg(feature = "zeroize")]` on the extern crate rather than off the hop
-    // where std is actually linked.
+    // The old `parse_top_level_externs` path (deleted, R34-20 residual step 3)
+    // answered `¬zeroize` here, off the `#[cfg(feature = "zeroize")]` on the
+    // extern crate rather than off the hop where std is actually linked.
     //
     // This is the half that fails if walking an optional edge is read as
     // "forbid whatever activates it".
