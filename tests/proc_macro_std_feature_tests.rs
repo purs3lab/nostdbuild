@@ -356,6 +356,7 @@ fn record(usage_crate: &str, expansion_crate: Option<&str>) -> PathRecord {
         expansion_crate: expansion_crate.map(str::to_string),
         is_extern_crate: true,
         gateway_anchor: None,
+        is_float_primitive_method: false,
     }
 }
 

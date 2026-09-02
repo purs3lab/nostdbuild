@@ -1765,6 +1765,34 @@ pub fn crate_named_std_in_path(record: &PathRecord) -> bool {
     record.expansion_crate.is_none() && record.path_text.split("::").any(|seg| seg.trim() == "std")
 }
 
+/// Is a host-only-run's "still std" for this item safe to treat as a
+/// don't-care, rather than as unproven-and-therefore-blocking (R34-3)?
+///
+/// Two classes say yes, and both are read off what the compiler resolved —
+/// never off `path_text`, which is only ever a rendering:
+///
+/// * **`definition_crate` is `core` or `alloc`.** The record is std only
+///   because the *path* went through std's re-export facade; the item itself
+///   is defined where `*-none` has it too.
+/// * **`definition_crate` is `std` and the record is a primitive float's own
+///   inherent method** (`is_float_primitive_method`, set in the plugin from
+///   `self_ty.kind() == ty::Float(_)`, not from matching `f32`/`f64` text).
+///   This is the transcendental-math set (`sqrt`, `sin`, `powi`, …) that needs
+///   a libm binding — real on this toolchain, confirmed by hand against
+///   `tuit 0.2.1`: with std off, `((..) as f32).sqrt()` fails
+///   `E0599: no method named 'sqrt' found for type 'f32'`, not a resolution
+///   into `core`.
+///
+/// Everything else — `HashMap`, `io::Write`, `thread::LocalKey`, `Instant`,
+/// `File`, `process::Command` — is genuinely std-only on every target there
+/// is, and treating *that* as a don't-care would report a std crate as
+/// no_std on the absence of evidence ([[probe-code-deletion-fallacy]]). Those
+/// stay unproven and keep blocking, with the reason already printed.
+pub fn host_only_downgrade_is_safe(record: &PathRecord) -> bool {
+    matches!(record.definition_crate.as_str(), "core" | "alloc")
+        || (record.definition_crate == "std" && record.is_float_primitive_method)
+}
+
 /// The package name in a ``could not compile `X` `` line, if the line is one.
 fn compiled_package(line: &str) -> Option<&str> {
     let rest = line.trim().strip_prefix("error: could not compile ")?;
@@ -5201,6 +5229,13 @@ pub fn analyze_crate<'a>(
     // records in that case silences genuine std — main_tests caught assertr 0.4.3
     // (ungated `use std::marker::PhantomData`) and tinywasm-parser 0.8.0
     // (`impl crate::std::error::Error`) when an earlier version of this tried it.
+    // Spans downgraded below that are then excused from `unproven` entirely —
+    // R34-3, `host_only_downgrade_is_safe`. The decision stays `CompileFailed`
+    // (so `all_hard`/`final_condition`/`compile_failed_spans` are untouched);
+    // only the later `unproven` collection subtracts this set, so a crate whose
+    // only unproven spans are all excused still gets a configuration emitted
+    // instead of the fatal exit at `bin/main.rs`.
+    let mut host_only_excused: HashSet<ReadableSpan> = HashSet::new();
     if !covering_runs.is_empty() && covering_runs.iter().all(|r| r.std_inconclusive) {
         let mut downgraded = 0usize;
         for result in hard_imports.iter_mut().chain(hard_usages.iter_mut()) {
@@ -5217,6 +5252,16 @@ pub fn analyze_crate<'a>(
                         None => String::new(),
                     }
                 );
+                if host_only_downgrade_is_safe(&result.target.analysis.exemplar) {
+                    debug!(
+                        "'{}' excused as a don't-care: definition_crate={:?}, \
+                         is_float_primitive_method={}",
+                        result.target.analysis.exemplar.path_text,
+                        result.target.analysis.exemplar.definition_crate,
+                        result.target.analysis.exemplar.is_float_primitive_method
+                    );
+                    host_only_excused.insert(result.target.analysis.span.clone());
+                }
                 result.decision = ProbeDecision::CompileFailed {
                     reason: format!(
                         "'{}' is std only in runs that never left the host — no covering run \
@@ -5231,8 +5276,10 @@ pub fn analyze_crate<'a>(
         if downgraded > 0 {
             debug!(
                 "{} span(s) downgraded to unproven: no covering run compiled for a bare-metal \
-                 target and none of them names std in this crate's own source",
-                downgraded
+                 target and none of them names std in this crate's own source ({} excused as \
+                 don't-cares)",
+                downgraded,
+                host_only_excused.len()
             );
         }
     }
@@ -5261,12 +5308,19 @@ pub fn analyze_crate<'a>(
     // demonstrably fine. `compile_failed_spans` keeps counting all three, so the
     // existing metric is unchanged and the difference between the two is exactly
     // the conditional-origin failures.
+    // Unfiltered: `host_only_excused` spans stay in here too, so nothing that
+    // was ever std-in-a-host-run vanishes from `unproven_std_usages.json` —
+    // the O-16 guard (`std_a_dependencys_macro_wrote_is_not_this_crate_naming_std`)
+    // is about exactly this, for a span this excusal would also cover. What the
+    // excused set changes is only whether *this crate's* `unproven` count blocks
+    // emission — decided at the one call site that reads it, `bin/main.rs`.
     let unproven: Vec<ReadableSpan> = hard_imports
         .iter()
         .chain(hard_usages.iter())
         .filter(|a| matches!(a.decision, ProbeDecision::CompileFailed { .. }))
         .map(|a| a.target.analysis.span.clone())
         .collect();
+    telemetry.host_only_excused_spans = host_only_excused.len();
     // Why, in the compiler's own words, deduplicated: one gate's failure covers
     // every span behind it, and a crate with 300 spans behind two gates has two
     // things to say, not 300. Kept in first-seen order so the first line is the

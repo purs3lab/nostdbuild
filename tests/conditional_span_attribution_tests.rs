@@ -44,6 +44,7 @@ fn record(path_text: &str, usage_crate: &str, line: usize) -> PathRecord {
         expansion_crate: None,
         is_extern_crate: false,
         gateway_anchor: None,
+        is_float_primitive_method: false,
     }
 }
 

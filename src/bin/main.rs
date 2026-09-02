@@ -630,10 +630,21 @@ fn run() -> anyhow::Result<()> {
     // a clearance nothing verified — the quiet-clearance hole
     // `Telemetry::compile_failed_spans` only counted. Fail with a distinct reason
     // so the eval can separate "proven clean" from "not shown dirty".
-    if !stats.unproven_std_usage_matches.is_empty() {
+    //
+    // `host_only_excused_spans` (R34-3) is a *count*, not a filter on
+    // `unproven_std_usage_matches` — that list keeps every span so nothing a
+    // host-only run touched vanishes from `unproven_std_usages.json`. Only the
+    // decision to exit fatally subtracts it: a crate whose unproven spans are
+    // all excused (a transcendental float method with no evidence beyond a host
+    // build, or a core/alloc item reached through std's facade) still has
+    // something real to say about the rest of its build, so it gets a chance to
+    // say it instead of `[]`.
+    let excused = exchange.telemetry.host_only_excused_spans;
+    if stats.unproven_std_usage_matches.len() > excused {
         debug!(
-            "ERROR: {} std span(s) in the main crate could not be proven avoidable",
-            stats.unproven_std_usage_matches.len()
+            "ERROR: {} std span(s) in the main crate could not be proven avoidable ({} excused)",
+            stats.unproven_std_usage_matches.len(),
+            excused
         );
         // Attributed, like T5's `dep_not_no_std` exit: the probe compiled
         // something and the compiler said why it failed, so the exit says it too.

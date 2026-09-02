@@ -1,0 +1,23 @@
+[package]
+name = "host_only_float_math"
+description = "R34-3 class B: a primitive float's own inherent method (needs libm) on a run that never left the host"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "host_only_float_math"
+
+# Same shape as host_only_shim's `shim` edge: no `default-features = false`,
+# so the dependency is built with its own default `std` feature regardless of
+# what this crate asks for, and every bare-metal target fails inside it before
+# this crate is ever compiled.
+[dependencies.shim]
+path = "shim"
+
+[features]
+default = ["std"]
+std = []
+
+[workspace]
+exclude = ["shim"]

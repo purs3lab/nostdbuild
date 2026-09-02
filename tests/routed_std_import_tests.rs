@@ -62,6 +62,7 @@ fn std_record_at(name: &str, needle: &str, path_text: &str) -> PathRecord {
         expansion_crate: None,
         is_extern_crate: false,
         gateway_anchor: None,
+        is_float_primitive_method: false,
     }
 }
 

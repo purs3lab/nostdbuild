@@ -848,6 +848,15 @@ pub struct Telemetry {
     /// not build*, which is. The compiler already answered that question in the
     /// build the probe ran; this is where the answer is kept.
     pub unproven_std_span_reasons: Vec<String>,
+    /// Of `unproven_std_spans`, how many were excused as a host-only-run
+    /// don't-care (R34-3, `driver::host_only_downgrade_is_safe`) rather than
+    /// left blocking. Excused spans stay `CompileFailed` — `all_hard` and
+    /// `final_condition` never see them differently — only the fatal
+    /// `unproven` exit in `bin/main.rs` no longer counts them, so a
+    /// configuration is emitted instead of `[]`. Kept as a count, not silence:
+    /// the whole reason for the fatal exit this widens was that a quiet
+    /// clearance should not pass for a proven one.
+    pub host_only_excused_spans: usize,
     /// Features `driver::discover_build_enablers` proved the crate cannot build
     /// for any bare-metal target without (bevy_input's `libm`).
     ///

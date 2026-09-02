@@ -176,6 +176,18 @@ pub struct PathRecord {
     /// `extern crate` records, which name a crate rather than an item in one.
     #[serde(default)]
     pub definition_span: Option<ReadableSpan>,
+    /// True when this is a method-call record whose receiver type is a
+    /// primitive float (`f16`/`f32`/`f64`/`f128`) — `self_ty.kind()` matched
+    /// `ty::Float(_)` at the call site, not a name read off `path_text`.
+    ///
+    /// What this identifies: a `definition_crate: "std"` record here is a
+    /// transcendental math method (`sqrt`, `sin`, `powi`, …) that needs a libm
+    /// binding, not a genuinely OS-dependent capability — the same distinction
+    /// `ty_head` draws for impl selection, extended to method-call resolution
+    /// (R34-3). `false` for every other record, including float methods
+    /// reached through a trait (`Float::sqrt`) rather than the inherent one.
+    #[serde(default)]
+    pub is_float_primitive_method: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

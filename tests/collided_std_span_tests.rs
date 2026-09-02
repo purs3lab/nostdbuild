@@ -47,6 +47,7 @@ fn record(
         expansion_crate: None,
         is_extern_crate: false,
         gateway_anchor: None,
+        is_float_primitive_method: false,
     }
 }
 

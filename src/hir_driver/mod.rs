@@ -212,6 +212,7 @@ impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
                     gateway_anchor: None,
                     // An `extern crate` names a crate, not an item in one.
                     definition_span: None,
+                    is_float_primitive_method: false,
                 });
             }
             _ => {
@@ -321,6 +322,9 @@ impl<'r, 'a, 'tcx> AstVisitor<'a> for PathResolver<'r, 'tcx> {
                 // Set by the driver's facade-gateway pass, not here.
                 gateway_anchor: None,
                 definition_span: definition_span_of(&self.tcx, final_def_id),
+                // A `use`/path record names an item, never a receiver type —
+                // there is no `self_ty` here to classify.
+                is_float_primitive_method: false,
             });
         }
 
@@ -637,6 +641,10 @@ impl MethodResolver<'_, '_> {
         // Confirmed on xmrs 0.9.9, whose eight `f32::{powf,log2,round,…}` spans
         // resolve to `micromath` in the run `discover_build_enablers` compiles.
         let parent = self.tcx.parent(def_id);
+        // Set alongside `owner` for the inherent-impl arm only: an impl's
+        // `self_ty` is the receiver rustc actually bound, not a name read back
+        // off `owner`'s rendered text (R34-3 — see `PathRecord::is_float_primitive_method`).
+        let mut is_float_primitive_method = false;
         let owner = match self.tcx.def_kind(parent) {
             rustc_hir::def::DefKind::Impl { .. } => {
                 let self_ty = self
@@ -644,6 +652,7 @@ impl MethodResolver<'_, '_> {
                     .type_of(parent)
                     .instantiate_identity()
                     .skip_norm_wip();
+                is_float_primitive_method = matches!(self_ty.kind(), ty::Float(_));
                 match self_ty.ty_adt_def() {
                     Some(adt) => self.tcx.item_name(adt.did()).to_string(),
                     // Primitives, references, slices — no item name to bind.
@@ -669,6 +678,7 @@ impl MethodResolver<'_, '_> {
             // Set by the driver's facade-gateway pass, not here.
             gateway_anchor: None,
             definition_span: definition_span_of(&self.tcx, def_id),
+            is_float_primitive_method,
         });
     }
 }

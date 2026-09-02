@@ -33,6 +33,7 @@ fn extern_crate_record(alias: &str, target: &str, defining_module: &str) -> Path
         expansion_crate: None,
         is_extern_crate: true,
         gateway_anchor: None,
+        is_float_primitive_method: false,
     }
 }
 
@@ -54,6 +55,7 @@ fn usage_record(
         expansion_crate: None,
         is_extern_crate: false,
         gateway_anchor: None,
+        is_float_primitive_method: false,
     }
 }
 
@@ -137,6 +139,7 @@ fn facade_ignores_use_imports_not_extern_crate_decls() {
         expansion_crate: None,
         is_extern_crate: false, // not an extern crate declaration
         gateway_anchor: None,
+        is_float_primitive_method: false,
     };
 
     let mut out = output(vec![

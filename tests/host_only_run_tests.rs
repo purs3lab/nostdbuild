@@ -31,8 +31,8 @@ use std::path::Path;
 use cargo_test_support::{Project, cargo_test, project};
 
 use nostd::Telemetry;
-use nostd::driver::{analyze_crate, compile_failure_names_crate};
-use nostd::types::ReadableSpan;
+use nostd::driver::{analyze_crate, compile_failure_names_crate, host_only_downgrade_is_safe};
+use nostd::types::{PathContext, PathRecord, ReadableSpan};
 
 /// Copy a whole fixture directory into a cargo test project — one of the
 /// fixtures ships a path dependency, so Cargo.toml + lib.rs is not enough.
@@ -203,4 +203,107 @@ fn cargos_give_up_line_says_whether_the_crate_was_reached() {
     // A dependency whose name merely contains the crate's is not the crate.
     let lookalike = "error: could not compile `fatfs-utils` (lib) due to 1 previous error\n";
     assert!(!compile_failure_names_crate(lookalike, "fatfs:0.3.6"));
+}
+
+/// `tests/fixtures/host_only_float_math/lib.rs`'s `x.sqrt()` call.
+const SQRT_CALL_LINE: usize = 18;
+
+/// R34-3: `f64::sqrt` has nothing binding `f64` locally — same as `flush_it`
+/// above, ungated by construction — so on a host-only run it is `StillStd`
+/// with no covering run ever having left the host to say otherwise. Real
+/// rustc backs the physics this test assumes: with std off, `tuit 0.2.1`
+/// fails this exact call `E0599: no method named 'sqrt' found for type
+/// 'f32'`, a hard error, not a resolution into `core` — so "unproven" is the
+/// honest answer and "excused as a don't-care" is what turns that into a
+/// configuration instead of the fatal `[]` `bin/main.rs` used to emit for
+/// every crate whose only std evidence was shaped like this.
+#[cargo_test]
+fn a_host_only_transcendental_float_method_is_excused_as_a_dont_care() {
+    let (_p, manifest) = load_fixture("host_only_float_math");
+
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut telemetry = Telemetry::default();
+    let (hard_spans, _cond, _cov, _ce, _root, _records, unproven, _, _) =
+        analyze_crate(&ctx, &manifest, "host_only_float_math", &mut telemetry);
+
+    assert!(
+        telemetry.std_inconclusive_runs > 0,
+        "expected every covering run to be host-only — the unused `shim` \
+         dependency should make every bare-metal target fail before this \
+         crate is ever reached; none was flagged, so the rule under test \
+         never fires"
+    );
+    assert!(
+        hard_spans.is_empty(),
+        "a host-only run negating nothing is not proof this crate cannot be \
+         no_std; got {hard_spans:?}"
+    );
+
+    let sqrt_span = |s: &ReadableSpan| s.start_line == SQRT_CALL_LINE;
+    assert!(
+        unproven.iter().any(sqrt_span),
+        "must not vanish from the diagnostic list either — `unproven_std_usages.json` \
+         still needs to show it; got {unproven:?}"
+    );
+    assert!(
+        telemetry.host_only_excused_spans >= 1,
+        "the sqrt span at line {SQRT_CALL_LINE} is a std-defined primitive-float \
+         inherent method (`is_float_primitive_method`, set structurally from \
+         `self_ty.kind() == ty::Float(_)` in the plugin — never from matching \
+         'f32'/'f64' text) and should be excused from the fatal unproven exit; \
+         got host_only_excused_spans={}",
+        telemetry.host_only_excused_spans
+    );
+}
+
+/// A `PathRecord` with only the two fields `host_only_downgrade_is_safe`
+/// reads set to something interesting; every other field is inert filler.
+fn item_test_record(definition_crate: &str, is_float_primitive_method: bool) -> PathRecord {
+    PathRecord {
+        path_text: "irrelevant".to_string(),
+        definition_crate: definition_crate.to_string(),
+        context: PathContext::Other,
+        span: ReadableSpan {
+            file: "lib.rs".to_string(),
+            start_line: 1,
+            start_col: 0,
+            end_line: 1,
+            end_col: 1,
+            usage_crate: Some("std".to_string()),
+        },
+        local_route: None,
+        defining_module: None,
+        macro_body_cfgs: vec![],
+        is_extern_crate: false,
+        expansion_crate: None,
+        gateway_anchor: None,
+        definition_span: None,
+        is_float_primitive_method,
+    }
+}
+
+/// The item test in isolation, all four corners of its truth table — verified
+/// non-vacuous rather than merely green, per [[classifier-out-of-domain]]'s
+/// lesson about trusting a mechanism nobody made produce a counter-example.
+#[test]
+fn host_only_downgrade_item_test_truth_table() {
+    // Class A: a re-export facade — the record is std only because the path
+    // went through it, and the item itself lives where `*-none` has it too.
+    assert!(host_only_downgrade_is_safe(&item_test_record("core", false)));
+    assert!(host_only_downgrade_is_safe(&item_test_record("alloc", false)));
+
+    // Class B: a primitive float's own inherent method — needs libm, real on
+    // this toolchain (see the fixture test above).
+    assert!(host_only_downgrade_is_safe(&item_test_record("std", true)));
+
+    // Class C: genuinely std-only (`HashMap`, `io::Write`, `thread::LocalKey`,
+    // …) — `is_float_primitive_method` is false because these are not
+    // primitive-float methods at all, and no other rule excuses them.
+    assert!(!host_only_downgrade_is_safe(&item_test_record("std", false)));
+
+    // The float flag only ever means anything paired with `std`: a dependency
+    // crate is not core/alloc/std, so a float method resolving into one stays
+    // blocked — nothing licenses treating an arbitrary dependency's own
+    // floating-point method as the libm don't-care.
+    assert!(!host_only_downgrade_is_safe(&item_test_record("shim", true)));
 }
