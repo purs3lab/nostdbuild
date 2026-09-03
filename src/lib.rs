@@ -654,6 +654,15 @@ pub struct Telemetry {
     /// dependency's emitted edge already compiles, or when every retry failed
     /// too.
     pub dep_edge_enabler_features: Vec<(String, String)>,
+    /// Main-crate features dropped after a build that failed on every target,
+    /// kept off because the rebuild without them then succeeded (R34-23,
+    /// `driver::search_removals`). The other three post-failure retries
+    /// (`emitted_set_enabler_features`, `dep_edge_enabler_features`, and the
+    /// analysis-time `build_enabler_features`) only ever *add* a feature to a
+    /// fixed base; this is the first that asks the opposite question — is
+    /// something already selected the reason the build fails. Empty when the
+    /// full emitted set is minimal already, or when no subset compiles.
+    pub selected_feature_removed: Vec<String>,
     /// Did we remove any unnecessary features from main crate features that main enabled for any of its dependencies
     pub unnecessary_features_removed: Vec<(String, bool)>,
     /// Features that were moved for the above case

@@ -287,6 +287,20 @@ fn test_etime() {
     run_main_test("etime", "0.1.8", "x86_64-unknown-none");
 }
 
+/// R34-23's guard row: `parser_rules`/`track_open_tags` gate a `Box` usage in
+/// `src/parser/rules.rs` that no file in the crate ever imports locally, so
+/// the emitted selection fails on every target no matter which of the two
+/// features is on. Nothing else in the crate needs either — the fix is
+/// `driver::search_removals` dropping both and retrying with
+/// `--no-default-features` alone, which builds clean. The addition-only
+/// retries above it in the chain (`enablers_for_selection`,
+/// `dep_edge_retry_candidates`) cannot reach this: neither ever tries
+/// removing something the emitted set already selected.
+#[cargo_test]
+fn test_bbx() {
+    run_main_test("bbx", "0.3.1", "x86_64-unknown-none");
+}
+
 /// Regression: a crate whose only std usage lives in an auto-discovered bin
 /// target. `chainable-if` is a no_std-clean library shipping the stock
 /// `fn main() { println!("Hello, world!"); }` alongside it.

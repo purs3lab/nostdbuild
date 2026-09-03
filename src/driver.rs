@@ -4763,6 +4763,140 @@ pub fn enablers_for_selection(
     found
 }
 
+/// Features already in the emitted selection with no bearing on why the build
+/// failed — the flip side of [`enablers_for_selection`] (KI-30). That function
+/// asks what unselected feature the build needs; every retry before it in
+/// `bin/main`'s chain asks the same "what should be *added*" question. This is
+/// the first that asks the opposite one — is something already selected the
+/// reason it fails (R34-23).
+///
+/// Three confirmed shapes: `bbx-0.3.1` compiles with no features at all
+/// (`parser_rules`/`track_open_tags` gate a `Box` usage nothing else needs);
+/// `taffy-0.8.1` compiles dropping `detailed_layout_info` alone, keeping
+/// `grid`; `chf-0.3.1` compiles dropping its own `alloc`, keeping
+/// `custom_no_std_feature_enabled`. In each, the failing line sits behind a
+/// feature that *is* selected, and a strict subset of the emitted selection
+/// builds clean.
+///
+/// `selection` is the emitted set's main-crate features, closed over the
+/// crate's feature table exactly as [`enablers_for_selection`] builds it;
+/// `dep_features` is the `<dep>/<feat>` half, held fixed the same way — it is
+/// never a candidate here either, for the same reason: a trial missing it is
+/// not the configuration that failed. Returns the features that were
+/// dropped, kept only because the rebuild without them then compiled; empty
+/// when the emitted set is already minimal, or when no subset compiles.
+///
+/// **Boundary:** a flat removal only. `kitoken-0.10.1` needs `convert` (a
+/// superfeature) replaced by three of its five sub-features, not dropped
+/// outright — expanding a selected superfeature into its declared members and
+/// searching there is future work. This function cannot reach that repair,
+/// and correctly returns nothing for it: dropping `convert` whole loses
+/// conversion support entirely, which is not the same repair and is not
+/// attempted.
+pub fn search_removals(
+    manifest: &str,
+    crate_name: &str,
+    selection: &HashSet<String>,
+    dep_features: &[String],
+) -> Vec<String> {
+    // Same bookkeeping exclusion as `enablers_for_selection`: these are never
+    // an answer to "what does this crate need", so never a candidate to drop
+    // either — dropping `custom_no_std_feature_enabled` would undo a parked
+    // repair the tool already made on evidence, not test anything new.
+    const SYNTHETIC: [&str; 3] = [
+        consts::CUSTOM_FEATURES_DISABLED,
+        consts::CUSTOM_FEATURES_ENABLED,
+        consts::DEP_UNNECESSARY_FEATURES,
+    ];
+    let mut candidates: Vec<String> = selection
+        .iter()
+        .filter(|f| !SYNTHETIC.contains(&f.as_str()))
+        .cloned()
+        .collect();
+    candidates.sort();
+    if candidates.is_empty() {
+        debug!("[removals] emitted set has no removable main-crate feature");
+        return Vec::new();
+    }
+
+    let base: Vec<String> = dep_features.to_vec();
+    let budget = std::cell::Cell::new(MAX_ENABLER_PROBES);
+    let pinned = std::cell::Cell::new(false);
+    let compiles = |keep: &[String]| -> bool {
+        if budget.get() == 0 {
+            return false;
+        }
+        budget.set(budget.get() - 1);
+        let pin = match (pinned.get(), *LAST_GOOD_TARGET.lock().unwrap()) {
+            (false, _) => None,
+            (true, Some(t)) => Some(t),
+            (true, None) => Some(consts::TARGET_LIST[0]),
+        };
+        pinned.set(true);
+        let mut feats = base.clone();
+        feats.extend(keep.iter().cloned());
+        let trial = timing::scope("removal_trial", keep.join(","));
+        let outcome = run_rustc_plugin_pass_with(manifest, crate_name, &feats, None, false, pin);
+        let ok = matches!(outcome, PassOutcome::Success { .. });
+        trial.meta("compiles", ok.to_string());
+        drop(trial);
+        debug!(
+            "[removals] {} keeping {:?}",
+            if ok { "compiles" } else { "fails" },
+            keep
+        );
+        ok
+    };
+
+    // The base alone — dep features, nothing from the main crate's own
+    // selection — is the emptiest trial there is. If that already compiles,
+    // none of `candidates` was needed at all: `bbx-0.3.1`'s shape.
+    if compiles(&[]) {
+        debug!("[removals] dep features alone compile; every selected main feature is removable");
+        return candidates;
+    }
+
+    // `base ∪ candidates` is the configuration that already failed — that
+    // failure is the reason this runs, so it is not retried. Shrink from
+    // there: halving first (cheap when one feature is the whole problem),
+    // then removal one at a time.
+    let mut keep = candidates.clone();
+    while keep.len() > 1 && budget.get() > 0 {
+        let mid = keep.len() / 2;
+        let left: Vec<String> = keep[..mid].to_vec();
+        let right: Vec<String> = keep[mid..].to_vec();
+        if compiles(&left) {
+            keep = left;
+        } else if compiles(&right) {
+            keep = right;
+        } else {
+            // The needed subset straddles the split; the removal pass below
+            // finishes it.
+            break;
+        }
+    }
+    for cand in keep.clone() {
+        if budget.get() == 0 {
+            break;
+        }
+        let trial: Vec<String> = keep.iter().filter(|f| **f != cand).cloned().collect();
+        if compiles(&trial) {
+            keep = trial;
+        }
+    }
+
+    if keep.len() == candidates.len() {
+        debug!("[removals] no subset of the emitted selection compiles; nothing to drop");
+        return Vec::new();
+    }
+    let removed: Vec<String> = candidates
+        .into_iter()
+        .filter(|f| !keep.contains(f))
+        .collect();
+    debug!("[removals] crate builds dropping {:?}", removed);
+    removed
+}
+
 /// The compile-and-shrink half of [`discover_build_enablers`], over a base set
 /// and candidate list the caller has already chosen.
 ///

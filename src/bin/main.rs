@@ -1500,6 +1500,68 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
+    // R34-23: after every repair above has failed, ask the opposite question
+    // of all of them — is something *already selected* the reason the build
+    // fails, not something missing. `bbx-0.3.1`, `taffy-0.8.1` and `chf-0.3.1`
+    // are the rows this is built and guarded against: each has the failing
+    // line behind a feature the emitted set already turned on, and a strict
+    // subset of that same set builds clean (`bbx` needs nothing at all;
+    // `taffy` only loses `detailed_layout_info`; `chf` only loses its own
+    // `alloc`). `driver::search_removals` is the mirror of KI-30's
+    // `enablers_for_selection` two blocks up — same post-failure shape, same
+    // probe budget, opposite direction.
+    if no_std && !one_succeeded {
+        let selection: HashSet<String> = main_features.iter().cloned().collect();
+        let removed = {
+            let _t = timing::scope("emitted_set_removals", &exchange.name_with_version);
+            driver::search_removals(&main_manifest, &exchange.name_with_version, &selection, &deps_args)
+        };
+        if !removed.is_empty() {
+            let repaired: Vec<String> = main_features
+                .iter()
+                .filter(|f| !removed.contains(f))
+                .cloned()
+                .collect();
+            let (repair_args, repair_combined, repair_len) =
+                assemble_final_args(disable_default, &repaired, &deps_args);
+            println!(
+                "Build failed for every target; retrying dropping {:?}: {:?}",
+                removed, repair_args
+            );
+            let scout = compiler::scout_target(&stats, &before_build);
+            if compiler::try_alternative(
+                &exchange.name_with_version,
+                &target,
+                &repair_args,
+                "retry_with_selected_feature_removal",
+                &before_build,
+                scout.as_deref(),
+                &mut stats,
+                &mut exchange.telemetry,
+            )? {
+                // Nothing downstream reads `main_features`/`deps_args` again —
+                // this is the last retry in the chain — so unlike earlier
+                // blocks there is no further state to keep in sync.
+                final_args = repair_args;
+                combined_features = repair_combined;
+                final_features_len = repair_len;
+                exchange.telemetry.selected_feature_removed = removed;
+                one_succeeded = true;
+                println!("Final args after selected-feature removal: {:?}", final_args);
+                // Re-derived from the set that shipped, like the repairs
+                // above: only the check gets to make a statement about the
+                // emitted config.
+                violated = parser::violated_compile_error_constraints(
+                    &ctx,
+                    &main_attributes,
+                    &exchange.crate_info,
+                    &emitted_features(&combined_features),
+                    !disable_default,
+                );
+            }
+        }
+    }
+
     exchange.telemetry.final_features_length = final_features_len;
 
     if !violated.is_empty() {
