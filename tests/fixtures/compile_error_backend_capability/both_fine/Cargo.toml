@@ -1,0 +1,20 @@
+# bulletproofs-bls-4.0.0's shape in miniature: the crate refuses to build
+# unless one of two optional-dependency backends is selected, and only one of
+# the two backends actually supports no_std.
+[package]
+name = "both_fine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.rust_backend]
+version = "1.0.0"
+optional = true
+
+[dependencies.blst_backend]
+version = "1.0.0"
+optional = true
+
+[features]
+default = []
+rust = ["rust_backend"]
+blst = ["blst_backend"]

@@ -2181,6 +2181,133 @@ pub fn dependency_compile_error_constraints<'a>(
     constraints
 }
 
+/// This crate's own `compile_error!` disjunctions name feature atoms without
+/// knowing which optional dependency each one resolves to, or whether that
+/// dependency can build no_std at all — KI-3.
+///
+/// bulletproofs-bls-4.0.0's `#[cfg(all(not(feature = "rust"), not(feature =
+/// "blst")))] compile_error!("At least `rust` or `blst` must be selected")`
+/// names two backends: `rust` reaches `bls12_381_plus` (no_std-capable) and
+/// `blst` reaches `blstrs_plus` 0.8.18 (not). Nothing in the feature solve
+/// knows the backends, so Z3 is free to satisfy the disjunction with `blst`;
+/// the dependency walk then severs `blstrs_plus` as not-no_std and leaves
+/// `blst` on (KI-2), and the crate dies on `E0433 … unlinked crate
+/// blstrs_plus` — a different failure than the one the `compile_error!` was
+/// guarding against, over a configuration the tool could have avoided by
+/// preferring the other backend up front.
+///
+/// **Which of KI-3's three options this is — read this before changing it.**
+/// The KNOWN_ISSUES.md entry lists three ways to feed a dependency's no_std
+/// verdict back into the branch pick:
+///   1. Defer every manifest write until the whole crate — main and every
+///      dependency — has been solved once as a dry pass, then re-solve with
+///      the accumulated negatives. Cleanest, biggest refactor.
+///   2. Solve, write, build; on failure restore `Cargo.toml` from `.orig` and
+///      retry with a growing forbidden set, bounded to a couple of
+///      iterations. Cheaper than (1), still a full re-analysis per retry.
+///   3. Before the main solve ever runs, cheaply check only the optional
+///      dependencies that a `compile_error!` disjunction actually names, and
+///      forbid the ones that fail. Narrowest; handles exactly the shape that
+///      bit bulletproofs-bls.
+///
+/// **This function is option 3**, taken first per the entry's own
+/// recommendation. It is a syntactic, no-compile check (`crate_entry_file` +
+/// one crate-root parse per distinct optional dependency named this way — the
+/// same cost [`dependency_compile_error_constraints`] already pays per
+/// dependency), it never re-solves or retries a build, and it only ever
+/// forbids a feature that already appears in one of this crate's own
+/// `compile_error!` conditions — an optional dependency this crate reaches
+/// with no `compile_error!` naming it is untouched. **If a real case needs
+/// more than this** — a dependency whose no_std-capability itself depends on
+/// features only the main solve would choose, or a disjunction that does not
+/// live in a crate-root file this syntactic pass reads — options 1 or 2 are
+/// the fallback the entry describes; do not stretch this function to cover
+/// them, extend the KI-3 entry's own reasoning instead.
+///
+/// Folded into `final_condition` in [`analyze_crate`] alongside the probe
+/// conditions and build enablers, one candidate at a time, kept only if the
+/// running conjunction stays satisfiable — the same discipline
+/// [`dependency_compile_error_constraints`]'s `unreachable_atom` branch uses,
+/// so a crate whose *every* backend happens to fail this check is left
+/// exactly as it was rather than handed an unsat `all_hard`.
+pub fn compile_error_infeasible_backend_constraints<'a>(
+    ctx: &'a Context,
+    manifest: &str,
+    manifest_toml: &toml::Value,
+) -> Vec<Bool<'a>> {
+    let Some(crate_dir) = Path::new(manifest).parent() else {
+        return Vec::new();
+    };
+    let files = compile_error_source_files(crate_dir);
+    if files.is_empty() {
+        return Vec::new();
+    }
+    let attrs = parser::parse_crate("<self>", false, None, &[], Some(&files));
+    if attrs.compile_error_attrs.is_empty() {
+        return Vec::new();
+    }
+
+    let optional = downloader::optional_deps_in_manifest(manifest_toml);
+    if optional.is_empty() {
+        return Vec::new();
+    }
+    let edges: HashMap<String, toml::Value> = parser::dependency_edges(manifest_toml)
+        .into_iter()
+        .collect();
+
+    // dep_key -> "this dependency's crate root carries no no_std attribute",
+    // cached because the same backend is often named by more than one
+    // `compile_error!` (a guard arm and a `pub use`'s own cfg, say).
+    let mut checked: HashMap<String, bool> = HashMap::new();
+    let mut seen_atoms: HashSet<String> = HashSet::new();
+    let mut forbid = Vec::new();
+
+    for attr in &attrs.compile_error_attrs {
+        let (_, parsed) = parser::parse_main_attributes_direct(attr, ctx);
+        for feat in &parsed.features {
+            if !seen_atoms.insert(feat.clone()) {
+                continue;
+            }
+            let Some(dep_key) = optional.iter().find(|dep_key| {
+                parser::local_features_enabling_dep(manifest_toml, dep_key).contains(feat)
+            }) else {
+                continue;
+            };
+
+            let lacks_no_std = *checked.entry(dep_key.clone()).or_insert_with(|| {
+                let package = edges
+                    .get(dep_key)
+                    .and_then(|v| v.get("package"))
+                    .and_then(|p| p.as_str())
+                    .unwrap_or(dep_key);
+                parser::find_sibling_crate_dir(manifest, package)
+                    .and_then(|dir| parser::crate_entry_file(&dir))
+                    .map(|entry| {
+                        let dep_attrs =
+                            parser::parse_crate(package, false, None, &[], Some(&[entry]));
+                        // Same reading `no_std_evidence` gives a crate-root parse:
+                        // files read but no attribute found is Absent, not Supported.
+                        dep_attrs.files_parsed > 0
+                            && !parser::parse_main_attributes(&dep_attrs, ctx, None).0
+                            && !dep_attrs.unconditional_no_std
+                    })
+                    .unwrap_or(false)
+            });
+
+            if lacks_no_std {
+                debug!(
+                    "'{}' selects optional dependency '{}', named in this crate's own \
+                     compile_error! and with no no_std attribute at its crate root — \
+                     forbidding it up front (KI-3)",
+                    feat, dep_key
+                );
+                forbid.push(Bool::new_const(ctx, feat.as_str()).not());
+            }
+        }
+    }
+    forbid
+}
+
 /// The files of a downloaded crate that contain a `compile_error!` at all —
 /// the prefilter for [`dependency_compile_error_constraints`], and the answer
 /// to "which files can hold one".
@@ -5633,6 +5760,36 @@ pub fn analyze_crate<'a>(
             })
         })
         .map(|c| c.simplify());
+
+    // KI-3: a feature this crate's own `compile_error!` uses to pick a backend
+    // gets forbidden here if that backend's optional dependency has no no_std
+    // attribute at its crate root — see
+    // `compile_error_infeasible_backend_constraints` for which of the entry's
+    // three options this is and why. Added one candidate at a time, keeping
+    // each only if the running conjunction with `final_condition` stays
+    // satisfiable: a crate whose disjunction has no reachable answer under
+    // this check must be left exactly as it was (unproven, not unsat)
+    // rather than handed an `all_hard` nothing can satisfy.
+    let manifest_toml = read_manifest_toml(manifest);
+    let final_condition = compile_error_infeasible_backend_constraints(ctx, manifest, &manifest_toml)
+        .into_iter()
+        .fold(final_condition, |acc, forbid| {
+            let candidate = match &acc {
+                Some(a) => Bool::and(ctx, &[a, &forbid]),
+                None => forbid.clone(),
+            };
+            let solver = z3::Solver::new(ctx);
+            solver.assert(&candidate);
+            if solver.check() == z3::SatResult::Sat {
+                Some(candidate.simplify())
+            } else {
+                debug!(
+                    "KI-3: forbidding {:?} would make this crate's hard constraints unsat; leaving it out",
+                    forbid
+                );
+                acc
+            }
+        });
 
     let externally_gated_spans = hard_imports
         .iter()
