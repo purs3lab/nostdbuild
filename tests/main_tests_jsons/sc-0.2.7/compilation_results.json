@@ -1,0 +1,19 @@
+[
+  {
+    "name": "sc",
+    "version": "0.2.7",
+    "target": "x86_64-unknown-none",
+    "args": [
+      "+nightly",
+      "build",
+      "--release",
+      "--target",
+      "x86_64-unknown-none",
+      "--manifest-path",
+      "/evaldisk/sourag/downloads/sc-0.2.7/Cargo.toml",
+      "--lib"
+    ],
+    "status": "Failed",
+    "error": "Cargo failed with status code: 101 and message: warning: Cargo.toml: `package.edition` is unspecified, defaulting to `2015` while the latest is `2024`\nwarning: `sc` (manifest) generated 1 warning\n   Compiling sc v0.2.7 (/evaldisk/sourag/downloads/sc-0.2.7)\nerror[E0432]: unresolved import `platform`\n  --> src/lib.rs:40:9\n   |\n40 | pub use platform::*;\n   |         ^^^^^^^^ use of unresolved module or unlinked crate `platform`\n   |\nhelp: if you wanted to use a crate named `platform`, use `cargo add platform` to add it to your `Cargo.toml` and import it in your code\n   |\n37 + extern crate platform;\n   |\n\nFor more information about this error, try `rustc --explain E0432`.\nerror: could not compile `sc` (lib) due to 1 previous error\n"
+  }
+]

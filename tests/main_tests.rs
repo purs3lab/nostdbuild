@@ -287,6 +287,46 @@ fn test_etime() {
     run_main_test("etime", "0.1.8", "x86_64-unknown-none");
 }
 
+/// R34-17's canonical shape and item 13's guard row: `sc-0.2.7` has no
+/// features and no dependencies, so nothing about it is a configuration
+/// question. It is unconditionally `#![no_std]`, but `pub use platform::*;`
+/// is gated `#[cfg(any(target_os = "linux", target_os = "android"), ...)]`
+/// with no bare-metal arm at all, so it fails every `TARGET_LIST` member on
+/// `E0432 unresolved import platform` and every repair above the
+/// `os_target_probe` step is powerless — none of them can add or remove a
+/// `target_os`. The golden fixture carries exactly one `x86_64-unknown-none`
+/// record (this test's single `--target`); the assertion below is what
+/// actually exercises the new post-failure probe, since a JSON diff alone
+/// would not see `Telemetry.os_target_probe`.
+#[cargo_test]
+fn test_sc() {
+    run_main_test("sc", "0.2.7", "x86_64-unknown-none");
+
+    let telemetry_path = Path::new(consts::RESULTS_PATH)
+        .join("sc-0.2.7")
+        .join("telemetry.json");
+    let telemetry: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&telemetry_path).expect("Failed to read telemetry.json"),
+    )
+    .expect("telemetry.json is not valid JSON");
+    assert_eq!(
+        telemetry.get("os_target_probe").and_then(|v| v.as_str()),
+        Some("x86_64-unknown-linux-gnu"),
+        "sc has arms for linux and android; the OS-target probe should find \
+         the first candidate that builds and record it, without touching \
+         build_success_targets/build_fail_targets"
+    );
+    assert_eq!(
+        telemetry
+            .get("build_success_targets")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len()),
+        Some(0),
+        "the probe's own build record must be rewound, not counted as a \
+         TARGET_LIST success"
+    );
+}
+
 /// R34-23's guard row: `parser_rules`/`track_open_tags` gate a `Box` usage in
 /// `src/parser/rules.rs` that no file in the crate ever imports locally, so
 /// the emitted selection fails on every target no matter which of the two
