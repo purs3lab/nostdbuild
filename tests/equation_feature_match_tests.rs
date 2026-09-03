@@ -38,7 +38,7 @@ fn attrs_of(src: &str) -> Attributes {
 /// The equations kept for a crate whose no_std condition names `main_features`.
 fn kept(src: &str, main_features: &[&str]) -> Vec<String> {
     let ctx = z3::Context::new(&z3::Config::new());
-    let equations = parse_attributes(&attrs_of(src), &ctx);
+    let equations = parse_attributes(&attrs_of(src), &ctx, None);
     let feats: Vec<String> = main_features.iter().map(|s| s.to_string()).collect();
     filter_equations(&equations, &feats)
         .iter()

@@ -239,7 +239,7 @@ pub fn no_std_evidence(
         telemetry.wrong_unconditional_setup = base_attrs.wrong_unconditional_setup;
     }
 
-    if !parse_main_attributes(&base_attrs, ctx).0 && !base_attrs.unconditional_no_std {
+    if !parse_main_attributes(&base_attrs, ctx, None).0 && !base_attrs.unconditional_no_std {
         // No attribute found — but an empty attribute list from a parse that
         // read no files is not the same statement as one from a parse that read
         // the crate root. `nb:0.1.3` is in `KNOWN_SYN_FAILURES` for exactly this
@@ -329,13 +329,30 @@ pub fn process_crate(
     let name_with_version = name_with_version.unwrap_or(&exchange.name_with_version);
     let crate_info = crate_info.unwrap_or(&exchange.crate_info);
 
-    let (no_std, mut equation, mut parsed_attr) = parse_main_attributes(attrs, ctx);
-
     let main_name = if is_main {
         None
     } else {
         Some(exchange.name_with_version.as_ref())
     };
+
+    // Every feature Cargo can actually turn on for *this* crate (main or
+    // dependency — `determine_manifest_file` resolves to whichever `attrs`
+    // belongs to). Threaded into every equation this function builds so a
+    // `feature = "X"` naming an X outside this set is erased at parse time
+    // rather than modelled as a free Z3 `Bool` and only filtered out of the
+    // emitted list afterwards (R34-16 residue, item 16): `kwap-common 0.7.0`
+    // has no `[features]` table at all and gates its crate root on
+    // `feature = "no_std"`, so leaving that atom live lets the solver decide
+    // "no_std" arbitrarily instead of the tool reporting the honest answer —
+    // this crate cannot be no_std through cargo. Computed once and reused
+    // below for the post-solve `retain_selectable_features` filter too.
+    let selectable = solver::selectable_features(
+        crate_info,
+        &driver::read_manifest_toml(&determine_manifest_file(name_with_version, main_name)),
+    );
+
+    let (no_std, mut equation, mut parsed_attr) =
+        parse_main_attributes(attrs, ctx, Some(&selectable));
 
     if is_main {
         exchange.telemetry.main_conditional_no_std = no_std;
@@ -436,7 +453,8 @@ pub fn process_crate(
             let (local_equation, local_parsed_attr) = std_attrs.into_iter().fold(
                 (None::<Bool>, None::<ParsedAttr>),
                 |(local_eq, local_attr), std_attr| {
-                    let (eq, mut attr) = parse_main_attributes_direct(&std_attr, ctx);
+                    let (eq, mut attr) =
+                        parse_main_attributes_direct_with(&std_attr, ctx, Some(&selectable));
                     if eq.is_none() {
                         debug!("No equation found for attribute: {:?}", std_attr);
                         return (local_eq, local_attr);
@@ -470,7 +488,7 @@ pub fn process_crate(
         // edge (R34-20 residual). `equation`/`parsed_attr` stay whatever
         // `parse_main_attributes` produced above.
     }
-    let equations = parse_attributes(attrs, ctx);
+    let equations = parse_attributes(attrs, ctx, Some(&selectable));
     let mut filtered = filter_equations(&equations, &parsed_attr.features);
 
     let mut non_minimalizable_features: HashSet<String> = HashSet::new();
@@ -749,28 +767,22 @@ pub fn process_crate(
     // vestige the author left behind (`bitcoin 0.32` dropped `no-std` from the
     // manifest and kept the cfgs), a package that ships more source than it
     // builds (the wTools monorepo), or a gate that was never wired up at all.
-    // Z3 assigns such a free atom arbitrarily and a `true` used to reach the
-    // emitted configuration, where cargo refuses it: as `<dep>/<atom>` in
-    // `custom_no_std_feature_enabled` (R34-2), or, on the main crate, declared
-    // into existence by `new_feats_to_add` and passed on the command line
-    // (R34-14). Filtering the list here covers both, because this list *is* the
-    // argv for the main crate and the `not_found` input for a dependency.
+    // `selectable` (computed above and threaded into every equation this
+    // function itself builds) already erases such an atom at parse time, so it
+    // never becomes a free Bool the model could set true (item 16). What this
+    // filter still catches is `hard_constraints` — the probe's compiled
+    // condition, handed in as an already-built `Bool` rather than parsed here,
+    // so it never went through `selectable` and can still name an atom outside
+    // it. Left as a filter on `enable`/`disable` rather than a second erasure
+    // pass, because by the time it is caught here the model has already been
+    // solved and this is only cutting it from the emitted argv, exactly as
+    // before: `<dep>/<atom>` in `custom_no_std_feature_enabled` (R34-2), or
+    // declared into existence by `new_feats_to_add` on the main crate (R34-14).
     //
     // Nothing about the genuine forwarding gap changes: a feature the dependency
     // really has and the main crate cannot reach is selectable, so it stays.
     //
     // What is dropped is recorded, because the atom is evidence and not noise.
-    // `kwap-common 0.6.4` has no `[features]` table at all and a crate root of
-    // `#![cfg_attr(all(not(test), feature = "no_std"), no_std)]`, so it can never
-    // be no_std through cargo; dropping the request without saying so would turn
-    // a loud resolve error into a quiet wrong answer. The deeper repair is to
-    // erase these atoms when the condition is *built*, the way
-    // `driver`'s `ModCollector::with_known_features` already does for the module
-    // tree — `parse_attributes` here is the path that still has no such filter.
-    let selectable = solver::selectable_features(
-        crate_info,
-        &driver::read_manifest_toml(&determine_manifest_file(name_with_version, main_name)),
-    );
     let unselectable = solver::retain_selectable_features(&mut enable, &selectable);
     if !unselectable.is_empty() {
         println!(
@@ -2423,12 +2435,16 @@ pub fn determine_n_depth_dep_no_std(
 /// # Arguments
 /// * `attrs` - The attributes of the main crate
 /// * `ctx` - The Z3 context
+/// * `known_features` - see `parse_meta_for_cfg_attr`; erases a `feature = "X"`
+///   Cargo cannot enable for this crate instead of modelling it as a Z3 `Bool`.
+///   Pass `None` to keep every feature atom live.
 /// # Returns
 /// A tuple containing a boolean indicating whether the crate is no_std,
 /// an optional equation for the main crate and the parsed attributes.
 pub fn parse_main_attributes<'a>(
     attrs: &Attributes,
     ctx: &'a z3::Context,
+    known_features: Option<&HashSet<String>>,
 ) -> (bool, Option<Bool<'a>>, ParsedAttr) {
     let mut atleast_one_no_std = false;
     let mut parsed: ParsedAttr = ParsedAttr::default();
@@ -2436,7 +2452,7 @@ pub fn parse_main_attributes<'a>(
     for attr in &attrs.attributes {
         if attr.path().get_ident().unwrap() == "cfg_attr" {
             // println!("{}", attr.to_token_stream());
-            (equation, parsed) = parse_meta_for_cfg_attr(&attr.meta, ctx, None);
+            (equation, parsed) = parse_meta_for_cfg_attr(&attr.meta, ctx, known_features);
             if is_no_std(&parsed, false) {
                 atleast_one_no_std = true;
                 debug!("Found no_std");
@@ -2677,7 +2693,7 @@ pub fn std_gate_features(
     let entry_files = (!entrypoints.is_empty()).then_some(entrypoints.as_slice());
     let attrs = parse_crate(name_with_version, false, main_name, &[], entry_files);
 
-    let mut equation: Option<Bool> = parse_main_attributes(&attrs, ctx).1;
+    let mut equation: Option<Bool> = parse_main_attributes(&attrs, ctx, None).1;
 
     let items = parse_item_extern_crates(name_with_version, main_name);
     for std_attr in get_item_extern_std(&items) {
@@ -3400,6 +3416,10 @@ pub fn compile_error_repair_features(
 /// # Arguments
 /// * `attrs` - The attributes of the dependency crate
 /// * `ctx` - The Z3 context
+/// * `known_features` - see `parse_meta_for_cfg_attr`; erases a `feature = "X"`
+///   Cargo cannot enable for **this** crate (the one `attrs` belongs to, not
+///   necessarily the main crate) instead of modelling it as a Z3 `Bool`. Pass
+///   `None` to keep every feature atom live.
 /// # Returns
 /// One entry per interesting `#[cfg]`: its equation, paired with the **feature
 /// atoms that equation actually names**.
@@ -3416,6 +3436,7 @@ pub fn compile_error_repair_features(
 pub fn parse_attributes<'a>(
     attrs: &Attributes,
     ctx: &'a z3::Context,
+    known_features: Option<&HashSet<String>>,
 ) -> Vec<(Option<Bool<'a>>, Vec<String>)> {
     let mut equation: Vec<(Option<Bool>, Vec<String>)> = Vec::new();
     let mut temp_eq: Option<Bool>;
@@ -3423,7 +3444,7 @@ pub fn parse_attributes<'a>(
     for attr in &attrs.attributes {
         let ident = attr.path().get_ident().unwrap();
         if ident == "cfg" {
-            (temp_eq, parsed) = parse_meta_for_cfg_attr(&attr.meta, ctx, None);
+            (temp_eq, parsed) = parse_meta_for_cfg_attr(&attr.meta, ctx, known_features);
             // TODO: Should this check be removed?
             if parsed.features.len() == 1 || parsed.logic.is_empty() {
                 // Attributes like `#[cfg (feature = "serde")]` are not interesting.
