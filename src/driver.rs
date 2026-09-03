@@ -4770,21 +4770,33 @@ pub fn enablers_for_selection(
 /// the first that asks the opposite one — is something already selected the
 /// reason it fails (R34-23).
 ///
-/// Three confirmed shapes: `bbx-0.3.1` compiles with no features at all
+/// Four confirmed shapes: `bbx-0.3.1` compiles with no features at all
 /// (`parser_rules`/`track_open_tags` gate a `Box` usage nothing else needs);
 /// `taffy-0.8.1` compiles dropping `detailed_layout_info` alone, keeping
 /// `grid`; `chf-0.3.1` compiles dropping its own `alloc`, keeping
-/// `custom_no_std_feature_enabled`. In each, the failing line sits behind a
-/// feature that *is* selected, and a strict subset of the emitted selection
-/// builds clean.
+/// `custom_no_std_feature_enabled`; `redjubjub-0.8.0` compiles dropping its
+/// own `serde` (R34-15's item 11 residue — `serde` only reached
+/// `non_minimalizable` because an unrelated `#[cfg(feature = "serde")]`
+/// import exists somewhere in the crate, and once selected its own no_std
+/// solve parked `serde/alloc`/`serde/rc` in `custom_no_std_feature_enabled`).
+/// In each, the failing line sits behind a feature that *is* selected, and a
+/// strict subset of the emitted selection builds clean.
 ///
 /// `selection` is the emitted set's main-crate features, closed over the
 /// crate's feature table exactly as [`enablers_for_selection`] builds it;
-/// `dep_features` is the `<dep>/<feat>` half, held fixed the same way — it is
-/// never a candidate here either, for the same reason: a trial missing it is
-/// not the configuration that failed. Returns the features that were
-/// dropped, kept only because the rebuild without them then compiled; empty
-/// when the emitted set is already minimal, or when no subset compiles.
+/// `dep_features` is the `<dep>/<feat>` half. Held fixed the same way *unless*
+/// a pair's `<dep>` is itself one of `selection`'s features — cargo links
+/// `<dep>` the moment any `<dep>/<feat>` reference exists on the command line,
+/// so a pair like `serde/alloc` would silently re-link `serde` in every trial
+/// that tries dropping the main crate's own `serde`, making that
+/// configuration untestable no matter how the search shrinks `candidates`.
+/// Such a pair travels with its `<dep>` candidate instead: present in a trial
+/// only when `<dep>` is still in `keep`. Returns the main-crate features that
+/// were dropped, and separately the `dep_features` entries tied to them —
+/// both empty when the emitted set is already minimal or no subset compiles.
+/// The caller has to drop both: dropping only the main feature and reusing
+/// the original `dep_features` for the real rebuild reintroduces exactly the
+/// dependency the search just proved removable.
 ///
 /// **Boundary:** a flat removal only. `kitoken-0.10.1` needs `convert` (a
 /// superfeature) replaced by three of its five sub-features, not dropped
@@ -4793,12 +4805,42 @@ pub fn enablers_for_selection(
 /// and correctly returns nothing for it: dropping `convert` whole loses
 /// conversion support entirely, which is not the same repair and is not
 /// attempted.
+fn dep_names_reached(feat: &str, features: &[(String, TupleVec)]) -> HashSet<String> {
+    if let Some((dep, _)) = feat.split_once('/') {
+        return HashSet::from([dep.to_string()]);
+    }
+    let mut seen = HashSet::new();
+    let mut reached = HashSet::new();
+    let mut stack = vec![feat.to_string()];
+    while let Some(f) = stack.pop() {
+        if !seen.insert(f.clone()) {
+            continue;
+        }
+        let Some((_, values)) = features.iter().find(|(name, _)| *name == f) else {
+            continue;
+        };
+        for (k, v) in values {
+            if k == v {
+                // A plain feature reference (`read_local_features` reports it
+                // as `(name, name)`) — recurse into what *it* reaches.
+                stack.push(v.clone());
+            } else {
+                // `k` is the dependency name either way: `dep:` (bare link) or
+                // a sub-feature both name the dependency in the tuple's first
+                // slot (see `downloader::read_local_features`).
+                reached.insert(k.clone());
+            }
+        }
+    }
+    reached
+}
+
 pub fn search_removals(
     manifest: &str,
     crate_name: &str,
     selection: &HashSet<String>,
     dep_features: &[String],
-) -> Vec<String> {
+) -> (Vec<String>, Vec<String>) {
     // Same bookkeeping exclusion as `enablers_for_selection`: these are never
     // an answer to "what does this crate need", so never a candidate to drop
     // either — dropping `custom_no_std_feature_enabled` would undo a parked
@@ -4816,10 +4858,41 @@ pub fn search_removals(
     candidates.sort();
     if candidates.is_empty() {
         debug!("[removals] emitted set has no removable main-crate feature");
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
-    let base: Vec<String> = dep_features.to_vec();
+    // A `dep_features` entry links a dependency regardless of whatever the
+    // main crate's own feature of that name says — that is what `<dep>/<feat>`
+    // means to cargo, whether it is spelled out directly (`rand_core/alloc`)
+    // or reached through a *plain* feature name (`custom_no_std_feature_enabled
+    // = ["serde/alloc", "serde/rc"]`, parked there by a dependency's own no_std
+    // solve). Treating the whole of `dep_features` as a fixed base, as every
+    // trial below used to, is right when the dependency it reaches is outside
+    // `candidates`, but wrong when it is itself one of them: dropping `serde`
+    // from `keep` while `custom_no_std_feature_enabled` stays in the base
+    // re-links the exact dependency the trial is trying to remove
+    // (`redjubjub-0.8.0` — `serde` only reached `non_minimalizable` because an
+    // unrelated `#[cfg(feature = "serde")]` import exists somewhere in the
+    // crate, and once selected its own no_std solve parked those two pairs
+    // under the synthetic feature; no trial that keeps it can ever test "no
+    // serde at all", which is the one configuration that builds). So an entry
+    // that reaches a candidate travels with it instead of riding in every
+    // trial — `dep_names_reached` resolves a literal pair directly and a plain
+    // feature name by walking this crate's own `[features]` table the same way
+    // `solver::all_enabled_for_feat` does for the enable direction.
+    let manifest_toml = read_manifest_toml(manifest);
+    let feature_table = downloader::read_local_features(&manifest_toml);
+    let mut tied: HashMap<String, Vec<String>> = HashMap::new();
+    let mut fixed_base: Vec<String> = Vec::new();
+    for feat in dep_features {
+        let reached = dep_names_reached(feat, &feature_table);
+        match candidates.iter().find(|c| reached.contains(c.as_str())) {
+            Some(cand) => tied.entry(cand.clone()).or_default().push(feat.clone()),
+            None => fixed_base.push(feat.clone()),
+        }
+    }
+
+    let base = fixed_base;
     let budget = std::cell::Cell::new(MAX_ENABLER_PROBES);
     let pinned = std::cell::Cell::new(false);
     let compiles = |keep: &[String]| -> bool {
@@ -4834,6 +4907,11 @@ pub fn search_removals(
         };
         pinned.set(true);
         let mut feats = base.clone();
+        for cand in keep {
+            if let Some(extra) = tied.get(cand) {
+                feats.extend(extra.iter().cloned());
+            }
+        }
         feats.extend(keep.iter().cloned());
         let trial = timing::scope("removal_trial", keep.join(","));
         let outcome = run_rustc_plugin_pass_with(manifest, crate_name, &feats, None, false, pin);
@@ -4853,7 +4931,8 @@ pub fn search_removals(
     // none of `candidates` was needed at all: `bbx-0.3.1`'s shape.
     if compiles(&[]) {
         debug!("[removals] dep features alone compile; every selected main feature is removable");
-        return candidates;
+        let removed_dep_feats: Vec<String> = tied.into_values().flatten().collect();
+        return (candidates, removed_dep_feats);
     }
 
     // `base ∪ candidates` is the configuration that already failed — that
@@ -4887,14 +4966,22 @@ pub fn search_removals(
 
     if keep.len() == candidates.len() {
         debug!("[removals] no subset of the emitted selection compiles; nothing to drop");
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let removed: Vec<String> = candidates
         .into_iter()
         .filter(|f| !keep.contains(f))
         .collect();
-    debug!("[removals] crate builds dropping {:?}", removed);
-    removed
+    let removed_dep_feats: Vec<String> = removed
+        .iter()
+        .filter_map(|f| tied.get(f))
+        .flat_map(|v| v.iter().cloned())
+        .collect();
+    debug!(
+        "[removals] crate builds dropping {:?} (and dep-feature(s) {:?})",
+        removed, removed_dep_feats
+    );
+    (removed, removed_dep_feats)
 }
 
 /// The compile-and-shrink half of [`discover_build_enablers`], over a base set

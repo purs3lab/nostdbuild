@@ -301,6 +301,23 @@ fn test_bbx() {
     run_main_test("bbx", "0.3.1", "x86_64-unknown-none");
 }
 
+/// R34-15 item 11's residue, and `search_removals`'s fourth confirmed shape:
+/// `serde` reaches `non_minimalizable` only because an unrelated
+/// `#[cfg(feature = "serde")]` import exists somewhere in the crate, and once
+/// selected its own no_std solve parks `serde/alloc`/`serde/rc` under
+/// `custom_no_std_feature_enabled`. Every prior retry in the chain holds
+/// `dep_features` fixed, so none of them can ever test "no serde at all" —
+/// the one configuration that builds — because `custom_no_std_feature_enabled`
+/// alone still expands (through the crate's own `[features]` table) to those
+/// two `serde/*` pairs and re-links the dependency the trial is trying to
+/// drop. `search_removals` now resolves that expansion (`dep_names_reached`)
+/// and ties a `dep_features` entry to whichever candidate it actually
+/// reaches, dropping both together.
+#[cargo_test]
+fn test_redjubjub() {
+    run_main_test("redjubjub", "0.8.0", "x86_64-unknown-none");
+}
+
 /// Regression: a crate whose only std usage lives in an auto-discovered bin
 /// target. `chainable-if` is a no_std-clean library shipping the stock
 /// `fn main() { println!("Hello, world!"); }` alongside it.

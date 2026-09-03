@@ -1512,7 +1512,7 @@ fn run() -> anyhow::Result<()> {
     // probe budget, opposite direction.
     if no_std && !one_succeeded {
         let selection: HashSet<String> = main_features.iter().cloned().collect();
-        let removed = {
+        let (removed, removed_dep_feats) = {
             let _t = timing::scope("emitted_set_removals", &exchange.name_with_version);
             driver::search_removals(&main_manifest, &exchange.name_with_version, &selection, &deps_args)
         };
@@ -1522,11 +1522,21 @@ fn run() -> anyhow::Result<()> {
                 .filter(|f| !removed.contains(f))
                 .cloned()
                 .collect();
+            // A `dep_features` entry tied to a removed candidate (e.g.
+            // `custom_no_std_feature_enabled = ["serde/alloc", "serde/rc"]`
+            // when `serde` is what just got dropped) has to leave with it, or
+            // cargo re-links the very dependency the removal was trying to
+            // shed — see `search_removals`'s own doc comment (redjubjub-0.8.0).
+            let repaired_deps: Vec<String> = deps_args
+                .iter()
+                .filter(|f| !removed_dep_feats.contains(f))
+                .cloned()
+                .collect();
             let (repair_args, repair_combined, repair_len) =
-                assemble_final_args(disable_default, &repaired, &deps_args);
+                assemble_final_args(disable_default, &repaired, &repaired_deps);
             println!(
-                "Build failed for every target; retrying dropping {:?}: {:?}",
-                removed, repair_args
+                "Build failed for every target; retrying dropping {:?} (and dep-feature(s) {:?}): {:?}",
+                removed, removed_dep_feats, repair_args
             );
             let scout = compiler::scout_target(&stats, &before_build);
             if compiler::try_alternative(
