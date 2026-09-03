@@ -4,14 +4,18 @@ pub const STATIC_CRATES_IO: &str = "https://static.crates.io";
 pub const DB_FILE_NAME: &str = "db.bin";
 pub const RESULTS_PATH: &str = "/evaldisk/sourag/results/";
 
-pub const TARGET_LIST: [&str; 24] = [
+pub const TARGET_LIST: [&str; 33] = [
     "aarch64-unknown-none",
     "aarch64-unknown-none-softfloat",
     // "armebv7r-none-eabi",
     // "armebv7r-none-eabihf",
     "armv7a-none-eabi",
+    "armv7a-none-eabihf",
     "armv7r-none-eabi",
     "armv7r-none-eabihf",
+    "armv8r-none-eabihf",
+    "loongarch32-unknown-none",
+    "loongarch32-unknown-none-softfloat",
     "loongarch64-unknown-none",
     "loongarch64-unknown-none-softfloat",
     "nvptx64-nvidia-cuda",
@@ -21,14 +25,24 @@ pub const TARGET_LIST: [&str; 24] = [
     "riscv32imafc-unknown-none-elf",
     "riscv32imc-unknown-none-elf",
     "riscv64gc-unknown-none-elf",
+    // "riscv64im-unknown-none-elf", // rustc knows it (`--print target-list`), but no
+    // prebuilt `rust-std` on this pinned nightly (2026-08-24) — `rustup target add`
+    // fails "no prebuilt artifacts available"; re-add once the component ships.
     "riscv64imac-unknown-none-elf",
+    // "s390x-unknown-none-softfloat", // same gap: recognised by rustc, no prebuilt
+    // `rust-std` for this nightly channel yet.
     "thumbv6m-none-eabi",
+    "thumbv7a-none-eabi",
+    "thumbv7a-none-eabihf",
     "thumbv7em-none-eabi",
     "thumbv7em-none-eabihf",
     "thumbv7m-none-eabi",
+    "thumbv7r-none-eabi",
+    "thumbv7r-none-eabihf",
     "thumbv8m.base-none-eabi",
     "thumbv8m.main-none-eabi",
     "thumbv8m.main-none-eabihf",
+    "thumbv8r-none-eabihf",
     "wasm32v1-none",
     "x86_64-unknown-none",
 ];
