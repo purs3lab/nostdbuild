@@ -1,0 +1,16 @@
+# KI-25's shape: the edge to `paired` says nothing about `default-features`,
+# which is implicitly on as the manifest is authored — but the dependency-edge
+# walk turns `default-features` off on nearly every edge it touches, later.
+# `edge_supplied_dep_features` must not read paired's `default` (which alone
+# satisfies paired's own `compile_error!`) as something this edge supplies.
+[package]
+name = "default_open"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.paired]
+version = "1.0.0"
+
+[features]
+default = []
+libm = ["paired/libm"]

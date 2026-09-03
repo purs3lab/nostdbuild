@@ -1,0 +1,9 @@
+[package]
+name = "paired"
+version = "1.0.0"
+edition = "2021"
+
+[features]
+default = ["std"]
+std = []
+libm = []

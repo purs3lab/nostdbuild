@@ -190,6 +190,36 @@ fn a_feature_the_edge_supplies_needs_no_constraint() {
     );
 }
 
+/// KI-25, forkable's shape. The edge to `paired` says nothing about
+/// `default-features` (implicitly on as authored), and `paired`'s own
+/// `default` alone answers its `compile_error!` — but the dependency-edge walk
+/// turns `default-features` off on nearly every edge afterward, so reading the
+/// manifest as authored here is reading a state the tool itself invalidates
+/// one pass later. Unlike `pinned` (which sets `default-features = false` and
+/// supplies `libm` explicitly), nothing here may be read as "already
+/// supplied": the constraint must survive and force `default_open`'s own
+/// `libm` feature — its one path to `paired/libm` — on.
+#[test]
+fn defaults_left_open_on_the_edge_are_not_read_as_supplied() {
+    let ctx = z3::Context::new(&z3::Config::new());
+    let constraints = constraints_for(&ctx, "default_open");
+    assert!(
+        !constraints.is_empty(),
+        "paired's compile_error must still constrain default_open, got none"
+    );
+    assert!(
+        !satisfiable(&ctx, &constraints, &[], &["libm"]),
+        "with libm off and paired's default not assumed, nothing satisfies \
+         paired's `std ∨ libm` — that is the combination the real edge dies on \
+         once the walk turns `default-features` off"
+    );
+    assert!(
+        satisfiable(&ctx, &constraints, &["libm"], &[]),
+        "default_open's `libm` feature — the one path it has to paired/libm — \
+         must still satisfy it"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The requirement the *feature solve* is handed — R31-4
 // ---------------------------------------------------------------------------
