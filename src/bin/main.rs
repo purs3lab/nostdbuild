@@ -1572,6 +1572,57 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
+    // R34-17: after every repair above has failed, ask whether the emitted
+    // argv — unchanged, not one of the repairs above — builds given an
+    // operating system. `TARGET_LIST` is bare-metal only by design (an OS
+    // target would hide a real std-linkage bug, since std exists there), so
+    // this never repairs a HARD verdict the way the retries above do; it only
+    // tells the difference apart between "nothing about this crate's std
+    // usage is provably right" and "the crate is no_std, TARGET_LIST just has
+    // nowhere to say so" (`sc-0.2.7`'s shape: `#[cfg(target_os = "linux")]
+    // mod platform;`, no bare-metal arm at all). See the `os_target_probe`
+    // field doc for what this telemetry does and does not claim.
+    //
+    // Held to a handful of representative OS targets, tried in order, first
+    // build wins — the point is "does any OS make this compile", not which
+    // one, and covers the OS families the R34-17 family's crates actually
+    // gate on (`sc`/`atomic-wait`: linux, android, macos, windows, freebsd).
+    if no_std && !one_succeeded {
+        const OS_TARGET_PROBES: &[&str] = &[
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "x86_64-apple-darwin",
+            "aarch64-linux-android",
+            "x86_64-unknown-freebsd",
+        ];
+        for os_target in OS_TARGET_PROBES {
+            let probe_mark = compiler::mark_build_records(&stats, &exchange.telemetry);
+            let built = {
+                let _t = timing::scope("os_target_probe", &exchange.name_with_version);
+                compiler::try_compile(
+                    &exchange.name_with_version,
+                    os_target,
+                    &final_args,
+                    &mut stats,
+                    &mut exchange.telemetry,
+                )?
+            };
+            // Never kept: an OS target is not a `TARGET_LIST` member, and
+            // counting its record there would corrupt the success/fail
+            // bookkeeping a HARD verdict is read off.
+            compiler::rewind_build_records(&mut stats, &mut exchange.telemetry, &probe_mark);
+            if built {
+                println!(
+                    "Emitted argv does not build on any TARGET_LIST member but builds on \
+                     {os_target} — recording os_target_probe, not a repair (R34-17)"
+                );
+                exchange.telemetry.os_target_probe = Some(os_target.to_string());
+                break;
+            }
+        }
+    }
+
     exchange.telemetry.final_features_length = final_features_len;
 
     if !violated.is_empty() {

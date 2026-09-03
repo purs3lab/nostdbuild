@@ -810,6 +810,32 @@ pub struct Telemetry {
     /// `no_std_cfg_predicate` `None` and never reaches this field, precisely so
     /// the two cannot be confused.
     pub no_std_predicate_targets: Vec<String>,
+    /// Set when every `TARGET_LIST` member has failed on the emitted feature
+    /// set and a post-failure probe of that *same, unchanged* argv against one
+    /// representative OS target (`bin/main.rs`'s `OS_TARGET_PROBES`) built —
+    /// the target that built, e.g. `x86_64-unknown-linux-gnu`. R34-17's shape:
+    /// a crate whose platform layer is gated by `target_os` with no arm on any
+    /// of our bare-metal-only targets (`sc-0.2.7`'s `#[cfg(target_os =
+    /// "linux")] mod platform;`, no other arm) is otherwise indistinguishable
+    /// from one that is genuinely not no_std-capable anywhere.
+    ///
+    /// **This is not a verification and not a verdict.** It says the crate
+    /// compiles *given an operating system* under the argv the tool already
+    /// emitted — nothing more. It does not confirm the crate is intentionally
+    /// OS-only rather than a bare-metal target the author simply never wired
+    /// up, and it says nothing about whether the emitted argv was even the
+    /// right one — only that swapping `--target` changed the outcome. Treat
+    /// it as a hint for `SCOPE` classification, not as std-verification the
+    /// way a `TARGET_LIST` pass is.
+    ///
+    /// The probe's own build/fail records are never kept (`mark_build_records`
+    /// / `rewind_build_records` around it) — an OS target is not a member of
+    /// `TARGET_LIST`, so counting it there would corrupt `build_success_count`
+    /// and the per-target success/fail lists that a `HARD` verdict is read
+    /// off. `None` means either every probe target failed too, or the crate
+    /// never reached this step (something else in the retry chain already
+    /// succeeded).
+    pub os_target_probe: Option<String>,
     /// Std records that inherited a `#[cfg]` from the import that bound their
     /// name, summed over the covering runs (see
     /// `driver::resolve_import_to_use_gateways`).
