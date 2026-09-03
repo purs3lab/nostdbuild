@@ -812,7 +812,7 @@ pub struct Telemetry {
     pub no_std_predicate_targets: Vec<String>,
     /// Set when every `TARGET_LIST` member has failed on the emitted feature
     /// set and a post-failure probe of that *same, unchanged* argv against one
-    /// representative OS target (`bin/main.rs`'s `OS_TARGET_PROBES`) built —
+    /// representative OS target (`consts::OS_TARGET_PROBES`) built —
     /// the target that built, e.g. `x86_64-unknown-linux-gnu`. R34-17's shape:
     /// a crate whose platform layer is gated by `target_os` with no arm on any
     /// of our bare-metal-only targets (`sc-0.2.7`'s `#[cfg(target_os =

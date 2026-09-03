@@ -1583,20 +1583,10 @@ fn run() -> anyhow::Result<()> {
     // mod platform;`, no bare-metal arm at all). See the `os_target_probe`
     // field doc for what this telemetry does and does not claim.
     //
-    // Held to a handful of representative OS targets, tried in order, first
-    // build wins — the point is "does any OS make this compile", not which
-    // one, and covers the OS families the R34-17 family's crates actually
-    // gate on (`sc`/`atomic-wait`: linux, android, macos, windows, freebsd).
+    // `consts::OS_TARGET_PROBES`, tried in order, first build wins — the
+    // point is "does any OS make this compile", not which one.
     if no_std && !one_succeeded {
-        const OS_TARGET_PROBES: &[&str] = &[
-            "x86_64-unknown-linux-gnu",
-            "aarch64-unknown-linux-gnu",
-            "x86_64-pc-windows-msvc",
-            "x86_64-apple-darwin",
-            "aarch64-linux-android",
-            "x86_64-unknown-freebsd",
-        ];
-        for os_target in OS_TARGET_PROBES {
+        for os_target in consts::OS_TARGET_PROBES.iter() {
             let probe_mark = compiler::mark_build_records(&stats, &exchange.telemetry);
             let built = {
                 let _t = timing::scope("os_target_probe", &exchange.name_with_version);

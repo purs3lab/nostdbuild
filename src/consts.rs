@@ -47,6 +47,21 @@ pub const TARGET_LIST: [&str; 33] = [
     "x86_64-unknown-none",
 ];
 
+/// R34-17's post-failure probe (`bin/main.rs`): representative OS targets tried,
+/// in order, first build wins, once every `TARGET_LIST` member and every repair
+/// has failed. Not a claim about which OS the crate actually needs — the point
+/// is "does any OS make this compile" — but chosen to cover the OS families the
+/// R34-17 family's crates gate on (`sc`/`atomic-wait`: linux, android, macos,
+/// windows, freebsd). See `Telemetry::os_target_probe`.
+pub const OS_TARGET_PROBES: [&str; 6] = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-linux-android",
+    "x86_64-unknown-freebsd",
+];
+
 pub const PLUGIN_OUTPUT_ENV: &str = "NO_STD_TOOL_OUTPUT_PATH";
 
 /// Sysroot crate names the pipeline reads as identities rather than as labels:
