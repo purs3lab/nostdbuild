@@ -2110,7 +2110,7 @@ pub fn dependency_compile_error_constraints<'a>(
             continue;
         }
         let dep_toml = read_manifest_toml(&dep_dir.join("Cargo.toml").display().to_string());
-        let always_on = parser::edge_supplied_dep_features(&dep_value, &dep_toml);
+        let always_on = parser::edge_features_the_walk_will_leave_on(&dep_value, &dep_toml);
 
         for attr in dep_attrs.compile_error_attrs.iter() {
             let Some(eq) = parser::compile_error_constraint(attr, ctx, None) else {

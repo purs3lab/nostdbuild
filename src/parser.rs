@@ -3861,32 +3861,81 @@ pub fn crate_entry_file(dir: &Path) -> Option<PathBuf> {
 }
 
 /// The dependency's features cargo turns on because of the *edge itself*,
-/// whatever the consumer's own features do: only the ones named in
-/// `features = [...]`, closed over the dependency's own feature graph.
+/// whatever the consumer's own features do: the ones named in
+/// `features = [...]`, plus the dependency's `default` closure unless the edge
+/// says `default-features = false`.
 ///
 /// These are the atoms a dependency-derived constraint must read as `true`
 /// rather than looking for a feature of this crate that reaches them.
 ///
-/// KI-25: this used to also assume the dependency's `default` closure supplies
-/// features whenever the edge does not say `default-features = false` — i.e.
-/// read the manifest exactly as authored. But the manifest as authored is not
-/// the manifest that gets built: the dependency-edge walk turns
-/// `default-features` off on nearly every edge it touches, *after* this
-/// function's answer has already been used to decide whether a dependency's
-/// `compile_error!` is satisfied. forkable-0.1.0's edge to spin leaves
-/// `default-features` unset, and `spin_mutex` — spin's actual answer to its own
-/// `compile_error!("… spin_mutex or use_ticket_mutex …")` — sits only in spin's
-/// `default`. Reading it as supplied made the constraint simplify to `true` and
-/// drop, so nothing forced the crate onto a feature that still works once the
-/// walk does what it always does. Treating `default` as supplying nothing is
-/// the cheaper of the two honest fixes (the other being: know in advance what
-/// the walk will decide for this exact edge, which is not available yet when
-/// this runs) and costs only the edges — a minority — where `default-features`
-/// truly does survive to the emitted manifest: those may now carry a
-/// constraint that turns out to already be satisfied, which is a spurious
-/// conjunct, not a wrong answer, and the `unreachable_atom` satisfiability
-/// check downstream still protects against turning it into an unsat `all_hard`.
+/// Reads the manifest exactly as authored — correct for
+/// [`translate_forbidden_up`], which asks this about an edge *before* deciding
+/// what to change about it. [`dependency_compile_error_constraints`] asks the
+/// same shape of question for a different purpose (translating a dependency's
+/// `compile_error!` for the consumer's solve) and needs a different answer —
+/// see [`edge_features_the_walk_will_leave_on`] and KI-25.
 pub fn edge_supplied_dep_features(
+    dep_value: &toml::Value,
+    dep_toml: &toml::Value,
+) -> HashSet<String> {
+    let mut on: HashSet<String> = dep_value
+        .get("features")
+        .and_then(|f| f.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let defaults_on = dep_value
+        .get("default-features")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    if defaults_on {
+        on.insert("default".to_string());
+    }
+
+    let features = crate::downloader::read_local_features(dep_toml);
+    close_over_local_features(&on, &features)
+}
+
+/// [`edge_supplied_dep_features`], minus the assumption that `default`
+/// survives — the reading [`dependency_compile_error_constraints`] needs.
+///
+/// KI-25: that function used [`edge_supplied_dep_features`] directly, reading
+/// an edge's `default-features` exactly as authored to decide whether a
+/// dependency's `compile_error!` is already satisfied. But the manifest as
+/// authored is not the manifest that gets built: the dependency-edge walk
+/// turns `default-features` off on nearly every edge it touches, *after*
+/// `edge_supplied_dep_features`'s answer has already been used. forkable-0.1.0's
+/// edge to spin leaves `default-features` unset, and `spin_mutex` — spin's
+/// actual answer to its own `compile_error!("… spin_mutex or use_ticket_mutex
+/// …")` — sits only in spin's `default`. Reading it as supplied made the
+/// constraint simplify to `true` and drop, so nothing forced the crate onto a
+/// feature that still works once the walk does what it always does.
+///
+/// This is *not* a fix to `edge_supplied_dep_features` itself: R34-20's
+/// `translate_forbidden_up` calls that function to ask what an edge supplies
+/// **before** deciding what to change about it (see `ForbiddenHop`'s doc
+/// comment), which is a question about the edge as it stands right now, not
+/// one this function's reasoning applies to — changing the shared function
+/// broke two of `transitive_forbidden_edge_tests.rs`'s cases the first time
+/// this was tried. Kept as a separate function so each caller's assumption is
+/// visible at its call site instead of living inside one function serving
+/// both.
+///
+/// Treating `default` as supplying nothing is the cheaper of two honest fixes
+/// (the other being: know in advance what the walk will decide for this exact
+/// edge, which is not available when the compile_error translation runs) and
+/// costs only the edges — a minority — where `default-features` truly does
+/// survive to the emitted manifest: those may now carry a constraint that
+/// turns out to already be satisfied, a spurious conjunct rather than a wrong
+/// answer, and [`dependency_compile_error_constraints`]'s `unreachable_atom`
+/// satisfiability check still protects against turning that into an unsat
+/// `all_hard`.
+pub fn edge_features_the_walk_will_leave_on(
     dep_value: &toml::Value,
     dep_toml: &toml::Value,
 ) -> HashSet<String> {
