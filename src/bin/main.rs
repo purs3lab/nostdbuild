@@ -725,7 +725,7 @@ fn run() -> anyhow::Result<()> {
     // removes a feature from a manifest the way `finalize_dep_crate` does, and
     // `final_feature_list_main` / `minimize` are deliberately left reading the full
     // `disable` list.
-    let (mut enable, mut disable, _, _) = parser::process_crate(
+    let (mut enable, mut disable, _, _, _) = parser::process_crate(
         &mut exchange,
         &ctx,
         &mut main_attributes,

@@ -323,7 +323,7 @@ pub fn process_crate(
     is_main: bool,
     optional_dep_feats: &mut TupleVec,
     hard_constraints: Option<Bool>,
-) -> anyhow::Result<QuadTupleVecString> {
+) -> anyhow::Result<PentaTupleVecString> {
     let (mut enable, mut disable): DoubleTupleVecString = (Vec::new(), Vec::new());
 
     let name_with_version = name_with_version.unwrap_or(&exchange.name_with_version);
@@ -371,7 +371,7 @@ pub fn process_crate(
     if !attrs.unconditional_no_std {
         if !no_std {
             debug!("No no_std found for the crate");
-            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()));
         }
     } else {
         if is_main {
@@ -430,7 +430,7 @@ pub fn process_crate(
         // crates in the corpus that reach it, 5519 have no probe condition at all.
         if items.itemexterncrates.is_empty() && hard_constraints.is_none() {
             debug!("No extern crates found for the crate");
-            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()));
         }
         if items.itemexterncrates.is_empty() {
             debug!(
@@ -545,7 +545,7 @@ pub fn process_crate(
                     .hard_unsat_deps
                     .push((name_with_version.to_string(), hard.to_string()));
             }
-            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()));
         }
     } else {
         vec![]
@@ -630,7 +630,7 @@ pub fn process_crate(
                     .hard_with_main_unsat_deps
                     .push((name_with_version.to_string(), cond));
             }
-            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()));
         }
     }
 
@@ -747,7 +747,7 @@ pub fn process_crate(
         exchange
             .telemetry
             .features_forced_by_cfg_assertion
-            .push((name_with_version.to_string(), assertion_forced));
+            .push((name_with_version.to_string(), assertion_forced.clone()));
     }
 
     exchange
@@ -864,8 +864,12 @@ pub fn process_crate(
         .into_iter()
         .filter(|f| enable.contains(f))
         .collect();
+    let assertion_forced: Vec<String> = assertion_forced
+        .into_iter()
+        .filter(|f| enable.contains(f))
+        .collect();
 
-    Ok((enable, disable, entailed_false, entailed_true))
+    Ok((enable, disable, entailed_false, entailed_true, assertion_forced))
 }
 
 /// Returns the Cargo.toml string representation of how `dep_name` is enabled
@@ -1977,7 +1981,7 @@ pub fn process_dep_crate(
         (None, None) => None,
     };
 
-    let (enable, disable, entailed_false, _entailed_true) = process_crate(
+    let (enable, disable, entailed_false, _entailed_true, _assertion_forced) = process_crate(
         exchange,
         &ctx,
         dep,
@@ -5501,6 +5505,10 @@ struct DepUsageContext {
     /// The subset of `enable` the solve *proved* must be on — re-checking with
     /// the feature forced off came back UNSAT. Everything in `enable` but not
     /// here is a Z3 don't-care, which is not the same thing as a requirement.
+    /// Already has `assertion_forced` subtracted (KI-21): UNSAT-to-negate alone
+    /// doesn't distinguish "the crate's own no_std condition needs this" from
+    /// "some unrelated `#[cfg]` gate in its source got asserted and pinned it",
+    /// so what's left here is only the first kind.
     entailed_true: Vec<String>,
     /// (dep_norm_name, item_name) pairs this crate's own source actually
     /// references from each of its dependencies, restricted to call sites
@@ -5719,7 +5727,7 @@ pub fn recursive_dep_requirement_check(
                     &all_hard,
                     None,
                 );
-                let (enable, disable, _, entailed_true) = process_crate(
+                let (enable, disable, _, entailed_true, assertion_forced) = process_crate(
                     exchange,
                     &ctx,
                     &mut crate_attrs,
@@ -5730,6 +5738,16 @@ pub fn recursive_dep_requirement_check(
                     hard_constraints.clone(),
                 )
                 .unwrap();
+
+                // `entailed_true` alone conflates "the dependency's own no_std condition
+                // requires this" with "a cfg gate elsewhere in its source got asserted and
+                // pinned it" (KI-21) — `assertion_forced` is exactly that second, spurious
+                // subset (see `process_crate`), so it comes out here rather than being
+                // read as proof in the audit below.
+                let entailed_true: Vec<String> = entailed_true
+                    .into_iter()
+                    .filter(|f| !assertion_forced.contains(f))
+                    .collect();
 
                 // While `ctx` (and the Z3 Bools tied to it) is still alive, compute and
                 // cache this dependency's own usage context, so it's available later if
@@ -5861,8 +5879,14 @@ pub fn recursive_dep_requirement_check(
 ///
 /// The second return value is the features dropped from the Direction 1 scan as
 /// unjustified — reported, not silently swallowed, because the atom is evidence.
+///
+/// Caller contract (KI-21): `entailed_true` must already have this dependency's
+/// `assertion_forced` subtracted (see `process_crate`'s 5th return value). Raw
+/// `entailed_true` conflates "the dependency's own no_std condition needs this"
+/// with "some unrelated `#[cfg]` gate in its source got asserted and pinned it" —
+/// both are UNSAT-to-negate, so this function cannot tell them apart on its own.
 #[allow(clippy::too_many_arguments)]
-fn audit_dependency_requirement(
+pub fn audit_dependency_requirement(
     main_crate_info: &CrateInfo,
     dep_crate_info: &CrateInfo,
     dep_name: &str,

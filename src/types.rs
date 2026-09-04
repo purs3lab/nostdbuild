@@ -34,6 +34,20 @@ pub type TripleTupleVecString = (Vec<String>, Vec<String>, Vec<String>);
 /// feature no equation mentions arbitrarily, so neither list on its own
 /// distinguishes "the solve requires this" from "the solve had no opinion".
 pub type QuadTupleVecString = (Vec<String>, Vec<String>, Vec<String>, Vec<String>);
+/// `(enable, disable, entailed_false, entailed_true, assertion_forced)` — a
+/// crate's solve result, plus the subset of `entailed_true` that is proven
+/// only because a `#[cfg]` condition was asserted, not because the crate's own
+/// no_std condition names it (KI-21). `entailed_true` alone still conflates the
+/// two: both are UNSAT-to-negate, so a caller reading `entailed_true` as "the
+/// crate cannot be no_std without this" needs to subtract `assertion_forced`
+/// first, same as `features_forced_by_cfg_assertion` records for reporting.
+pub type PentaTupleVecString = (
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpanVerdict {
