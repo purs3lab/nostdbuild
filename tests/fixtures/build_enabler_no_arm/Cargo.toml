@@ -16,3 +16,5 @@ name = "build_enabler_no_arm"
 default = ["std"]
 std = []
 embedded = []
+
+[workspace]
