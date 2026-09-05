@@ -4,6 +4,12 @@ pub const STATIC_CRATES_IO: &str = "https://static.crates.io";
 pub const DB_FILE_NAME: &str = "db.bin";
 pub const RESULTS_PATH: &str = "/evaldisk/sourag/results/";
 
+/// Root of the persistent, cross-process `cargo hir` compile cache
+/// (`driver::run_cargo_hir_cached`'s L2). Deliberately outside `downloads/`
+/// and `results/`: it is neither a run's input nor a run's output, and
+/// nothing else in the pipeline reads or writes it.
+pub const CARGO_HIR_CACHE_DIR: &str = "/evaldisk/sourag/cargo_hir_cache";
+
 pub const TARGET_LIST: [&str; 33] = [
     "aarch64-unknown-none",
     "aarch64-unknown-none-softfloat",

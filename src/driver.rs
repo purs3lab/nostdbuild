@@ -1377,7 +1377,12 @@ struct CargoHirCacheKey {
 /// What survived the compile — everything a cache hit needs to answer without
 /// re-running it. `output_json` is the plugin's own file content, so a hit
 /// restores it exactly as a fresh run would have written it.
-#[derive(Clone)]
+///
+/// `Encode`/`Decode` so this can also be the persisted form on disk for the
+/// cross-process cache below — the in-process and cross-process caches share
+/// one value type on purpose, since a hit from either answers the identical
+/// question.
+#[derive(Clone, bincode::Encode, bincode::Decode)]
 enum CargoHirCacheValue {
     Succeeded { output_json: Vec<u8> },
     SucceededNoOutput,
@@ -1432,6 +1437,289 @@ fn hash_manifest(manifest: &str) -> Option<u64> {
 /// the rest of this module's test-facing API are already exposed.
 static CARGO_HIR_CACHE_HITS: Mutex<u64> = Mutex::new(0);
 
+/// Cross-process companion to [`CARGO_HIR_CACHE`]. The in-process cache only
+/// helps one `main` invocation; this lets every process analysing a crate
+/// that pulls in a dependency at the same pinned version reuse a compile
+/// another process already paid for — the common case for the Substrate/
+/// Polkadot-SDK family, where `frame-support`/`sp-*` are pulled in by
+/// hundreds of different roots at an identical version (measured directly:
+/// 205 different roots share a byte-identical `frame-support-40.1.0`
+/// manifest, since the tool never rewrites a shared dependency's own
+/// `Cargo.toml` — only the root's).
+///
+/// One file per key under [`persistent_cache_dir`], named by a hash of the
+/// key plus [`plugin_version_stamp`] — a rebuild of `cargo-hir`/`hir-driver`
+/// makes every old entry an unreachable filename rather than silently
+/// serving a stale answer ([[db-cache-invalidates-verification]] is exactly
+/// this failure mode for `db.bin`). Written by [`write_persistent_cache_entry`]
+/// via `fs::rename` from a per-process temp file, atomic on the same
+/// filesystem: a reader only ever opens the final name, so it sees either
+/// nothing or a complete value, never a torn write — no reader-side lock.
+///
+/// The *writer* side does use a lock ([`persistent_cache_claim_and_compute`],
+/// `<key>.lock`, advisory via `File::try_lock`/`lock`), but only to avoid two
+/// processes compiling the same cold key at the same time — never for
+/// correctness, since same key means equivalent output either way. A process
+/// that loses the race waits on the lock, then re-checks the final file (the
+/// winner will have written it by the time it releases); a process that
+/// waits past [`persistent_cache_wait_timeout`] gives up on reuse and just
+/// compiles the key itself, so one stuck compile (the "spo-rhai" shape —
+/// 6h+ once a crate's std-off configs stop being trivially UNSAT) can never
+/// wedge every other process wanting the same dependency.
+///
+/// No eviction. The population this targets is a bounded, slow-growing set
+/// of shared dependency versions, not one entry per analysed root, so
+/// unbounded growth is a smaller risk here than it would be elsewhere —
+/// revisit if disk usage becomes a real problem.
+///
+/// A `cargo test` run that does not set
+/// `NO_STD_TOOL_TEST_CARGO_HIR_CACHE_DIR` writes its fixtures' tiny entries
+/// into this same real directory — there is no cheap, reliable "am I running
+/// under `cargo test`" signal available here, since this code is compiled
+/// once as part of the library and shared by every consumer (`main`,
+/// `cargo-hir`, `hir-driver`, and every test binary alike), so
+/// `env!("CARGO_TARGET_TMPDIR")` (only ever set for the *test binary's own*
+/// compilation, not its library dependency's) is not visible from this file.
+/// Harmless — content-addressed keys mean a stray fixture entry cannot
+/// answer a real corpus crate's query — and safe to clear at any time
+/// (`rm -rf`, same as clearing any other cache): the whole point of this
+/// cache is that every entry is reconstructible from a real compile.
+static CARGO_HIR_PERSISTENT_CACHE_HITS: Mutex<u64> = Mutex::new(0);
+
+/// Test-only: how many `(key, this process wrote nothing, another process's
+/// entry answered)` outcomes have been served since the process started.
+/// Distinct from [`CARGO_HIR_CACHE_HITS`], which counts *in-process* hits —
+/// a cross-process hit also populates the in-process cache so a third
+/// identical call in the same process is an L1 hit, not another L2 one.
+static CARGO_HIR_PERSISTENT_CACHE_WRITES: Mutex<u64> = Mutex::new(0);
+
+/// How long a process waits on another's lock for the same cold key before
+/// giving up and computing independently. Overridable for tests
+/// (`NO_STD_TOOL_TEST_PERSISTENT_CACHE_TIMEOUT_MS`) so a guard for the
+/// give-up path does not need to actually wait 45 minutes.
+fn persistent_cache_wait_timeout() -> std::time::Duration {
+    if let Ok(ms) = std::env::var("NO_STD_TOOL_TEST_PERSISTENT_CACHE_TIMEOUT_MS")
+        && let Ok(ms) = ms.parse()
+    {
+        return std::time::Duration::from_millis(ms);
+    }
+    std::time::Duration::from_secs(45 * 60)
+}
+
+/// How often a waiting process re-tries the lock. Negligible next to the
+/// multi-minute compiles this cache targets; kept short mainly so tests
+/// using a shortened [`persistent_cache_wait_timeout`] still get a couple of
+/// polls in before giving up.
+const PERSISTENT_CACHE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Root directory for the persistent cache. Overridable
+/// (`NO_STD_TOOL_TEST_CARGO_HIR_CACHE_DIR`) so tests never touch the real
+/// shared directory or collide with a production run on this box.
+fn persistent_cache_dir() -> PathBuf {
+    PathBuf::from(
+        std::env::var("NO_STD_TOOL_TEST_CARGO_HIR_CACHE_DIR")
+            .unwrap_or_else(|_| consts::CARGO_HIR_CACHE_DIR.to_string()),
+    )
+}
+
+/// The two binaries whose staleness would make a cached answer wrong. Real
+/// path via `which` (matches [`is_cargo_hir_installed`]); overridable
+/// (`NO_STD_TOOL_TEST_PLUGIN_BIN_DIR`) so a test can simulate "the plugin was
+/// rebuilt" by touching two files it controls, instead of the real installed
+/// `cargo-hir`/`hir-driver` this process is actually running.
+fn plugin_binary_paths() -> Option<(PathBuf, PathBuf)> {
+    if let Ok(dir) = std::env::var("NO_STD_TOOL_TEST_PLUGIN_BIN_DIR") {
+        return Some((Path::new(&dir).join("cargo-hir"), Path::new(&dir).join("hir-driver")));
+    }
+    Some((which("cargo-hir").ok()?, which("hir-driver").ok()?))
+}
+
+/// A stamp that changes whenever `cargo-hir`/`hir-driver` do, so a disk cache
+/// entry from a since-rebuilt plugin becomes an unreachable filename instead
+/// of being served silently. Cheap on purpose (size + mtime, not file
+/// contents): called on every persistent-cache lookup, not cached across
+/// them, so a rebuild mid-run (e.g. `cargo install ... --force` from another
+/// terminal) is picked up by the very next call rather than needing this
+/// process restarted. `None` if either binary cannot be found or stat'd —
+/// the caller treats that as "persistent cache unavailable this call",
+/// exactly like [`hash_manifest`] returning `None` for an unreadable
+/// manifest.
+fn plugin_version_stamp() -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let (hir_bin, driver_bin) = plugin_binary_paths()?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for bin in [&hir_bin, &driver_bin] {
+        let meta = fs::metadata(bin).ok()?;
+        meta.len().hash(&mut h);
+        meta.modified().ok()?.hash(&mut h);
+    }
+    Some(h.finish())
+}
+
+/// The final cache-entry path and its companion lock path for a key, or
+/// `None` if [`plugin_version_stamp`] is unavailable — in which case the
+/// caller skips the persistent cache entirely for this call rather than
+/// caching under a key that cannot distinguish plugin versions.
+fn persistent_cache_paths(key: &CargoHirCacheKey) -> Option<(PathBuf, PathBuf)> {
+    use std::hash::{Hash, Hasher};
+    let stamp = plugin_version_stamp()?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    stamp.hash(&mut h);
+    let name = format!("{:016x}", h.finish());
+    let dir = persistent_cache_dir();
+    Some((dir.join(&name), dir.join(format!("{name}.lock"))))
+}
+
+/// Read a persisted entry. Any failure — missing file, truncated/corrupt
+/// content, a decode error from a format this binary no longer writes —
+/// is treated as a miss, never propagated: a persistent cache must never be
+/// able to fail a run, only fail to help it. Safe against a concurrent
+/// writer by construction: [`write_persistent_cache_entry`] only ever makes
+/// this path exist via an atomic rename, so an open here sees a complete
+/// file or none at all.
+fn read_persistent_cache_entry(path: &Path) -> Option<CargoHirCacheValue> {
+    let bytes = fs::read(path).ok()?;
+    bincode::decode_from_slice(&bytes, bincode::config::standard())
+        .ok()
+        .map(|(v, _)| v)
+}
+
+/// Write a persisted entry via temp-file-then-rename. Best-effort: a write
+/// failure (read-only filesystem, directory creation race, disk full) just
+/// means the next process to want this key pays the compile again — the
+/// same degradation as never having reached the persistent cache at all.
+fn write_persistent_cache_entry(path: &Path, value: &CargoHirCacheValue) {
+    let Ok(bytes) = bincode::encode_to_vec(value, bincode::config::standard()) else {
+        return;
+    };
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    if fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let Some(file_name) = path.file_name() else {
+        return;
+    };
+    let tmp = path.with_file_name(format!(
+        "{}.tmp.{}",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+    if fs::write(&tmp, &bytes).is_err() {
+        return;
+    }
+    let _ = fs::rename(&tmp, path);
+}
+
+/// Run the actual `cargo` subprocess with no caching involved — the shared
+/// tail every cache path (in-process miss, persistent-cache miss, persistent
+/// cache unavailable) eventually calls. `Err` is a spawn failure, which must
+/// never be cached under any key: it is this process's own infrastructure
+/// problem (e.g. `cargo` not on `PATH` for this invocation), not an answer
+/// about the key.
+fn compile_cargo_hir_uncached(args: &[&str], output_path: &Path) -> Result<CargoHirCacheValue, String> {
+    let output = Command::new("cargo")
+        .args(args)
+        .env(PLUGIN_OUTPUT_ENV, output_path)
+        .output()
+        .map_err(|e| format!("failed to spawn cargo: {}", e))?;
+    let success = output.status.success();
+    let wrote_json = success && output_path.exists();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let exit_code = output.status.code();
+    Ok(if wrote_json {
+        match fs::read(output_path) {
+            Ok(bytes) => CargoHirCacheValue::Succeeded { output_json: bytes },
+            Err(_) => CargoHirCacheValue::SucceededNoOutput,
+        }
+    } else if success {
+        CargoHirCacheValue::SucceededNoOutput
+    } else {
+        CargoHirCacheValue::Failed { stderr, exit_code }
+    })
+}
+
+/// Turn a cached value (from either L1 or L2) into the `CargoHirAttempt` the
+/// caller expects, restoring `output_path` exactly as a fresh run would have
+/// written it. Shared by every hit path so a hit is indistinguishable from a
+/// fresh compile to everything above this function.
+fn cache_value_to_attempt(value: CargoHirCacheValue, output_path: &Path) -> CargoHirAttempt {
+    match value {
+        CargoHirCacheValue::Succeeded { output_json } => {
+            let _ = fs::write(output_path, &output_json);
+            CargoHirAttempt::Compiled { wrote_json: true }
+        }
+        CargoHirCacheValue::SucceededNoOutput => CargoHirAttempt::Compiled { wrote_json: false },
+        CargoHirCacheValue::Failed { stderr, exit_code } => {
+            CargoHirAttempt::CompileFailed { stderr, exit_code }
+        }
+    }
+}
+
+/// Cold path for a key with nothing on disk yet: become the writer if
+/// nothing else is already computing this key, or wait for whoever is.
+///
+/// The lock is purely a "don't do redundant work" optimisation, never a
+/// safety requirement — [`write_persistent_cache_entry`]'s atomic rename is
+/// what makes concurrent writers safe. So on any infrastructure failure
+/// around the lock itself (can't open/create the lock file), this degrades
+/// straight to an uncached compile rather than treating it as an error.
+fn persistent_cache_claim_and_compute(
+    final_path: &Path,
+    lock_path: &Path,
+    args: &[&str],
+    output_path: &Path,
+) -> Result<CargoHirCacheValue, String> {
+    if let Some(dir) = lock_path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let Ok(lock_file) = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock_path)
+    else {
+        return compile_cargo_hir_uncached(args, output_path);
+    };
+
+    let deadline = std::time::Instant::now() + persistent_cache_wait_timeout();
+    loop {
+        match lock_file.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if std::time::Instant::now() >= deadline {
+                    // Gave up waiting on whoever holds it. Compute
+                    // independently rather than block forever on one stuck
+                    // compile — the "spo-rhai" shape this exists to survive.
+                    return compile_cargo_hir_uncached(args, output_path);
+                }
+                std::thread::sleep(PERSISTENT_CACHE_POLL_INTERVAL);
+            }
+            Err(std::fs::TryLockError::Error(_)) => {
+                // Locking unsupported/broken on this filesystem — degrade,
+                // same as failing to open the lock file at all.
+                return compile_cargo_hir_uncached(args, output_path);
+            }
+        }
+    }
+
+    // Holding the lock now, but the previous holder may have finished and
+    // written the answer between the caller's miss check and this line.
+    if let Some(value) = read_persistent_cache_entry(final_path) {
+        return Ok(value);
+    }
+
+    let value = compile_cargo_hir_uncached(args, output_path)?;
+    write_persistent_cache_entry(final_path, &value);
+    *CARGO_HIR_PERSISTENT_CACHE_WRITES.lock().unwrap() += 1;
+    // `lock_file` drops here, releasing the flock. The lock file itself is
+    // left on disk deliberately — removing it while another process might
+    // still have it open would let a third process's fresh open/lock race
+    // against the old inode's lingering lock, exactly the unlink-vs-flock
+    // hazard this design avoids by not touching it after creation.
+    Ok(value)
+}
+
 /// One `cargo hir` attempt, cached. Scoped to exactly the subprocess call —
 /// every caller keeps its own target-selection, retry loop and side-effect
 /// bookkeeping (`LAST_GOOD_TARGET` and friends) untouched, so a cache hit
@@ -1481,60 +1769,53 @@ fn run_cargo_hir_cached(
         && let Some(cached) = CARGO_HIR_CACHE.lock().unwrap().get(k).cloned()
     {
         debug!(
-            "cargo hir cache hit for {} on target [{}] (features [{}])",
+            "cargo hir cache hit (in-process) for {} on target [{}] (features [{}])",
             crate_name,
             target.unwrap_or("host"),
             feats
         );
         *CARGO_HIR_CACHE_HITS.lock().unwrap() += 1;
-        return match cached {
-            CargoHirCacheValue::Succeeded { output_json } => {
-                let _ = fs::write(output_path, &output_json);
-                CargoHirAttempt::Compiled { wrote_json: true }
-            }
-            CargoHirCacheValue::SucceededNoOutput => {
-                CargoHirAttempt::Compiled { wrote_json: false }
-            }
-            CargoHirCacheValue::Failed { stderr, exit_code } => {
-                CargoHirAttempt::CompileFailed { stderr, exit_code }
-            }
-        };
+        return cache_value_to_attempt(cached, output_path);
     }
 
-    let output = match Command::new("cargo")
-        .args(args)
-        .env(PLUGIN_OUTPUT_ENV, output_path)
-        .output()
+    // L2: the cross-process cache. A key that could not be built at all
+    // (unreadable manifest) never reaches here — same as L1 above.
+    if let Some(k) = &key
+        && let Some((final_path, lock_path)) = persistent_cache_paths(k)
     {
-        Ok(o) => o,
-        Err(e) => return CargoHirAttempt::SpawnFailed(format!("failed to spawn cargo: {}", e)),
-    };
-    let success = output.status.success();
-    let wrote_json = success && output_path.exists();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let exit_code = output.status.code();
+        if let Some(value) = read_persistent_cache_entry(&final_path) {
+            debug!(
+                "cargo hir cache hit (cross-process) for {} on target [{}] (features [{}])",
+                crate_name,
+                target.unwrap_or("host"),
+                feats
+            );
+            *CARGO_HIR_PERSISTENT_CACHE_HITS.lock().unwrap() += 1;
+            CARGO_HIR_CACHE.lock().unwrap().insert(k.clone(), value.clone());
+            return cache_value_to_attempt(value, output_path);
+        }
 
-    if let Some(k) = key {
-        let value = if wrote_json {
-            match fs::read(output_path) {
-                Ok(bytes) => CargoHirCacheValue::Succeeded { output_json: bytes },
-                Err(_) => CargoHirCacheValue::SucceededNoOutput,
+        return match persistent_cache_claim_and_compute(&final_path, &lock_path, args, output_path)
+        {
+            Ok(value) => {
+                CARGO_HIR_CACHE.lock().unwrap().insert(k.clone(), value.clone());
+                cache_value_to_attempt(value, output_path)
             }
-        } else if success {
-            CargoHirCacheValue::SucceededNoOutput
-        } else {
-            CargoHirCacheValue::Failed {
-                stderr: stderr.clone(),
-                exit_code,
-            }
+            Err(e) => CargoHirAttempt::SpawnFailed(e),
         };
-        CARGO_HIR_CACHE.lock().unwrap().insert(k, value);
     }
 
-    if success {
-        CargoHirAttempt::Compiled { wrote_json }
-    } else {
-        CargoHirAttempt::CompileFailed { stderr, exit_code }
+    // No key, or the persistent cache is unavailable this call (plugin
+    // binaries not found/stat-able) — same behaviour as before this cache
+    // existed: compile once, cache in-process only if there is a key at all.
+    match compile_cargo_hir_uncached(args, output_path) {
+        Ok(value) => {
+            if let Some(k) = key {
+                CARGO_HIR_CACHE.lock().unwrap().insert(k, value.clone());
+            }
+            cache_value_to_attempt(value, output_path)
+        }
+        Err(e) => CargoHirAttempt::SpawnFailed(e),
     }
 }
 
@@ -1544,6 +1825,33 @@ fn run_cargo_hir_cached(
 pub fn clear_cargo_hir_cache_for_test() {
     CARGO_HIR_CACHE.lock().unwrap().clear();
     *CARGO_HIR_CACHE_HITS.lock().unwrap() = 0;
+    *CARGO_HIR_PERSISTENT_CACHE_HITS.lock().unwrap() = 0;
+    *CARGO_HIR_PERSISTENT_CACHE_WRITES.lock().unwrap() = 0;
+}
+
+/// Test-only: clear only the in-process (L1) cache, leaving L2 counters and
+/// whatever is on disk untouched. A cross-process test primes L2 with one
+/// call, then needs *this* — not the full [`clear_cargo_hir_cache_for_test`]
+/// — before its second call, so the second call is forced past L1 and
+/// exercises the disk path instead of just hitting the L1 entry the first
+/// call already left behind.
+pub fn clear_in_process_cargo_hir_cache_for_test() {
+    CARGO_HIR_CACHE.lock().unwrap().clear();
+}
+
+/// Test-only: how many `(key, another process's disk entry answered)` hits
+/// this process has served since the last [`clear_cargo_hir_cache_for_test`].
+pub fn cargo_hir_persistent_cache_hits_for_test() -> u64 {
+    *CARGO_HIR_PERSISTENT_CACHE_HITS.lock().unwrap()
+}
+
+/// Test-only: how many times this process actually won the write race and
+/// ran a real compile for a cold persistent-cache key (as opposed to losing
+/// the lock race and reading back the winner's entry). The concurrency
+/// guard's whole point is asserting this stays at 1 across N racing callers
+/// for the same key, not N.
+pub fn cargo_hir_persistent_cache_writes_for_test() -> u64 {
+    *CARGO_HIR_PERSISTENT_CACHE_WRITES.lock().unwrap()
 }
 
 /// Test-only: how many cached `cargo hir` results this process is holding.
