@@ -1534,10 +1534,11 @@ pub fn minimize(
 pub fn finalize_dep_crate(
     exchange: &mut DataExchange,
     dep: &Attributes,
-    enable: Vec<String>,
+    mut enable: Vec<String>,
     disable: Vec<String>,
     entailed_false: Option<Vec<String>>,
     feature_to_items: HashMap<String, HashSet<String>>,
+    forced_optional_enablers: &[String],
 ) -> Result<TripleTupleVecString, anyhow::Error> {
     // The list the removal sites use: the proven-false subset when the caller has one,
     // the whole disable list when it does not.
@@ -1623,6 +1624,36 @@ pub fn finalize_dep_crate(
         .find(|(_, pkg)| pkg.as_str() == dep_original_name.as_str())
         .map(|(cname, _)| cname.replace('-', "_"))
         .unwrap_or_else(|| dep_original_name.replace('-', "_"));
+
+    // KI-12: an optional-dep enabler this dependency's own chosen feature
+    // assignment makes mandatory, but which its solve never asked for because
+    // the optional-dep edges live in `find_feature_combs_for_all_code` and
+    // never reach `process_crate`'s solve. `bin/main.rs` already adds these
+    // back for the main crate via the same `solver::forced_optional_dep_enablers`
+    // call (see its comment mentioning lazy_static's `spin_no_std`); this is
+    // that step for a dependency one level down. Additive only — `enable`
+    // already excludes anything the solve picked for itself.
+    //
+    // Protected the same way the `protected` set below is: `must_go` in
+    // `move_unnecessary_dep_feats` deletes a feature whenever it is in
+    // `dep_forbidden_features`, a *different* closure (over the dependency's
+    // `[features]` table) than the one that proved this enabler mandatory, so
+    // the two can disagree on a feature's name without either being wrong
+    // about its own question. Guarding here is the KI-1/KI-5 lesson: protect
+    // the actual lever a later pass reads, not just the value at its source.
+    for feat in forced_optional_enablers {
+        if !enable.contains(feat) {
+            println!(
+                "[KI-12] dep={} enabling optional-dep feature '{}' required by its chosen \
+                 no_std feature set",
+                dep.crate_name, feat
+            );
+            enable.push(feat.clone());
+        }
+        exchange
+            .protected_dep_features
+            .insert((dep_crate_name_norm.clone(), feat.clone()));
+    }
 
     // Print all main items that reference this dep.
     let main_items_for_dep: Vec<&String> = exchange
@@ -1820,16 +1851,19 @@ pub fn finalize_dep_crate(
 /// post-processing to `finalize_dep_crate`.
 /// Callers are responsible for checking the DB before invoking this — see
 /// `process_dep_crate_wrapper` in `main.rs`.
-/// Record the optional-dep enablers a dependency's solved feature set makes
-/// mandatory but which its emitted feature list does not contain (KI-12).
+/// Compute the optional-dep enablers a dependency's solved feature set makes
+/// mandatory but which its emitted feature list does not contain (KI-12), and
+/// record them in telemetry.
 ///
-/// Pure observation — nothing is enabled. A non-empty result is the repro KI-12
-/// has been waiting for: a dependency with the bucket-11 shape
-/// (`#[cfg(not(feature = "std"))] use <optional dep>::…`) whose emitted config
-/// therefore cannot link. Enablers already implied by the dep's `[features]`
-/// table are expected and harmless — the redundant edge, e.g. rand 0.8's
-/// `serde1 = ["serde", …]` — so entries need reading before they are believed.
-fn record_missing_optional_dep_enablers<'a>(
+/// Returns the forced list so `finalize_dep_crate` can add it back and protect
+/// it — the same step `bin/main.rs` already performs for the main crate via
+/// this same `solver::forced_optional_dep_enablers` call. A non-empty result
+/// is the bucket-11 shape (`#[cfg(not(feature = "std"))] use <optional
+/// dep>::…`) whose emitted config would otherwise fail to link. Enablers
+/// already implied by the dep's `[features]` table are harmless to re-add —
+/// the redundant edge, e.g. rand 0.8's `serde1 = ["serde", …]` — cargo just
+/// sees the same feature twice.
+fn forced_missing_optional_dep_enablers<'a>(
     ctx: &'a z3::Context,
     dep_crate_name: &str,
     main_name: &str,
@@ -1837,15 +1871,15 @@ fn record_missing_optional_dep_enablers<'a>(
     enable: &[String],
     disable: &[String],
     telemetry: &mut Telemetry,
-) {
+) -> Vec<String> {
     let manifest = determine_manifest_file(dep_crate_name, Some(main_name));
     let Ok(text) = fs::read_to_string(&manifest) else {
-        debug!("KI-12 probe: no manifest at {manifest} for dep {dep_crate_name}");
-        return;
+        debug!("KI-12: no manifest at {manifest} for dep {dep_crate_name}");
+        return Vec::new();
     };
     let Ok(manifest_toml) = toml::from_str::<toml::Value>(&text) else {
-        debug!("KI-12 probe: unparsable manifest at {manifest} for dep {dep_crate_name}");
-        return;
+        debug!("KI-12: unparsable manifest at {manifest} for dep {dep_crate_name}");
+        return Vec::new();
     };
 
     let known_features = crate::visitor::declared_features(&manifest);
@@ -1853,16 +1887,17 @@ fn record_missing_optional_dep_enablers<'a>(
         driver::optional_dep_link_constraints(ctx, &manifest_toml, &known_features, dep_root);
     let forced = solver::forced_optional_dep_enablers(ctx, &edges, &enablers, enable, disable);
     if forced.is_empty() {
-        return;
+        return forced;
     }
 
     println!(
         "[KI-12] Dependency {dep_crate_name} needs optional-dep feature(s) {forced:?} for the \
-         chosen no_std feature set, and the emitted list does not have them (not applied)"
+         chosen no_std feature set; adding to its emitted feature list"
     );
     telemetry
         .dep_missing_optional_dep_enablers
-        .push((dep_crate_name.to_string(), forced));
+        .push((dep_crate_name.to_string(), forced.clone()));
+    forced
 }
 
 pub fn process_dep_crate(
@@ -1992,13 +2027,14 @@ pub fn process_dep_crate(
         hard_constraints,
     )?;
 
-    // KI-12 observation. The optional-dep link edges are built for dependencies
-    // exactly as they are for the main crate, but they never leave
+    // KI-12. The optional-dep link edges are built for dependencies exactly as
+    // they are for the main crate, but they never leave
     // `find_feature_combs_for_all_code`, so nothing adds back the enablers this
     // assignment makes mandatory — `bin/main.rs` does that step for the main
-    // crate only. Records what the missing step would have added; the feature
-    // set is left untouched.
-    record_missing_optional_dep_enablers(
+    // crate only, one level up. Computed here and applied in
+    // `finalize_dep_crate`, which also has `dep_crate_name_norm` for the
+    // protection insert.
+    let forced_optional_enablers = forced_missing_optional_dep_enablers(
         &ctx,
         &dep_crate_name,
         &main_name,
@@ -2066,6 +2102,7 @@ pub fn process_dep_crate(
         disable,
         Some(entailed_false),
         feature_to_items,
+        &forced_optional_enablers,
     )
 }
 

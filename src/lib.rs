@@ -711,18 +711,21 @@ pub struct Telemetry {
     /// the emitted set then still carries the injection.
     pub injected_dep_features_dropped: Vec<String>,
     /// Dependencies whose chosen feature assignment makes an optional-dep
-    /// enabler mandatory, where that enabler is *not* in the feature list we
-    /// emit for the dependency (KI-12).
+    /// enabler mandatory, where that enabler was *not* in the feature list
+    /// `process_dep_crate`'s own solve emitted for the dependency (KI-12).
     ///
     /// The main crate gets these added back in `bin/main.rs` via
-    /// `solver::forced_optional_dep_enablers`; `process_dep_crate` never ran
-    /// that step, so a dependency with the bucket-11 shape
+    /// `solver::forced_optional_dep_enablers`; `parser::finalize_dep_crate`
+    /// now runs the same call for a dependency one level down (KI-12's own
+    /// scope limit: depth 1 only, same as KI-11) and pushes the result into
+    /// `enable` before emitting, so a dependency with the bucket-11 shape
     /// (`#[cfg(not(feature = "std"))] use hashbrown::…`, `hashbrown` optional
-    /// with only its implicit feature) can be emitted without the dependency
-    /// its own no_std half imports. Observation only — nothing is added to the
-    /// feature list. A non-empty entry here is the repro KI-12 is waiting for;
-    /// an entry whose enablers are already implied by the dep's `[features]`
-    /// table (rand 0.8's `serde1 = ["serde", …]`) is benign and expected.
+    /// with only its implicit feature) is no longer emitted without the
+    /// dependency its own no_std half imports. This field is the record of
+    /// what got added, not merely observed. An entry whose enablers were
+    /// already implied by the dep's `[features]` table (rand 0.8's `serde1 =
+    /// ["serde", …]`) is redundant but harmless — cargo just sees the same
+    /// feature twice.
     pub dep_missing_optional_dep_enablers: Vec<(String, Vec<String>)>,
     /// Was the crate build successful for any target
     pub build_success: bool,

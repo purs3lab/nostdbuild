@@ -167,9 +167,11 @@ fn process_dep_crate_wrapper(
         );
         let (enable, disable) = (db_entry.features.0.clone(), db_entry.features.1.clone());
         // DB hit — no dep_root available; pass empty map (no protection check for
-        // this dep). `None` for the entailed-false set for the same reason: the DB
-        // stores the (enable, disable) pair only, so removals fall back to
-        // `disable` and this path behaves exactly as it did before.
+        // this dep) and no forced optional-dep enablers (KI-12 needs the dep's
+        // parsed tree to compute those, which the DB path never has). `None`
+        // for the entailed-false set for the same reason: the DB stores the
+        // (enable, disable) pair only, so removals fall back to `disable` and
+        // this path behaves exactly as it did before.
         parser::finalize_dep_crate(
             exchange,
             dep,
@@ -177,6 +179,7 @@ fn process_dep_crate_wrapper(
             disable,
             None,
             std::collections::HashMap::new(),
+            &[],
         )?
     } else {
         parser::process_dep_crate(exchange, dep)?
