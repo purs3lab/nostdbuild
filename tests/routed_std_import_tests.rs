@@ -14,9 +14,13 @@
 //! from genuinely parsed use trees (braces, renames, `super::`, globs) rather
 //! than hand-shaped `LocalItem`s.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
-use nostd::driver::{ancestors_for_record, resolve_import_to_use_gateways};
+use cargo_test_support::{Project, cargo_test, project};
+
+use nostd::Telemetry;
+use nostd::driver::{ancestors_for_record, analyze_crate, resolve_import_to_use_gateways};
 use nostd::types::{FeatureRunOutput, PathContext, PathRecord, ReadableSpan};
 use nostd::visitor::{ModCollector, ancestors_for_span};
 
@@ -383,4 +387,116 @@ fn a_record_with_no_anchor_still_has_no_ancestors() {
 
     assert!(rec.gateway_anchor.is_none());
     assert!(ancestors_for_record(&root, &rec).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Existence proof: brace/routed std imports clear via a probe that actually
+// compiles, against a real no_std replacement — the KI-7 fixture gap
+// ---------------------------------------------------------------------------
+//
+// Parts A-C above drive `resolve_import_to_use_gateways`/`ancestors_for_record`
+// directly against `routed_std_import`, which is deliberately unparseable as a
+// real crate (no `hashbrown` dependency — "Not meant to compile"). Every
+// corpus clearance of the underlying false positive (cranelift-frontend
+// 0.53.0) went through `ProbeDecision::CompileFailed`: the ¬std build dies
+// inside cranelift-codegen, unrelated to the hashbrown swap itself. No crate
+// has ever shown this shape clearing via a probe that actually compiled.
+// `routed_import_wiring` is that crate: its `mapshim` path dependency is a
+// genuine (if minimal) no_std replacement, so the ¬std run compiles clean.
+//
+// This is deliberately NOT framed as a regression guard for
+// `ancestors_for_record`/`resolve_import_to_use_gateways` specifically — it
+// was built as one, and verification (stubbing each function out in turn and
+// re-running) found it stays green with *both* disabled. Root cause: this
+// fixture's std/no_std swap is a crate-ROOT `#[cfg]`, which
+// `find_feature_combs_for_all_code`'s own general-purpose covering-set search
+// discovers and compiles on its own — a completely different, KI-7-unrelated
+// mechanism (it exists to cover every `#[cfg]` branch in the source at least
+// once) — before the per-span gate-recovery path is ever reached. Once both
+// configs are gathered, `switch`/`frontend` are ungated and compile in both,
+// so plain run-divergence already tells the spans apart. KI-7's fix is only
+// load-bearing when the *general* gathering's own ¬std attempt fails to
+// compile (cranelift-frontend's actual shape) — reproducing that specific
+// asymmetry (general gathering fails, the later per-span probe's retry
+// succeeds anyway) needs a fixture engineered around the CEGAR retry
+// internals, not a small swap-in dependency; left for whoever picks this back
+// up, if a real corpus crate ever surfaces the shape (see `KNOWN_ISSUES.md`).
+// Parts A-C remain the actual regression guard for the mechanism itself. What
+// this test adds is the narrower, still-real thing the residual asked for:
+// proof the recovered gate is *correct* (a genuinely working no_std
+// alternative), not just quieter — closing the literal "no span has yet
+// cleared via a probe that actually compiled" gap.
+
+/// Copy a whole fixture directory into a cargo test project — the fixture here
+/// ships a path dependency (`mapshim`), so `Cargo.toml` + `lib.rs` is not
+/// enough.
+fn load_fixture(name: &str) -> (Project, String) {
+    let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
+
+    let mut files: Vec<(String, String)> = Vec::new();
+    collect_files(&fixture_path, &fixture_path, &mut files);
+    assert!(!files.is_empty(), "fixture {name} has no files");
+
+    let mut builder = project().at(name);
+    for (rel, contents) in &files {
+        builder = builder.file(rel, contents);
+    }
+    let p = builder.build();
+    let manifest = p.root().join("Cargo.toml").to_str().unwrap().to_string();
+    (p, manifest)
+}
+
+fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+    for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("reading {dir:?}: {e}")) {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            collect_files(root, &path, out);
+        } else {
+            let rel = path.strip_prefix(root).expect("under root");
+            out.push((
+                rel.to_string_lossy().to_string(),
+                fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {path:?}: {e}")),
+            ));
+        }
+    }
+}
+
+/// Drives `analyze_crate` end to end (not any single pass in isolation)
+/// against a fixture whose ¬std configuration genuinely compiles.
+///
+/// `hard_spans` alone cannot distinguish "excused by the recovered gate" from
+/// "silently dropped as `CompileFailed`" — both read as empty. What actually
+/// changes here is that a second, no_std configuration compiles and
+/// contributes records, so `coverage.num_covering_runs` is the second half of
+/// the assertion: without a working `mapshim` link the ¬std run does not
+/// compile and only the std run survives. This does NOT specifically pin down
+/// the KI-7 gate-recovery call sites — see the section comment above for why
+/// (the general covering-set search reaches the same answer on its own for a
+/// crate-root cfg swap like this one); Parts A-C are what regression-guard
+/// `ancestors_for_record`/`resolve_import_to_use_gateways` themselves.
+#[cargo_test]
+fn routed_import_clears_via_a_probe_that_actually_compiles() {
+    let (_p, manifest) = load_fixture("routed_import_wiring");
+    let ctx = z3::Context::new(&z3::Config::new());
+    let mut telemetry = Telemetry::default();
+    let (hard_spans, _final_condition, coverage, ..) =
+        analyze_crate(&ctx, &manifest, "routed_import_wiring", &mut telemetry);
+
+    let coverage = coverage.expect("coverage comparison");
+    assert!(
+        coverage.num_covering_runs >= 2,
+        "the ¬std covering run must compile once `mapshim` provides HashMap/ \
+         RandomState — got {} run(s); without it only the std run survives",
+        coverage.num_covering_runs
+    );
+
+    assert!(
+        hard_spans.is_empty(),
+        "the routed `super::HashMap` use and the two-hop `crate::hash_map::\
+         RandomState` use both inherit the root brace import's `feature = \
+         \"std\"` gate and have a working no_std alternative, so nothing may be \
+         hard std: {hard_spans:?}"
+    );
 }

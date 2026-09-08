@@ -1,0 +1,10 @@
+[package]
+name = "mapshim"
+description = "Stands in for hashbrown — the no_std map replacement for the KI-7 routed-import wiring fixture"
+version = "0.1.0"
+
+[lib]
+path = "src/lib.rs"
+name = "mapshim"
+
+[workspace]

@@ -1,0 +1,19 @@
+[package]
+name = "routed_import_wiring"
+description = "KI-7 wiring guard: brace + routed std import clears via a probe that actually compiles, not CompileFailed"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "routed_import_wiring"
+
+[dependencies.mapshim]
+path = "mapshim"
+
+[features]
+default = ["std"]
+std = []
+
+[workspace]
+exclude = ["mapshim"]
