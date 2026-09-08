@@ -112,6 +112,7 @@ fn process_dep_crate_wrapper(
     previously_disabled: &mut HashSet<String>,
     non_minimalizable: &HashSet<String>,
     deps_to_keep: &HashSet<String>,
+    main_to_disable: &HashSet<String>,
 ) -> anyhow::Result<()> {
     let _t = timing::crate_scope("dep_analysis", &dep.crate_name);
     // The DB answers "what does this dependency need to be no_std", keyed by the
@@ -246,6 +247,22 @@ fn process_dep_crate_wrapper(
     temp_flexible.retain(|f| {
         !parser::reaches_forbidden_feature(&exchange.crate_info, f, &exchange.main_no_std_forbidden)
     });
+
+    // R34-22 sizing (measurement only): does what survived the two filters above
+    // still contain a feature the main crate's own solve put in *its* `to_disable`?
+    // Neither filter covers that — `previously_disabled` only ever accumulates
+    // other dependencies' `to_disable`, never the main solve's own (see the field
+    // doc on `Telemetry::dep_pass_reintroduced_main_disabled`). Recorded, not
+    // acted on: `main_features.extend` two lines down still re-adds it exactly as
+    // it does today.
+    let reintroduced_main_disabled =
+        solver::reintroduced_main_disabled_features(&temp_flexible, main_to_disable);
+    if !reintroduced_main_disabled.is_empty() {
+        exchange
+            .telemetry
+            .dep_pass_reintroduced_main_disabled
+            .push((dep.crate_name.clone(), reintroduced_main_disabled));
+    }
 
     *disable_default = *disable_default || temp_disable_default;
     main_features.extend(temp_flexible);
@@ -897,6 +914,12 @@ fn run() -> anyhow::Result<()> {
     // This way we don't accidentally re-enable some feature for a later dependency
     // that we had to disable for an earlier dependency.
     let mut previously_disabled: HashSet<String> = HashSet::new();
+    // R34-22 sizing only — read by `process_dep_crate_wrapper` to detect (not yet
+    // prevent) a dependency pass reintroducing a feature the main solve itself
+    // already put in `to_disable` above. Not merged into `previously_disabled`:
+    // that would change behavior, and this pass is measurement-only until the
+    // sizing data says a fix is warranted.
+    let main_to_disable: HashSet<String> = to_disable.iter().cloned().collect();
     // Solve for each dependency
     // TODO: Some dependencies are from git instead of crates.io. Handle those cases.
     // TODO: There are some cleanup and refactoring to minimize the read -> mutate -> write pattern for the toml
@@ -954,6 +977,7 @@ fn run() -> anyhow::Result<()> {
             &mut previously_disabled,
             &non_minimalizable,
             &deps_to_keep,
+            &main_to_disable,
         )?;
     }
 
@@ -1001,6 +1025,7 @@ fn run() -> anyhow::Result<()> {
                 &mut previously_disabled,
                 &non_minimalizable,
                 &deps_to_keep,
+                &main_to_disable,
             )?;
         }
     }

@@ -975,4 +975,14 @@ pub struct Telemetry {
     pub hard_with_main_unsat_main: Option<String>,
     /// Dependencies whose hard constraints + no_std equation are unsatisfiable: (crate:version, condition).
     pub hard_with_main_unsat_deps: Vec<(String, String)>,
+    /// R34-22 sizing (measurement only, no behavior change): per dependency, the
+    /// main crate's own `default` features that dependency's `final_feature_list_main`
+    /// pass handed back in `temp_flexible` and that survived both existing filters
+    /// (`previously_disabled`, `parser::reaches_forbidden_feature`) — i.e. features
+    /// the *main* crate's own initial solve had just put in its `to_disable`, about
+    /// to be silently re-added to `main_features` anyway, because `previously_disabled`
+    /// is only ever seeded from other dependencies' `to_disable`, never the main
+    /// solve's own. Each entry is `(dep_name, features)`. Empty means this run never
+    /// hit the shape; see `ALL_TARGET_FAILURES.md`'s R34-22 entry.
+    pub dep_pass_reintroduced_main_disabled: Vec<(String, Vec<String>)>,
 }

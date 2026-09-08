@@ -638,6 +638,30 @@ pub fn final_feature_list_main(
     (disable_default, enable_from_default, disable_from_default)
 }
 
+/// R34-22 sizing (measurement only, no behavior change): which of a dependency
+/// pass's surviving `temp_flexible` features are ones the *main* crate's own
+/// solve already put in its `to_disable`.
+///
+/// `bin/main.rs`'s `process_dep_crate_wrapper` filters `temp_flexible` against
+/// `previously_disabled` (other dependencies' own `to_disable`, accumulated as
+/// the loop proceeds) and against `parser::reaches_forbidden_feature` (the
+/// no_std condition's forbidden set) — but never against the main crate's own
+/// initial `to_disable`, which nothing carries into `previously_disabled`. A
+/// feature this returns non-empty for is about to be silently re-added to
+/// `main_features` regardless: this function only reports the fact, it does
+/// not change it. See `Telemetry::dep_pass_reintroduced_main_disabled` and
+/// `ALL_TARGET_FAILURES.md`'s R34-22 entry.
+pub fn reintroduced_main_disabled_features(
+    temp_flexible: &[String],
+    main_to_disable: &HashSet<String>,
+) -> Vec<String> {
+    temp_flexible
+        .iter()
+        .filter(|f| main_to_disable.contains(*f))
+        .cloned()
+        .collect()
+}
+
 /// This returns the features that need to be declared in the main crate's manifest,
 /// paired with the value each should get. It also removes features that are implicitly
 /// added by cargo for optional dependencies.
