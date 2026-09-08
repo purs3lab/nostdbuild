@@ -381,12 +381,16 @@ pub fn read_dep_names_and_versions(
 /// # Arguments
 /// * `name` - The name of the crate to get dependencies for
 /// * `only_gather` - If true, only gather dependencies without modifying Cargo.toml
+/// * `telemetry` - When modifying Cargo.toml (`only_gather == false`), records
+///   whether the manifest carried a `[patch]`/`[replace]` table (KI-31). Pass
+///   `None` for read-only dependency gathers, which never reach that code.
 /// # Returns
 /// * `Result` - A tuple containing the worklist, crate name renames, and crate info
 pub fn gather_crate_info(
     name: &str,
     only_gather: bool,
     main_name: Option<&str>,
+    telemetry: Option<&mut Telemetry>,
 ) -> Result<(TupleVec, TupleVec, CrateInfo), anyhow::Error> {
     let dir = Path::new(DOWNLOAD_PATH).join(name.replace(':', "-"));
     let manifest = parser::determine_manifest_file(name, main_name);
@@ -476,6 +480,27 @@ pub fn gather_crate_info(
         parser::remove_table_from_toml("dev-dependencies", &mut toml, &manifest)?;
         parser::remove_features_of_deps("target", &mut toml, &manifest, &non_dev_deps)?;
         parser::remove_table_from_toml("target", &mut toml, &manifest)?;
+
+        // KI-31: `[patch]`/`[patch.<registry>]`/`[replace]` are read by nothing
+        // downstream — the syn tree, HIR records and emitted `--features` would
+        // describe the patched source while the verification build compiles
+        // whatever cargo resolves the unpatched edge to. Registry manifests
+        // never carry one (cargo strips `[patch]` on publish), so this only
+        // fires on a `--url` run against an unpublished working tree.
+        let had_patch_table = toml
+            .as_table()
+            .is_some_and(|t| t.contains_key("patch") || t.contains_key("replace"));
+        if had_patch_table {
+            debug!(
+                "{} has a [patch] or [replace] table; stripping it and analyzing the registry edge",
+                manifest
+            );
+            if let Some(telemetry) = telemetry {
+                telemetry.manifest_had_patch_table = true;
+            }
+        }
+        parser::remove_table_from_toml("patch", &mut toml, &manifest)?;
+        parser::remove_table_from_toml("replace", &mut toml, &manifest)?;
     }
 
     Ok((worklist, crate_name_rename, crate_info))

@@ -394,7 +394,7 @@ fn run() -> anyhow::Result<()> {
     // run concurrently with a full evaluation over the same download cache.
     let (mut worklist, crate_name_rename, mut crate_info) = {
         let _t = timing::scope("gather_crate_info", &name);
-        downloader::gather_crate_info(&name, cli.dry_run, None)?
+        downloader::gather_crate_info(&name, cli.dry_run, None, Some(&mut telemetry))?
     };
     telemetry.num_deps = crate_info.deps_and_features.len();
 

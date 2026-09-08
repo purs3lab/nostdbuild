@@ -1904,8 +1904,12 @@ pub fn process_dep_crate(
     exchange: &mut DataExchange,
     dep: &mut Attributes,
 ) -> Result<TripleTupleVecString, anyhow::Error> {
-    let (.., dep_crate_info) =
-        downloader::gather_crate_info(&dep.crate_name, true, Some(&exchange.name_with_version))?;
+    let (.., dep_crate_info) = downloader::gather_crate_info(
+        &dep.crate_name,
+        true,
+        Some(&exchange.name_with_version),
+        None,
+    )?;
     let mut optional_dep_feats = features_for_optional_deps(&dep_crate_info);
     let dep_crate_name = dep.crate_name.clone();
     let main_name = exchange.name_with_version.clone();
@@ -2913,7 +2917,8 @@ pub fn transitive_forbidden_dep_features(
                     continue;
                 };
                 let (.., child_info) =
-                    match downloader::gather_crate_info(&child_name, true, Some(main_name)) {
+                    match downloader::gather_crate_info(&child_name, true, Some(main_name), None)
+                    {
                         Ok(info) => info,
                         Err(e) => {
                             debug!("No crate info for {}: {}", child_name, e);
@@ -5643,6 +5648,7 @@ pub fn recursive_dep_requirement_check(
             &name_with_version,
             true,
             Some(&exchange.name_with_version),
+            None,
         )
         .unwrap();
 
@@ -5723,6 +5729,7 @@ pub fn recursive_dep_requirement_check(
                 &dep_name_with_version,
                 true,
                 Some(&exchange.name_with_version),
+                None,
             )
             .unwrap();
 

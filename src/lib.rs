@@ -481,6 +481,15 @@ pub struct Telemetry {
     pub no_std: bool,
     /// Is the crate a proc-macro crate
     pub is_proc_macro: bool,
+    /// Did the main crate's manifest carry a `[patch]` or `[replace]` table
+    /// before `gather_crate_info` stripped it (KI-31). Registry manifests
+    /// never have one — cargo strips `[patch]` on publish — so this only
+    /// ever fires on a `--url` run against an unpublished working tree, where
+    /// the analysis (syn tree, HIR records, emitted `--features`) describes
+    /// the *patched* source while the verification build would have compiled
+    /// it too, had the table not been stripped as unreadable by the rest of
+    /// the pipeline.
+    pub manifest_had_patch_table: bool,
     /// Did the crate have `#[no_std]` instead of `#![no_std]`
     pub wrong_unconditional_setup: bool,
     /// Number of direct dependencies
