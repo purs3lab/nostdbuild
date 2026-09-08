@@ -313,4 +313,23 @@ fn test_unproven_probe_is_reported_but_not_hard() {
         telemetry.compile_failed_spans >= telemetry.unproven_std_spans,
         "unproven is the AlwaysStd subset of the compile-failed spans"
     );
+
+    // R31-6: the reason is not a generic "it failed" — it carries the probe's own
+    // compiler error, which is what makes an otherwise-`N/A` PROBE_COMPILE_ERROR row
+    // triageable (see `KNOWN_ISSUES.md`'s corrected CompileFailed-drop entry). The
+    // no_std arm's probe build never gets far enough to report `broken()`'s
+    // unresolved `no_such_function_anywhere()` (E0425): negating `feature = "std"`
+    // makes the whole fixture `#![no_std]`, and a `#![no_std]` *binary* fails first
+    // on the missing `#[panic_handler]` — a real, specific rustc diagnostic in its
+    // own right, and proof enough that the actual compiler error survives into the
+    // reason rather than being dropped in favor of just the negated gate.
+    assert!(
+        telemetry
+            .unproven_std_span_reasons
+            .iter()
+            .any(|r| r.contains("panic_handler")),
+        "the unproven reason must carry the probe's own compiler error, not just \
+         which gate was negated, but got: {:?}",
+        telemetry.unproven_std_span_reasons
+    );
 }
