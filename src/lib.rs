@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::{fs, path, sync::Mutex};
 use syn::Attribute;
 
+pub mod ablation;
 pub mod compiler;
 pub mod consts;
 pub mod db;
@@ -1031,4 +1032,8 @@ pub struct Telemetry {
     /// Of those, how many were forced past the cache by mechanism #6
     /// (impl/path requirement propagation) rather than missing outright.
     pub db_cache_bypassed: u64,
+    /// Names of the ablation flags active for this run (empty on an
+    /// unmodified/baseline run), so a dumped result self-describes which
+    /// arm of the ablation study produced it. See `ablation::AblationFlags`.
+    pub ablation_flags: Vec<String>,
 }

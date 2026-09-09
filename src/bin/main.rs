@@ -6,7 +6,9 @@ use anyhow::Ok;
 use clap::Parser;
 use log::debug;
 
-use nostd::{Attributes, compiler, consts, db, downloader, driver, parser, solver, timing};
+use nostd::{
+    Attributes, ablation, compiler, consts, db, downloader, driver, parser, solver, timing,
+};
 
 #[derive(Parser, Debug)]
 #[command(author, about)]
@@ -32,6 +34,50 @@ struct Cli {
     /// Whether the final recursive dep check should run.
     #[arg(long)]
     no_recursive: bool,
+
+    /// Ablation study (see ablation_plan.md §3.1): ignore the HIR-verified
+    /// std-finding hard constraint instead of seeding the solve with it.
+    #[arg(long)]
+    no_std_finding: bool,
+
+    /// Ablation study §3.2: stop the covering-set search after the seed
+    /// (default-features) run instead of iterating to full coverage.
+    #[arg(long)]
+    no_combo_search: bool,
+
+    /// Ablation study §3.3: skip per-dependency no_std feature analysis;
+    /// dependencies are left at their own default features.
+    #[arg(long)]
+    no_dep_analysis: bool,
+
+    /// Ablation study §3.4: don't assert compile_error!-derived constraints
+    /// into the solver.
+    #[arg(long)]
+    no_compile_error_constraints: bool,
+
+    /// Ablation study §3.5: don't run the cfg-gate / gateway resolution
+    /// passes.
+    #[arg(long)]
+    no_gateway_resolution: bool,
+
+    /// Ablation study §3.6: don't check whether the main crate's usage of a
+    /// dependency requires bypassing the DB cache for that dependency.
+    #[arg(long)]
+    no_cross_crate_propagation: bool,
+
+    /// Ablation study §3.7: don't read or write the shared no_std result DB
+    /// (`db.bin`).
+    #[arg(long)]
+    no_db: bool,
+
+    /// Ablation study §3.8: don't use the in-process `cargo hir` cache (L1).
+    #[arg(long)]
+    no_local_cache: bool,
+
+    /// Ablation study §3.9: don't use the cross-process `cargo hir` cache
+    /// (L2).
+    #[arg(long)]
+    no_global_cache: bool,
 }
 
 /// Assemble the cargo flags for one feature selection: `--no-default-features`
@@ -317,6 +363,20 @@ fn main() -> anyhow::Result<()> {
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     env_logger::init();
+    // Set once, before anything below reads it — `ablation::flags()` is how
+    // every mechanism's call site (in this file and in `driver.rs`) learns
+    // which arm of the ablation study this process is running as.
+    ablation::set_flags(ablation::AblationFlags {
+        no_std_finding: cli.no_std_finding,
+        no_combo_search: cli.no_combo_search,
+        no_dep_analysis: cli.no_dep_analysis,
+        no_compile_error_constraints: cli.no_compile_error_constraints,
+        no_gateway_resolution: cli.no_gateway_resolution,
+        no_cross_crate_propagation: cli.no_cross_crate_propagation,
+        no_db: cli.no_db,
+        no_local_cache: cli.no_local_cache,
+        no_global_cache: cli.no_global_cache,
+    });
     // Starts the clock every later scope is measured against. `AllStats::dump`
     // reads it back out, and every exit path — including the early bails below —
     // goes through `dump`.
@@ -357,7 +417,10 @@ fn run() -> anyhow::Result<()> {
     };
 
     let db_data = db::read_db_file()?;
-    let mut telemetry = nostd::Telemetry::default();
+    let mut telemetry = nostd::Telemetry {
+        ablation_flags: ablation::flags().active_names(),
+        ..Default::default()
+    };
 
     {
         let _t = timing::scope("download_main", &name);
@@ -546,6 +609,17 @@ fn run() -> anyhow::Result<()> {
         "Feature sets that compiled bare-metal for {}: {:?}",
         exchange.name_with_version, main_bare_metal_sets
     );
+
+    // Ablation study §3.1: with std-finding disabled, the hard constraint
+    // `analyze_crate_wrapper` derived from actually-found std usage doesn't
+    // get to seed the solve below — everything else from the call above
+    // (main_root, impl_records, path_items, the all_hard/unproven_std
+    // fail-fast checks) is untouched.
+    let hard_constraints = if ablation::flags().no_std_finding {
+        None
+    } else {
+        hard_constraints
+    };
 
     // What this crate's dependencies demand of its feature set (R31-4). The
     // translation existed and only the covering runs read it: glamour 0.16.0's
