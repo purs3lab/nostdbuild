@@ -1,0 +1,23 @@
+[package]
+name = "ki36_hook_feature"
+description = "clock_source-0.2.4 in miniature, plus a genuine backend alongside the hook"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "lib.rs"
+name = "ki36_hook_feature"
+
+# `custom` sorts alphabetically before `real` — the same ordering that made
+# getrandom's own `custom` win a blind, alphabetical, first-declared-feature
+# search before KI-34's exclusion. Both arms define `Text` off the host; only
+# `custom` is the self-registration-hook shape KI-36's fix must exclude by
+# name, so a search still working correctly must land on `real`, never
+# `custom`, even though nothing here stops `custom` from compiling too.
+[features]
+default = ["std"]
+std = []
+custom = []
+real = []
+
+[workspace]

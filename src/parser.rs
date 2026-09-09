@@ -4720,6 +4720,19 @@ pub fn dep_edge_retry_candidates(
     let mut candidates: Vec<String> = visitor::declared_features(&dep_manifest)
         .into_iter()
         .filter(|f| f != "default")
+        // KI-36: a feature named exactly `custom` is, by ecosystem
+        // convention (getrandom, and confirmed here on `clock_source`'s own
+        // `custom` — a `mod custom;` declaring an `extern "C"` hook only the
+        // *final binary* can define), a self-registration hook rather than
+        // an ordinary cfg-gated path. `cargo build --lib` never reaches the
+        // link step that would catch a missing definition, so a lib-only
+        // success with `custom` enabled "passes" on every target regardless
+        // of whether any real backend exists — the same reasoning
+        // `add_synthetic_dependency`'s caller already excludes it for
+        // (KI-34). Excluding it here too is conservative — the only cost is
+        // a missed fix on whatever different, benign thing a *different*
+        // dependency's own `custom` feature might mean — never a false one.
+        .filter(|f| f != "custom")
         .map(|f| format!("{edge_name}/{f}"))
         .collect();
     candidates.sort();

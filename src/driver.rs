@@ -5177,6 +5177,19 @@ pub fn enablers_for_selection(
         .iter()
         .filter(|f| !selection.contains(*f) && !exclude.contains(*f))
         .filter(|f| !SYNTHETIC.contains(&f.as_str()))
+        // KI-36: `custom` is, by ecosystem convention (getrandom;
+        // confirmed here on `clock_source`'s own `custom`, a `mod custom;`
+        // declaring an `extern "C"` hook only the *final binary* can
+        // define), a self-registration hook rather than an ordinary
+        // cfg-gated path. `cargo build --lib` never reaches the link step
+        // that would catch a missing definition, so a lib-only success with
+        // `custom` on "passes" on every target regardless of whether any
+        // real backend exists — the same reasoning `add_synthetic_dependency`'s
+        // caller already excludes it for (KI-34). Excluded by name here too,
+        // conservatively: the only cost is a missed fix on whatever
+        // different, benign thing a *different* crate's own `custom` feature
+        // might mean, never a false one.
+        .filter(|f| f.as_str() != "custom")
         .cloned()
         .collect();
     candidates.sort();
