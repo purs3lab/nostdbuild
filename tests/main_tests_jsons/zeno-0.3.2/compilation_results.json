@@ -14,7 +14,7 @@
       "--lib",
       "--no-default-features",
       "--features",
-      "eval,libm"
+      "libm"
     ],
     "status": "Success",
     "error": null

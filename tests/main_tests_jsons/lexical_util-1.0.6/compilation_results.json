@@ -12,9 +12,7 @@
       "--manifest-path",
       "/evaldisk/sourag/downloads/lexical-util-1.0.6/Cargo.toml",
       "--lib",
-      "--no-default-features",
-      "--features",
-      "floats,write-floats"
+      "--no-default-features"
     ],
     "status": "Success",
     "error": null

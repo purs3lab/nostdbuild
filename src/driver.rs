@@ -2664,14 +2664,15 @@ fn compile_error_source_files(dep_dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// What this crate's dependencies demand of *its* feature set, as one
-/// constraint the feature solve can be handed — R31-4.
+/// What this crate's dependencies demand of *its* feature set, plus what its
+/// own `[features]` table always implies of itself, as one constraint the
+/// feature solve can be handed — R31-4, extended by KI-33.
 ///
-/// [`dependency_compile_error_constraints`] already says it in this crate's
-/// feature names; what was missing is a consumer other than the covering runs.
-/// The covering runs decide which feature sets get *compiled for evidence*; the
-/// edge the run finally emits is decided by `process_crate`, and that solve
-/// never saw the constraint. ab_glyph 0.2.29 is the case: `libm =
+/// [`dependency_compile_error_constraints`] already says the dependency half in
+/// this crate's feature names; what was missing is a consumer other than the
+/// covering runs. The covering runs decide which feature sets get *compiled
+/// for evidence*; the edge the run finally emits is decided by `process_crate`,
+/// and that solve never saw the constraint. ab_glyph 0.2.29 is the case: `libm =
 /// ["owned_ttf_parser/no-std-float", …]` is exactly what ttf-parser's
 /// `compile_error!` asks for, owned_ttf_parser's own solve answered `enable:
 /// []` because *it* is happy without the feature, and
@@ -2679,28 +2680,35 @@ fn compile_error_source_files(dep_dir: &Path) -> Vec<PathBuf> {
 /// asked for and moved it to `dep_unnecessary_features` — emitting `--features
 /// libm` with the one thing `libm` was for deleted out of it.
 ///
-/// The feature implications ride along because the disjunction is otherwise
-/// free to be satisfied the expensive way: ttf-parser is equally happy with
-/// `std`, `default`, `gvar-alloc` or `no-std-float`, and nothing but
-/// `default => std` stops a model from picking `default` and turning std back
-/// on. They are statements about the crate's own `[features]` table, true in
-/// every configuration, so asserting them constrains nothing that was free.
+/// The feature implications are asserted unconditionally, not only when a
+/// dependency's `compile_error!` also reaches this crate — KI-33. Any
+/// disjunction this crate is handed from elsewhere (`transitive_impl_requirements`
+/// / `translate_across_edge` / `dependency_compile_error_constraints`, one level
+/// up) is otherwise free to be satisfied the expensive way: `sp-io` is equally
+/// happy answering `std ∨ default` with `default`, and nothing but `default =>
+/// std` stops a model from picking it and turning std back on — `pallet-sudo`'s
+/// `custom_no_std_feature_enabled = ["sp-io/default", …]`, four direct
+/// dependencies re-enabling std on all 33 targets. `sp-io` has no
+/// `compile_error!` two levels down of its own, so the old gate
+/// (`dep_errors.is_empty()`) never let this run for it at all. These are
+/// statements about the crate's own `[features]` table, true in every
+/// configuration, so asserting them constrains nothing that was free.
 ///
-/// `None` when no dependency constrains this crate, which is nearly all of
-/// them — the caller then leaves its hard constraints exactly as they were.
+/// `None` only when nothing here has anything to say about this crate at all —
+/// no dependency constrains it *and* its own `[features]` table has no
+/// feature-to-feature or feature-to-optional-dep link.
 pub fn dependency_feature_requirement<'a>(ctx: &'a Context, manifest: &str) -> Option<Bool<'a>> {
     let manifest_toml = read_manifest_toml(manifest);
-    let dep_errors = dependency_compile_error_constraints(ctx, manifest, &manifest_toml);
-    if dep_errors.is_empty() {
-        return None;
-    }
+    let mut parts = dependency_compile_error_constraints(ctx, manifest, &manifest_toml);
     let feat_map = downloader::read_local_features(&manifest_toml);
-    let mut parts = dep_errors;
     parts.extend(solver::feature_implication_constraints(ctx, &feat_map));
     parts.extend(solver::optional_dep_implication_constraints(
         ctx,
         &downloader::optional_dep_feature_edges(&manifest_toml),
     ));
+    if parts.is_empty() {
+        return None;
+    }
     Some(Bool::and(ctx, &parts.iter().collect::<Vec<_>>()))
 }
 

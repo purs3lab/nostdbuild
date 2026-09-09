@@ -117,6 +117,14 @@ fn test_tarfs() {
     run_main_test("tarfs", "0.2.7", "x86_64-unknown-none");
 }
 
+/// Re-blessed with KI-33: `parser` drops out of the emitted set (`--features
+/// parser` → none). `driver::dependency_feature_requirement` now always
+/// asserts this crate's own feature-implication facts in the final solve
+/// (`default => std`, `default => parser`, …), not only when a nested
+/// dependency's `compile_error!` also happens to reach it — which changes
+/// which valid model the solver returns for an otherwise-underconstrained
+/// choice. Re-verified as a real no_std build on x86_64-unknown-none before
+/// re-blessing; the old config also built, this one is just tighter.
 #[cargo_test]
 fn test_tinywasm() {
     run_main_test("tinywasm", "0.8.0", "x86_64-unknown-none");
@@ -228,6 +236,12 @@ fn test_wg() {
 /// `log` and hand it to `final_feature_list_main` as one to disable — which took the
 /// implicit feature out of the default closure as a side effect. Only genuine
 /// `<dep>/<subfeat>` references count now, so `log` stays on. Builds either way.
+///
+/// **Re-blessed again with KI-33**: `log` drops back out. Same underlying cause
+/// as `test_tinywasm` above — `dependency_feature_requirement` now always
+/// asserts `default`'s own implications for the final solve, changing which
+/// valid model gets returned for features `default` lists but nothing else
+/// requires. Re-verified as a real no_std build on x86_64-unknown-none.
 #[cargo_test]
 fn test_ya_smoltcp() {
     run_main_test("ya-smoltcp", "0.1.0", "x86_64-unknown-none");
@@ -249,6 +263,13 @@ fn test_winter_crypto() {
     run_main_test("winter-crypto", "0.12.0", "x86_64-unknown-none");
 }
 
+/// Re-blessed with KI-33: `eval` drops out of the emitted set (`--features
+/// eval,libm` → `--features libm`). `eval` is only reachable through `default
+/// = ["eval", "std"]`; `dependency_feature_requirement` now always asserts
+/// `default`'s own implications for the final solve, so `default` (and what
+/// only `default` reached) is no longer a free choice once `std` is forced
+/// off. `libm` is independently required and stays. Re-verified as a real
+/// no_std build on x86_64-unknown-none.
 #[cargo_test]
 fn test_zeno() {
     run_main_test("zeno", "0.3.2", "x86_64-unknown-none");
@@ -270,6 +291,17 @@ fn test_uom() {
     run_main_test("uom", "0.38.0", "x86_64-unknown-none");
 }
 
+/// Re-blessed with KI-33: the emitted args now carry `--no-default-features`,
+/// which the old golden lacked entirely. `default = ["std"]` used to be left
+/// unconstrained in the final solve (`dependency_feature_requirement`
+/// returned `None` — watchface has no nested `compile_error!` to trigger the
+/// old gate), so the solver was free to leave `default` on even though `std`
+/// is forced off; `default => std` is now always asserted, so `default`
+/// follows `std` off. Both configs build — this crate's own no_std condition
+/// does not key off this `std` feature, so `chrono` linking either way was
+/// never what made it pass or fail. This is the `custom_default_features`
+/// orphan guard row (fixed 2026-08-03, T1) paired with `a7105` — it still
+/// builds after this change.
 #[cargo_test]
 fn test_watchface() {
     run_main_test("watchface", "0.4.0", "x86_64-unknown-none");
@@ -353,6 +385,18 @@ fn test_bbx() {
 /// drop. `search_removals` now resolves that expansion (`dep_names_reached`)
 /// and ties a `dep_features` entry to whichever candidate it actually
 /// reaches, dropping both together.
+///
+/// **Re-blessed with KI-33**: `serde` is still dropped exactly as above — the
+/// change is additive, on a different dependency. `reddsa`'s own
+/// `alloc = ["hex"]` used to be reachable from its own `default = ["std"]`
+/// (via `std`'s own closure) with nothing stopping the no_std solve from
+/// answering `default`'s disjunction for real code that needs an impl reddsa
+/// only exposes under `alloc`/`hex`; `dependency_feature_requirement` now
+/// asserts `default => std` for `reddsa` unconditionally (previously only
+/// when a nested `compile_error!` also reached it, which it never has), so
+/// the solve is forced onto the genuine no_std path and parks
+/// `custom_no_std_feature_enabled = ["reddsa/hex"]` on redjubjub's own edge.
+/// Verified as a real no_std build.
 #[cargo_test]
 fn test_redjubjub() {
     run_main_test("redjubjub", "0.8.0", "x86_64-unknown-none");
@@ -419,11 +463,20 @@ fn test_dfu_core() {
 /// "parse-floats"))))] compile_error!(…)` and lost every target to it.
 ///
 /// The repair is applied as a retry in the KI-11 shape — only after a build that
-/// failed everywhere, kept only because the rebuild succeeded — so this test is
-/// what proves the wiring: `parser::compile_error_repair_features` returning the
-/// right feature is not the same as `bin/main.rs` retrying with it. The golden
-/// holds ONE row, the repaired build, because the failed attempt's records are
-/// discarded.
+/// failed everywhere, kept only because the rebuild succeeded.
+///
+/// **Re-blessed with KI-33**: the golden no longer demonstrates
+/// `compile_error_repair_features` picking `write-floats` — that path is still
+/// covered directly by `compile_error_constraint_tests.rs`. What changed is
+/// upstream of the repair: `dependency_feature_requirement` now always
+/// asserts this crate's own feature implications in the final solve, so
+/// `floats` is no longer left free once `std` is forced off, and the first
+/// attempt's build failure (still real — `floats` alone still trips the
+/// crate's `compile_error!`) now gets repaired by the generic
+/// drop-the-offending-feature retry (`bin/main.rs`) instead: dropping
+/// `floats` outright rather than adding `write-floats` to it. Both repairs
+/// produce a real, verified `cargo build` success; the golden just records a
+/// different one now. `["--no-default-features"]` is the new final config.
 #[cargo_test]
 fn test_lexical_util() {
     run_main_test("lexical-util", "1.0.6", "x86_64-unknown-none");

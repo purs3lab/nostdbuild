@@ -12,7 +12,9 @@
       "--manifest-path",
       "/evaldisk/sourag/downloads/redjubjub-0.8.0/Cargo.toml",
       "--lib",
-      "--no-default-features"
+      "--no-default-features",
+      "--features",
+      "custom_no_std_feature_enabled"
     ],
     "status": "Success",
     "error": null

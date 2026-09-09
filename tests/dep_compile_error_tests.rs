@@ -281,19 +281,34 @@ fn the_requirement_carries_the_feature_implications() {
     );
 }
 
-/// A crate no dependency constrains is left exactly as it was — the requirement
-/// is `None`, not a vacuous `true` conjoined onto every solve.
+/// A crate no *dependency* constrains still carries its own `default => std`
+/// implication — KI-33. That implication is a fact about this crate's own
+/// `[features]` table, true in every configuration, and must not depend on
+/// whether some unrelated nested `compile_error!` also happens to reach this
+/// crate: `sp-io` (pallet-sudo's dependency) has no `compile_error!` two levels
+/// down, and used to get no implication at all, leaving `default` free to stand
+/// in for `std` in whatever disjunction it was later handed.
 #[test]
-fn a_crate_no_dependency_constrains_gets_no_requirement() {
+fn a_crate_no_dependency_constrains_still_carries_its_own_implications() {
     let ctx = z3::Context::new(&z3::Config::new());
-    assert!(
-        requirement(&ctx, "pinned").is_none(),
-        "the edge already supplies the feature; nothing to require"
+    let req = requirement(&ctx, "pinned").expect(
+        "the edge already supplies libm, but pinned's own default => std must \
+         still be asserted",
     );
     assert!(
-        requirement(&ctx, "unreachable").is_none(),
-        "an atom this crate cannot reach drops the constraint, and with it the \
-         requirement"
+        !satisfiable(&ctx, &[req], &["default"], &["std"]),
+        "pinned's own default enables its own std; a model may not have one \
+         without the other"
+    );
+
+    let req = requirement(&ctx, "unreachable").expect(
+        "an atom paired cannot reach drops paired's constraint, but \
+         unreachable's own default => std must still be asserted",
+    );
+    assert!(
+        !satisfiable(&ctx, &[req], &["default"], &["std"]),
+        "same implication, independent of whether any dependency's \
+         compile_error reaches this crate at all"
     );
 }
 

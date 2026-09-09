@@ -11,7 +11,8 @@
       "x86_64-unknown-none",
       "--manifest-path",
       "/evaldisk/sourag/downloads/watchface-0.4.0/Cargo.toml",
-      "--lib"
+      "--lib",
+      "--no-default-features"
     ],
     "status": "Success",
     "error": null
