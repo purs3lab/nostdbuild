@@ -158,10 +158,12 @@ fn process_dep_crate_wrapper(
     }
     // Check the DB first: if we already have a result for this dep, skip the expensive
     // gather_crate_info + analyze_crate_wrapper + process_crate path entirely.
+    db::record_db_cache_attempt(has_impl_requirements || has_path_requirements);
     let (local_dep_args, dep_disable, dep_enable) = if let Some(db_entry) =
         db::get_from_db_data(&exchange.db_data, &dep.crate_name)
             .filter(|_| !has_impl_requirements && !has_path_requirements)
     {
+        db::record_db_cache_hit();
         debug!(
             "DB hit for dependency {}, skipping analysis",
             dep.crate_name

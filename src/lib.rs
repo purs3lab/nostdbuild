@@ -346,6 +346,12 @@ impl AllStats {
             // the one point every exit path funnels through.
             telemetry.files_syn_failed = visitor::syn_failed_files();
             telemetry.cargo_metadata_failed = visitor::cargo_metadata_failures();
+            telemetry.cargo_hir_cache_attempts = driver::cargo_hir_cache_attempts();
+            telemetry.cargo_hir_cache_hits_local = driver::cargo_hir_l1_cache_hits();
+            telemetry.cargo_hir_cache_hits_persistent = driver::cargo_hir_l2_cache_hits();
+            telemetry.db_cache_attempts = db::db_cache_attempts();
+            telemetry.db_cache_hits = db::db_cache_hits();
+            telemetry.db_cache_bypassed = db::db_cache_bypassed();
             let telemetry_data = serde_json::to_string_pretty(telemetry).unwrap();
             std::fs::write(telemetry_file, telemetry_data).unwrap();
         }
@@ -1008,4 +1014,21 @@ pub struct Telemetry {
     /// solve's own. Each entry is `(dep_name, features)`. Empty means this run never
     /// hit the shape; see `ALL_TARGET_FAILURES.md`'s R34-22 entry.
     pub dep_pass_reintroduced_main_disabled: Vec<(String, Vec<String>)>,
+    /// Total calls into `driver::run_cargo_hir_cached` this process made —
+    /// the denominator for the two hit rates below. See
+    /// `evaluation_plan.md` §6.1.
+    pub cargo_hir_cache_attempts: u64,
+    /// In-process (L1) `cargo hir` compile-cache hits.
+    pub cargo_hir_cache_hits_local: u64,
+    /// Cross-process (L2) `cargo hir` compile-cache hits.
+    pub cargo_hir_cache_hits_persistent: u64,
+    /// Times a dependency reached the `db.bin` decision point in
+    /// `process_dep_crate_wrapper` (mechanism #7) — the denominator for
+    /// `db_cache_hits`/`db_cache_bypassed` below.
+    pub db_cache_attempts: u64,
+    /// Of those, how many were actually served from `db.bin`.
+    pub db_cache_hits: u64,
+    /// Of those, how many were forced past the cache by mechanism #6
+    /// (impl/path requirement propagation) rather than missing outright.
+    pub db_cache_bypassed: u64,
 }

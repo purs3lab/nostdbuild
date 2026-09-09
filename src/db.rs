@@ -5,9 +5,58 @@ use std::{
     fs::{self, File},
     io::Read,
     path::Path,
+    sync::Mutex,
 };
 
 use crate::{DBData, consts::DB_FILE_NAME};
+
+/// How many times `process_dep_crate_wrapper` considered serving a
+/// dependency from `db.bin` (mechanism #7 in `ablation_plan.md`) — the
+/// denominator for `db_cache_hits`/`db_cache_bypassed` in `telemetry.json`.
+/// Incremented once per dependency, regardless of outcome. See
+/// `evaluation_plan.md` §6.1.
+static DB_CACHE_ATTEMPTS: Mutex<u64> = Mutex::new(0);
+
+/// How many of those attempts were actually served from `db.bin` instead of
+/// running the full analysis.
+static DB_CACHE_HITS: Mutex<u64> = Mutex::new(0);
+
+/// How many attempts were forced past the cache by mechanism #6
+/// (`dep_carries_impl_requirements`/`dep_carries_path_requirements`) even
+/// though a `db.bin` entry may have existed — not a miss (no entry), a
+/// deliberate bypass.
+static DB_CACHE_BYPASSED: Mutex<u64> = Mutex::new(0);
+
+/// Record one dependency reaching the DB-cache decision point in
+/// `process_dep_crate_wrapper`, and whether mechanism #6 forced past it.
+/// Call once per dependency, before checking [`get_from_db_data`].
+pub fn record_db_cache_attempt(bypassed: bool) {
+    *DB_CACHE_ATTEMPTS.lock().unwrap() += 1;
+    if bypassed {
+        *DB_CACHE_BYPASSED.lock().unwrap() += 1;
+    }
+}
+
+/// Record that a dependency was actually served from `db.bin`. Call once per
+/// dependency, only on the hit path.
+pub fn record_db_cache_hit() {
+    *DB_CACHE_HITS.lock().unwrap() += 1;
+}
+
+/// Production accessor for `telemetry.json`.
+pub fn db_cache_attempts() -> u64 {
+    *DB_CACHE_ATTEMPTS.lock().unwrap()
+}
+
+/// Production accessor for `telemetry.json`.
+pub fn db_cache_hits() -> u64 {
+    *DB_CACHE_HITS.lock().unwrap()
+}
+
+/// Production accessor for `telemetry.json`.
+pub fn db_cache_bypassed() -> u64 {
+    *DB_CACHE_BYPASSED.lock().unwrap()
+}
 
 /// Read the db file and return the data
 /// # Returns

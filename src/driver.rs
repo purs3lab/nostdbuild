@@ -1437,6 +1437,12 @@ fn hash_manifest(manifest: &str) -> Option<u64> {
 /// the rest of this module's test-facing API are already exposed.
 static CARGO_HIR_CACHE_HITS: Mutex<u64> = Mutex::new(0);
 
+/// Count of calls into [`run_cargo_hir_cached`] this process has made,
+/// regardless of whether they resolved via L1, L2, or a fresh compile.
+/// Denominator for the L1/L2 hit rates reported in `telemetry.json`
+/// (`cargo_hir_cache_attempts`) — see `evaluation_plan.md` §6.1.
+static CARGO_HIR_CACHE_ATTEMPTS: Mutex<u64> = Mutex::new(0);
+
 /// Cross-process companion to [`CARGO_HIR_CACHE`]. The in-process cache only
 /// helps one `main` invocation; this lets every process analysing a crate
 /// that pulls in a dependency at the same pinned version reuse a compile
@@ -1754,6 +1760,7 @@ fn run_cargo_hir_cached(
     target: Option<&'static str>,
     has_lib: bool,
 ) -> CargoHirAttempt {
+    *CARGO_HIR_CACHE_ATTEMPTS.lock().unwrap() += 1;
     let key = hash_manifest(manifest).map(|manifest_hash| {
         let mut sorted: Vec<&str> = feats.split(',').filter(|s| !s.is_empty()).collect();
         sorted.sort_unstable();
@@ -1825,6 +1832,7 @@ fn run_cargo_hir_cached(
 pub fn clear_cargo_hir_cache_for_test() {
     CARGO_HIR_CACHE.lock().unwrap().clear();
     *CARGO_HIR_CACHE_HITS.lock().unwrap() = 0;
+    *CARGO_HIR_CACHE_ATTEMPTS.lock().unwrap() = 0;
     *CARGO_HIR_PERSISTENT_CACHE_HITS.lock().unwrap() = 0;
     *CARGO_HIR_PERSISTENT_CACHE_WRITES.lock().unwrap() = 0;
 }
@@ -1867,6 +1875,30 @@ pub fn cargo_hir_cache_len_for_test() -> usize {
 /// a guard needs this to assert a hit actually happened.
 pub fn cargo_hir_cache_hits_for_test() -> u64 {
     *CARGO_HIR_CACHE_HITS.lock().unwrap()
+}
+
+/// Production accessor for `telemetry.json`: total calls into
+/// [`run_cargo_hir_cached`] this process has made (the denominator for the
+/// L1/L2 hit rates below). Unlike the `_for_test` accessors above, this one
+/// is read once at dump time by `Stats::dump`, not by a test guard.
+pub fn cargo_hir_cache_attempts() -> u64 {
+    *CARGO_HIR_CACHE_ATTEMPTS.lock().unwrap()
+}
+
+/// Production accessor for `telemetry.json`: in-process (L1) `cargo hir`
+/// cache hits this process has served. Same counter as
+/// [`cargo_hir_cache_hits_for_test`]; this name is the one `Stats::dump`
+/// calls so the "test-only" doc comment above stays accurate for its caller.
+pub fn cargo_hir_l1_cache_hits() -> u64 {
+    *CARGO_HIR_CACHE_HITS.lock().unwrap()
+}
+
+/// Production accessor for `telemetry.json`: cross-process (L2) `cargo hir`
+/// cache hits this process has served. Same counter as
+/// [`cargo_hir_persistent_cache_hits_for_test`]; this name is the one
+/// `Stats::dump` calls.
+pub fn cargo_hir_l2_cache_hits() -> u64 {
+    *CARGO_HIR_PERSISTENT_CACHE_HITS.lock().unwrap()
 }
 
 pub fn run_rustc_plugin_pass(
