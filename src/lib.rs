@@ -663,6 +663,20 @@ pub struct Telemetry {
     /// dependency's emitted edge already compiles, or when every retry failed
     /// too.
     pub dep_edge_enabler_features: Vec<(String, String)>,
+    /// `(package, version, feature)` for a *transitive*, non-direct package
+    /// promoted to a synthetic direct dependency after a build that failed on
+    /// every target and every one-hop repair above also failed (KI-34,
+    /// `parser::implicated_transitive_package` /
+    /// `parser::add_synthetic_dependency`). Unlike `dep_edge_enabler_features`,
+    /// which repairs a dependency the manifest already names, this is for a
+    /// package no direct edge reaches at all — `getrandom`, two hops behind
+    /// `rand_core` in `crypto-bigint-0.6.1` — identified from the failing
+    /// build's own compiler diagnostic, not from the manifest. Kept only
+    /// because the rebuild with the synthetic edge then succeeded; empty when
+    /// no diagnostic named an addressable transitive package, or when none of
+    /// its declared features (bounded by the same retry budget as the direct-
+    /// edge search) made the crate build.
+    pub transitive_package_edge_added: Vec<(String, String, String)>,
     /// Main-crate features dropped after a build that failed on every target,
     /// kept off because the rebuild without them then succeeded (R34-23,
     /// `driver::search_removals`). The other three post-failure retries

@@ -4726,6 +4726,163 @@ pub fn dep_edge_retry_candidates(
     candidates
 }
 
+/// A transitive (non-direct) package a failed build's own compiler
+/// diagnostic named as the site of the failure, together with its manifest
+/// path and resolved version — the generalized shape of the KI-34 gap.
+///
+/// Every repair above this one only ever reaches a feature one hop from the
+/// manifest this tool edits (`<direct-dep>/<feat>`), because that is the only
+/// shape cargo's `--features` flag accepts. A feature that lives on a
+/// *transitive* package — `getrandom`, two hops behind `rand_core` in
+/// `crypto-bigint-0.6.1` — cannot be named that way at all: no code path
+/// here adds a brand-new dependency edge, and cargo has no CLI syntax for a
+/// two-hop feature spec either.
+///
+/// rustc's own diagnostics already say exactly which package and file
+/// mattered: a `--> <path>/src/<file>.rs:LINE:COL` line, where `<path>` is
+/// the on-disk package directory cargo already resolved and compiled from
+/// (the registry cache, for any crates.io dependency — a path/git dependency
+/// has a different layout and is out of scope here). Reading that directory's
+/// own `Cargo.toml` is simpler and more reliable than re-deriving the crate
+/// name from the directory's `<name>-<version>` spelling (crate names may
+/// themselves contain digits and hyphens) or than parsing a lockfile.
+///
+/// `existing_dep_keys` — the calling crate's current direct-dependency keys —
+/// filters out a package already reachable via `dep_edge_retry_candidates`;
+/// this function only ever proposes a package that mechanism cannot already
+/// see. Scans every `--> ` occurrence across every supplied error in order,
+/// so a diagnostic naming more than one file (or a build whose first-listed
+/// error happens to be an already-direct dependency) still finds a usable
+/// answer instead of stopping at the first line.
+pub fn implicated_transitive_package(
+    errors: &[String],
+    existing_dep_keys: &HashSet<String>,
+) -> Option<(String, PathBuf, String)> {
+    for err in errors {
+        let mut search_from = 0usize;
+        while let Some(rel) = err[search_from..].find("--> ") {
+            let start = search_from + rel + 4;
+            let end = err[start..]
+                .find(char::is_whitespace)
+                .map(|i| start + i)
+                .unwrap_or(err.len());
+            let loc = &err[start..end];
+            search_from = end;
+
+            // Strip a trailing `:LINE:COL`, when present, to get back to the
+            // bare file path.
+            let mut pieces: Vec<&str> = loc.rsplitn(3, ':').collect();
+            let path_str = if pieces.len() == 3
+                && pieces[0].chars().all(|c| c.is_ascii_digit())
+                && pieces[1].chars().all(|c| c.is_ascii_digit())
+            {
+                pieces.remove(0);
+                pieces.remove(0);
+                pieces[0]
+            } else {
+                loc
+            };
+
+            let Some(src_idx) = path_str.rfind("/src/") else {
+                continue;
+            };
+            let pkg_dir = Path::new(&path_str[..src_idx]);
+            let manifest_path = pkg_dir.join("Cargo.toml");
+            let Ok(text) = fs::read_to_string(&manifest_path) else {
+                continue;
+            };
+            let Ok(toml_val) = text.parse::<toml::Value>() else {
+                continue;
+            };
+            let Some(name) = toml_val
+                .get("package")
+                .and_then(|p| p.get("name"))
+                .and_then(|n| n.as_str())
+            else {
+                continue;
+            };
+            if existing_dep_keys.contains(name) {
+                continue;
+            }
+            let version = toml_val
+                .get("package")
+                .and_then(|p| p.get("version"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            return Some((name.to_string(), manifest_path, version));
+        }
+    }
+    None
+}
+
+/// Adds a brand-new `[dependencies]` entry for `dep_key`, exact-pinned to
+/// `version` with only `features` turned on, and returns the manifest's
+/// prior text so a losing trial can be restored byte-for-byte
+/// ([`restore_manifest_text`]).
+///
+/// This is the write half of the KI-34 two-hop repair
+/// ([`implicated_transitive_package`]): Cargo unifies feature flags across
+/// every path to the same resolved package instance, so declaring the
+/// transitive package as a new, exact-pinned direct dependency turns its
+/// feature on everywhere else that package is already reached — including
+/// the real, deeper edge nothing else here can name — without needing to
+/// touch the intermediate dependency at all.
+///
+/// Panics if `dep_key` is already a dependency key: callers are expected to
+/// check first, which `implicated_transitive_package` already does (a
+/// package that is already a direct dependency is `dep_edge_retry_candidates`'s
+/// to repair, not this function's).
+pub fn add_synthetic_dependency(
+    main_name: &str,
+    dep_key: &str,
+    version: &str,
+    features: &[String],
+) -> String {
+    let main_manifest = determine_manifest_file(main_name, None);
+    let original = fs::read_to_string(&main_manifest).unwrap();
+    let mut main_toml: toml::Value = toml::from_str(&original).unwrap();
+    let deps = main_toml
+        .get_mut("dependencies")
+        .and_then(|v| v.as_table_mut())
+        .expect("main crate manifest has no [dependencies] table");
+    assert!(
+        !deps.contains_key(dep_key),
+        "add_synthetic_dependency called for a dependency already present: {dep_key}"
+    );
+    let mut entry = toml::map::Map::new();
+    entry.insert(
+        "version".to_string(),
+        toml::Value::String(format!("={version}")),
+    );
+    entry.insert("default-features".to_string(), toml::Value::Boolean(false));
+    entry.insert(
+        "features".to_string(),
+        toml::Value::Array(features.iter().cloned().map(toml::Value::String).collect()),
+    );
+    deps.insert(dep_key.to_string(), toml::Value::Table(entry));
+    fs::write(
+        &main_manifest,
+        toml::to_string(&main_toml)
+            .context("Failed to convert Value to string")
+            .unwrap(),
+    )
+    .unwrap();
+    original
+}
+
+/// Undoes [`add_synthetic_dependency`] when its trial build did not pan out.
+/// A byte-for-byte restore of the manifest text captured before the edit,
+/// rather than a targeted removal of just the one key, so it is safe even if
+/// something else about the manifest changed in between (nothing does today
+/// — this repair is the last one in the chain — but this matches the
+/// read-mutate-write shape the rest of this module already uses rather than
+/// assuming the ordering never changes).
+pub fn restore_manifest_text(main_name: &str, original: &str) {
+    let main_manifest = determine_manifest_file(main_name, None);
+    fs::write(&main_manifest, original).unwrap();
+}
+
 /// Remove a given list of features from the declared features
 /// of a dependency in the main crate's Cargo.toml.
 /// This will also add the features to the custom feature list

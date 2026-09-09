@@ -1600,6 +1600,132 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
+    // KI-34: every repair above only ever reaches a feature one hop from the
+    // manifest this tool edits (`<direct-dep>/<feat>`) — the only shape
+    // cargo's `--features` flag accepts. A feature that lives on a
+    // *transitive* package cannot be named that way at all: `getrandom`'s own
+    // `compile_error!("target is not supported")` fires two hops behind
+    // `rand_core` in `crypto-bigint-0.6.1`, and nothing above can spell "turn
+    // on `getrandom`'s `rdrand` feature" from a manifest that never mentions
+    // `getrandom`.
+    //
+    // rustc's own diagnostic already names the exact package and file
+    // (`parser::implicated_transitive_package`), so instead of a wider
+    // "propose any two-hop edge" search, this promotes *that* package to a
+    // new, exact-pinned direct dependency and tries its declared features —
+    // the same one-hop trust `dep_edge_retry_candidates` (R34-16) already
+    // extends to a *direct* dependency's own features, just reached via a
+    // synthetic edge for a package no direct edge names. Cargo unifies
+    // feature flags across every path to the same resolved package instance,
+    // so turning the feature on here turns it on everywhere else the package
+    // is already reached, including the real edge nothing else can name.
+    //
+    // Bounded the same way R34-16 is: a small probe budget, one candidate
+    // feature per retry, kept only if the rebuild succeeds and reverted
+    // (`parser::restore_manifest_text`) otherwise, so a crate this does not
+    // help ends this step exactly where it would have without it.
+    if no_std && !one_succeeded {
+        let transitive_errors: Vec<String> = compiler::errors_since(&stats, &before_build);
+        let existing_dep_keys: HashSet<String> = toml::from_str::<toml::Value>(
+            &std::fs::read_to_string(&main_manifest).unwrap_or_default(),
+        )
+        .ok()
+        .and_then(|v| {
+            v.get("dependencies")
+                .and_then(|d| d.as_table())
+                .map(|t| t.keys().cloned().collect())
+        })
+        .unwrap_or_default();
+
+        if let Some((pkg_name, pkg_manifest, pkg_version)) =
+            parser::implicated_transitive_package(&transitive_errors, &existing_dep_keys)
+        {
+            let mut candidates: Vec<String> =
+                nostd::visitor::declared_features(&pkg_manifest.to_string_lossy())
+                    .into_iter()
+                    .filter(|f| f != "default")
+                    // A feature named exactly `custom` is, by ecosystem
+                    // convention (getrandom, and the same shape as
+                    // `#[panic_handler]`/`#[global_allocator]`), a hook the
+                    // *final binary* must register an implementation for —
+                    // getrandom's own doc comment names the failure mode
+                    // outright: "Attempting to register a function in a
+                    // non-root crate will result in a linker error." Every
+                    // build this tool runs is `cargo build --lib`, which
+                    // never reaches that link step, so a lib-only success
+                    // with `custom` enabled proves nothing: it would "pass"
+                    // on every target regardless of whether any real backend
+                    // exists (confirmed live: `custom` alone flips all 33
+                    // `TARGET_LIST` members to Success for crypto-bigint,
+                    // getrandom's own docs notwithstanding). Excluding it by
+                    // name is conservative — the only cost is a missed fix on
+                    // whatever different, benign thing a *different* package's
+                    // own "custom" feature might mean — never a false one.
+                    .filter(|f| f != "custom")
+                    .collect();
+            candidates.sort();
+
+            const TRANSITIVE_EDGE_RETRY_BUDGET: usize = 8;
+            for feat in candidates.into_iter().take(TRANSITIVE_EDGE_RETRY_BUDGET) {
+                println!(
+                    "Build failed for every target; promoting transitive package {} ({}), \
+                     not a direct dependency, to a synthetic edge and trying feature {:?}",
+                    pkg_name, pkg_version, feat
+                );
+                let original_manifest = parser::add_synthetic_dependency(
+                    &exchange.name_with_version,
+                    &pkg_name,
+                    &pkg_version,
+                    std::slice::from_ref(&feat),
+                );
+                // No scout target: `scout_target` picks the target with the
+                // *most common* failure signature, which for a package that
+                // fails identically everywhere (getrandom's own
+                // `compile_error!` does) is an arbitrary tie-broken member of
+                // `TARGET_LIST`, not necessarily one this candidate feature
+                // can help — `rdrand` only fixes an x86/x86_64 target, and a
+                // scout pre-check on, say, `aarch64-unknown-none` would fail
+                // and abandon the retry before the one target that actually
+                // works is ever tried. Every candidate needs the full sweep.
+                if compiler::try_alternative(
+                    &exchange.name_with_version,
+                    &target,
+                    &final_args,
+                    "retry_with_transitive_package_edge",
+                    &before_build,
+                    None,
+                    &mut stats,
+                    &mut exchange.telemetry,
+                )? {
+                    exchange.telemetry.transitive_package_edge_added.push((
+                        pkg_name.clone(),
+                        pkg_version.clone(),
+                        feat.clone(),
+                    ));
+                    one_succeeded = true;
+                    println!(
+                        "Synthetic dependency added: {} = {{ version = \"={}\", \
+                         default-features = false, features = [{:?}] }}",
+                        pkg_name, pkg_version, feat
+                    );
+                    // Re-derived from the set that shipped, like the repairs
+                    // above: only the check gets to make a statement about the
+                    // emitted config. `final_args` itself did not change — the
+                    // fix lives entirely in the manifest edit just kept.
+                    violated = parser::violated_compile_error_constraints(
+                        &ctx,
+                        &main_attributes,
+                        &exchange.crate_info,
+                        &emitted_features(&combined_features),
+                        !disable_default,
+                    );
+                    break;
+                }
+                parser::restore_manifest_text(&exchange.name_with_version, &original_manifest);
+            }
+        }
+    }
+
     // R34-17: after every repair above has failed, ask whether the emitted
     // argv — unchanged, not one of the repairs above — builds given an
     // operating system. `TARGET_LIST` is bare-metal only by design (an OS

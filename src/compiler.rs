@@ -120,6 +120,17 @@ pub fn scout_target(stats: &AllStats, mark: &BuildRecordMark) -> Option<String> 
         .map(|(target, _)| target.to_string())
 }
 
+/// The captured compiler error text of every failed build recorded since
+/// `mark` — the raw material a caller outside this module (KI-34's transitive-
+/// package repair) reads to find which package a failure's own diagnostic
+/// named, without exposing `BuildRecordMark`'s internal index.
+pub fn errors_since(stats: &AllStats, mark: &BuildRecordMark) -> Vec<String> {
+    stats.compilation_res[mark.results..]
+        .iter()
+        .filter_map(|res| res.error.clone())
+        .collect()
+}
+
 /// Run one speculative feature set after a build that failed on every target,
 /// and leave exactly one attempt's records behind.
 ///
