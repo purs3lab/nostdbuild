@@ -1042,19 +1042,25 @@ fn run() -> anyhow::Result<()> {
             enabled_optional_deps.insert(dep_name);
         }
 
-        process_dep_crate_wrapper(
-            &mut exchange,
-            &mut dep,
-            &mut dep_and_feats,
-            &mut main_features,
-            &mut disable_default,
-            &mut enable,
-            &mut deps_args,
-            &mut previously_disabled,
-            &non_minimalizable,
-            &deps_to_keep,
-            &main_to_disable,
-        )?;
+        // Ablation study §3.3: skip per-dependency no_std feature steering,
+        // leaving main_features/deps_args/disable_default as the main
+        // crate's own solve left them — the final build attempts whatever
+        // that implies for this dependency.
+        if !ablation::flags().no_dep_analysis {
+            process_dep_crate_wrapper(
+                &mut exchange,
+                &mut dep,
+                &mut dep_and_feats,
+                &mut main_features,
+                &mut disable_default,
+                &mut enable,
+                &mut deps_args,
+                &mut previously_disabled,
+                &non_minimalizable,
+                &deps_to_keep,
+                &main_to_disable,
+            )?;
+        }
     }
 
     // A feature the pass above turned off in the manifest must leave the command
@@ -1090,19 +1096,22 @@ fn run() -> anyhow::Result<()> {
                 enabled_optional_deps.insert(dep_name);
             }
 
-            process_dep_crate_wrapper(
-                &mut exchange,
-                &mut dep,
-                &mut dep_and_feats,
-                &mut main_features,
-                &mut disable_default,
-                &mut enable,
-                &mut dep_args_skipped,
-                &mut previously_disabled,
-                &non_minimalizable,
-                &deps_to_keep,
-                &main_to_disable,
-            )?;
+            // Ablation study §3.3: same skip as the first pass above.
+            if !ablation::flags().no_dep_analysis {
+                process_dep_crate_wrapper(
+                    &mut exchange,
+                    &mut dep,
+                    &mut dep_and_feats,
+                    &mut main_features,
+                    &mut disable_default,
+                    &mut enable,
+                    &mut dep_args_skipped,
+                    &mut previously_disabled,
+                    &non_minimalizable,
+                    &deps_to_keep,
+                    &main_to_disable,
+                )?;
+            }
         }
     }
 
