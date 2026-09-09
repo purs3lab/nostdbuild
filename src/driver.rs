@@ -17,7 +17,7 @@ use crate::phases::*;
 use crate::types::*;
 use crate::visitor::{self, ModCollector, ModNode};
 use crate::{
-    ProcMacroDep, ReadableSpan, Telemetry,
+    ProcMacroDep, ReadableSpan, Telemetry, ablation,
     consts::{self, PLUGIN_OUTPUT_ENV},
     downloader, parser, solver, target_cfg, timing,
 };
@@ -3357,7 +3357,13 @@ pub fn find_feature_combs_for_all_code<'a>(
                 }
             }
 
-            if !made_progress {
+            // Ablation study §3.2: the first iteration already ran whatever
+            // covering sets `get_solved_sets` found in one partition of the
+            // whole item pool — that's the combinatorial search itself, not a
+            // "default features" seed. Disabling it means never re-partitioning
+            // around a set that failed to compile, i.e. no failure-driven CEGAR
+            // retries, while iteration 1's own runs still stand.
+            if !made_progress || ablation::flags().no_combo_search {
                 break;
             }
         }
