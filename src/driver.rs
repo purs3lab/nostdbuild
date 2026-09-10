@@ -1774,7 +1774,10 @@ fn run_cargo_hir_cached(
         }
     });
 
-    if let Some(k) = &key
+    // §3.8 (`--no-local-cache`): skip the L1 lookup so this call always falls
+    // through to L2/compile, as if L1 never has anything in it.
+    if !ablation::flags().no_local_cache
+        && let Some(k) = &key
         && let Some(cached) = CARGO_HIR_CACHE.lock().unwrap().get(k).cloned()
     {
         debug!(
@@ -1800,14 +1803,18 @@ fn run_cargo_hir_cached(
                 feats
             );
             *CARGO_HIR_PERSISTENT_CACHE_HITS.lock().unwrap() += 1;
-            CARGO_HIR_CACHE.lock().unwrap().insert(k.clone(), value.clone());
+            if !ablation::flags().no_local_cache {
+                CARGO_HIR_CACHE.lock().unwrap().insert(k.clone(), value.clone());
+            }
             return cache_value_to_attempt(value, output_path);
         }
 
         return match persistent_cache_claim_and_compute(&final_path, &lock_path, args, output_path)
         {
             Ok(value) => {
-                CARGO_HIR_CACHE.lock().unwrap().insert(k.clone(), value.clone());
+                if !ablation::flags().no_local_cache {
+                    CARGO_HIR_CACHE.lock().unwrap().insert(k.clone(), value.clone());
+                }
                 cache_value_to_attempt(value, output_path)
             }
             Err(e) => CargoHirAttempt::SpawnFailed(e),
@@ -1816,10 +1823,13 @@ fn run_cargo_hir_cached(
 
     // No key, or the persistent cache is unavailable this call (plugin
     // binaries not found/stat-able) — same behaviour as before this cache
-    // existed: compile once, cache in-process only if there is a key at all.
+    // existed: compile once, cache in-process only if there is a key at all
+    // and `--no-local-cache` isn't also set.
     match compile_cargo_hir_uncached(args, output_path) {
         Ok(value) => {
-            if let Some(k) = key {
+            if !ablation::flags().no_local_cache
+                && let Some(k) = key
+            {
                 CARGO_HIR_CACHE.lock().unwrap().insert(k, value.clone());
             }
             cache_value_to_attempt(value, output_path)
