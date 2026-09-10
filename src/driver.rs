@@ -956,7 +956,9 @@ pub fn run_default_features_pass(manifest: &str, crate_name: &str) -> PassOutcom
     };
     let _ = fs::remove_file(&output_path);
 
-    resolve_local_facade_gateways(&mut full_output);
+    if !ablation::flags().no_gateway_resolution {
+        resolve_local_facade_gateways(&mut full_output);
+    }
     let std_spans = extract_hard_std_candidates(&full_output, None);
     let macro_modules = full_output.macro_module_imports.clone();
 
@@ -2189,7 +2191,9 @@ pub fn run_rustc_plugin_pass_with(
     };
     let _ = fs::remove_file(&output_path);
 
-    resolve_local_facade_gateways(&mut full_output);
+    if !ablation::flags().no_gateway_resolution {
+        resolve_local_facade_gateways(&mut full_output);
+    }
     let std_spans = extract_hard_std_candidates(&full_output, context_filter);
     let macro_modules = full_output.macro_module_imports.clone();
 
@@ -5765,8 +5769,11 @@ pub fn analyze_crate<'a>(
     // to the import `resolve_local_facade_gateways` needs. Join it to that import
     // by `def_path` and inherit the gate. Needs the module tree (`root`) to know
     // which imports are externally gated, so it runs here rather than at load time.
-    for run in &mut covering_runs {
-        telemetry.routed_import_anchors += resolve_import_to_use_gateways(&mut run.output, &root);
+    if !ablation::flags().no_gateway_resolution {
+        for run in &mut covering_runs {
+            telemetry.routed_import_anchors +=
+                resolve_import_to_use_gateways(&mut run.output, &root);
+        }
     }
     if telemetry.routed_import_anchors > 0 {
         debug!(
@@ -5906,8 +5913,10 @@ pub fn analyze_crate<'a>(
         // which keeps it out of `all_hard` as well.
         if let Some(mut run) = enabler_run {
             // The same normalisation every other covering run gets on the way in.
-            telemetry.routed_import_anchors +=
-                resolve_import_to_use_gateways(&mut run.output, &root);
+            if !ablation::flags().no_gateway_resolution {
+                telemetry.routed_import_anchors +=
+                    resolve_import_to_use_gateways(&mut run.output, &root);
+            }
             debug!(
                 "[enablers] adopting the trial that compiled ({:?}, {} records) as a covering run",
                 run.features,
