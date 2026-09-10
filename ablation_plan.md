@@ -167,6 +167,19 @@ posed, since the first-pass multi-set solve is unaffected. `classify_spans` /
 `get_conditional_spans` in [phases.rs](src/phases.rs) are where those spans
 are identified in the normal run — diff their output between arms.
 
+**Second correction, found while validating the ablation arms against real
+crates rather than just reading the diff.** The CEGAR loop above is not the
+only failure-driven retry over the main crate's own feature selection —
+[main.rs](src/bin/main.rs) runs two more, *after* final verification has
+already failed on every target: the KI-30 build-enabler search
+(`driver::discover_build_enablers`) and its mirror, the R34-23 feature-removal
+search (`driver::search_removals`). Both are the same shape as the CEGAR
+retry this toggle caps — try something else because the emitted set failed —
+just running later, outside `find_feature_combs_for_all_code` entirely. Left
+unguarded, `--no-combo-search` measured "no CEGAR retries" while these two
+kept retrying anyway. Both are now gated the same way, `!ablation::flags().no_combo_search`
+added to their own `if no_std && !one_succeeded` guards.
+
 ### 3.3 Dep analysis
 
 What it does: `process_dep_crate_wrapper` ([main.rs:104](src/bin/main.rs#L104))
@@ -194,6 +207,20 @@ features imply for its deps. Expect a large increase in failed builds; that
 delta *is* the measurement (how much of the tool's success rate depends on
 actively steering dependency features vs. just inheriting the main crate's
 choices).
+
+**Second correction, found the same way as §3.2's.** `process_dep_crate_wrapper`
+is not the only place a dependency's feature set gets steered — [main.rs](src/bin/main.rs)
+runs two reactive retries, after final verification has failed on every
+target, that read a dependency's own declared features directly and add one
+to the edge: the R34-16 dep-edge retry (`parser::dep_edge_retry_candidates`)
+and the KI-34 transitive-package promotion (`parser::implicated_transitive_package`
++ `parser::add_synthetic_dependency`, for a dependency-of-a-dependency rustc's
+own diagnostic names). Neither reads anything `process_dep_crate_wrapper`
+produced — both are independent, always-available mechanisms — so
+`--no-dep-analysis` measured "no proactive dependency steering" while these
+two kept steering dependency features reactively regardless. Both are now
+gated the same way, `!ablation::flags().no_dep_analysis` added to their own
+`if no_std && !one_succeeded` guards.
 
 ### 3.4 compile_error! constraint modeling
 
@@ -251,8 +278,9 @@ combination that fails to build specifically on the `compile_error!` line
 (grep the build failure stderr for the macro's message text) — those are
 false "success" verdicts this mechanism was preventing.
 
-**Fifth site, found empirically rather than by reading the diff: a reactive
-repair that duplicates this mechanism without being gated by it.**
+**Third correction, found empirically: a fifth site, reactive rather than
+proactive, that the "four call sites" framing above never accounted for
+because it is architecturally a different mechanism reading the same data.**
 [main.rs](src/bin/main.rs) has its own post-build repair for a violated
 `compile_error!` — `parser::violated_compile_error_constraints` (the check)
 and `parser::compile_error_repair_features` (the KI-11-shaped repair: only
@@ -265,25 +293,25 @@ line of defense, not a duplicate implementation of the same veto — and before
 this correction it was completely unguarded by `--no-compile-error-constraints`.
 
 Confirmed live on `bulletproofs-bls-4.0.0` (KI-3's own crate, `rust` vs `blst`
-backend selection): baseline and `--no-compile-error-constraints` alone both
-produced an *identical* `Success` build with the same
-`--features bls12_381_plus,rust,custom_no_std_feature_enabled` — the proactive
-veto (`compile_error_infeasible_backend_constraints`, this mechanism's own
-call site) was fully disabled in the second run, and the reactive repair
-below found and applied the same `rust` fix anyway, from the build failure
-alone. **A single-mechanism ablation arm can look like a no-op purely because
-a different, unguarded mechanism independently reaches the same answer** —
-this is not specific to compile_error and is worth checking for on any arm
-that shows no diff on a crate believed to exercise that mechanism.
+backend selection): baseline, `--no-compile-error-constraints` alone, and that
+flag combined with `--no-combo-search` all produced an *identical* `Success`
+build with the same `--features bls12_381_plus,rust,custom_no_std_feature_enabled`
+— the proactive veto (`compile_error_infeasible_backend_constraints`, §3.4's
+own mechanism) was fully disabled in the second and third runs, and the
+reactive repair below found and applied the same `rust` fix anyway, from the
+build failure alone. **A single-mechanism ablation arm can look like a no-op
+purely because a different, unguarded mechanism independently reaches the
+same answer** — this is not specific to compile_error and is worth checking
+for on any arm that shows no diff on a crate believed to exercise that
+mechanism.
 
 Fixed: `main.rs`'s call to `violated_compile_error_constraints`, and every
 downstream recompute of that value (after the KI-30 build-enabler repair, the
 R34-16 dep-edge retry, the R34-23 feature-removal repair, and the KI-34
 transitive-package promotion all independently re-derive it once *they*
-succeed — see §3.2 and §3.3 for those), now returns empty under
-`ablation::flags().no_compile_error_constraints` — which also transitively
-disables `compile_error_repair_features`, since nothing calls it once
-`violated` never has anything in it.
+succeed), now returns empty under `ablation::flags().no_compile_error_constraints`
+— which also transitively disables `compile_error_repair_features`, since
+nothing calls it once `violated` never has anything in it.
 
 ### 3.5 cfg-gate / gateway resolution
 

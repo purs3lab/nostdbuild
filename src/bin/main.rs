@@ -1444,7 +1444,12 @@ fn run() -> anyhow::Result<()> {
     // probe is spent. Unwitnessed, the search costs at most `MAX_ENABLER_PROBES`
     // plugin passes pinned to one triple, and the answer is kept only if the
     // rebuild succeeds.
-    if no_std && !one_succeeded {
+    //
+    // Ablation study §3.2: a failure-driven retry over the main crate's own
+    // feature selection, the same shape `--no-combo-search` already caps
+    // inside the CEGAR loop (see `search_removals` below, its mirror image).
+    // Left unguarded, it would still retry on failure with the flag set.
+    if no_std && !one_succeeded && !ablation::flags().no_combo_search {
         // What was actually on in the failed build: `main_features` closed over
         // the crate's own table, plus `default` only when defaults are not
         // disabled. `main_features` rather than `combined_features` because the
@@ -1572,7 +1577,14 @@ fn run() -> anyhow::Result<()> {
     // dependencies, most of which are not the problem, and every candidate
     // here is a full retry build behind `try_alternative`'s cheap scout
     // pre-filter.
-    if no_std && !one_succeeded {
+    //
+    // Ablation study §3.3: this is a reactive duplicate of dependency-feature
+    // steering — it reads a dependency's own declared features directly
+    // (`parser::dep_edge_retry_candidates`) and adds one to the edge,
+    // independent of whether `process_dep_crate_wrapper` (the proactive half)
+    // ever ran. Left unguarded, `--no-dep-analysis` would still get
+    // dependency-specific feature steering through this back door.
+    if no_std && !one_succeeded && !ablation::flags().no_dep_analysis {
         const DEP_EDGE_RETRY_BUDGET: usize = 8;
         let mut budget = DEP_EDGE_RETRY_BUDGET;
         let mut direct_deps: Vec<String> = exchange
@@ -1663,7 +1675,13 @@ fn run() -> anyhow::Result<()> {
     // `alloc`). `driver::search_removals` is the mirror of KI-30's
     // `enablers_for_selection` two blocks up — same post-failure shape, same
     // probe budget, opposite direction.
-    if no_std && !one_succeeded {
+    //
+    // Ablation study §3.2: like KI-30 above, this is a failure-driven retry
+    // over the main crate's own feature selection — the same shape
+    // `--no-combo-search` already caps inside the CEGAR loop, just running
+    // after final verification instead of during covering-set search. Left
+    // unguarded, it would still retry on failure with the flag set.
+    if no_std && !one_succeeded && !ablation::flags().no_combo_search {
         let selection: HashSet<String> = main_features.iter().cloned().collect();
         let (removed, removed_dep_feats) = {
             let _t = timing::scope("emitted_set_removals", &exchange.name_with_version);
@@ -1755,7 +1773,13 @@ fn run() -> anyhow::Result<()> {
     // feature per retry, kept only if the rebuild succeeds and reverted
     // (`parser::restore_manifest_text`) otherwise, so a crate this does not
     // help ends this step exactly where it would have without it.
-    if no_std && !one_succeeded {
+    //
+    // Ablation study §3.3: same reasoning as R34-16 above — this promotes a
+    // transitive dependency to a direct edge and tries its own declared
+    // features, independent of whether the proactive dependency-analysis pass
+    // ran. Left unguarded, `--no-dep-analysis` would still get
+    // dependency-specific feature steering through this back door.
+    if no_std && !one_succeeded && !ablation::flags().no_dep_analysis {
         let transitive_errors: Vec<String> = compiler::errors_since(&stats, &before_build);
         let existing_dep_keys: HashSet<String> = toml::from_str::<toml::Value>(
             &std::fs::read_to_string(&main_manifest).unwrap_or_default(),
