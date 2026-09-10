@@ -2731,7 +2731,16 @@ fn compile_error_source_files(dep_dir: &Path) -> Vec<PathBuf> {
 /// feature-to-feature or feature-to-optional-dep link.
 pub fn dependency_feature_requirement<'a>(ctx: &'a Context, manifest: &str) -> Option<Bool<'a>> {
     let manifest_toml = read_manifest_toml(manifest);
-    let mut parts = dependency_compile_error_constraints(ctx, manifest, &manifest_toml);
+    // Ablation study §3.4: only the compile_error!-derived slice of `parts`
+    // is this mechanism's; `feature_implication_constraints` and
+    // `optional_dep_implication_constraints` below are the crate's own
+    // `[features]` table semantics, not compile_error! modeling, and stay
+    // in even when the flag is set.
+    let mut parts = if ablation::flags().no_compile_error_constraints {
+        Vec::new()
+    } else {
+        dependency_compile_error_constraints(ctx, manifest, &manifest_toml)
+    };
     let feat_map = downloader::read_local_features(&manifest_toml);
     parts.extend(solver::feature_implication_constraints(ctx, &feat_map));
     parts.extend(solver::optional_dep_implication_constraints(
@@ -3090,10 +3099,22 @@ pub fn find_feature_combs_for_all_code<'a>(
         let dep_error_constraints =
             dependency_compile_error_constraints(ctx, manifest, &manifest_toml);
 
-        let mut all_hard: Vec<Bool> = compile_error_constraints.clone();
+        // Ablation study §3.4: neither this crate's own compile_error! (the
+        // seed veto, parsed by the visitor into `compile_error_constraints`)
+        // nor a dependency's (`dep_error_constraints`) gets to constrain the
+        // solve when disabled. `impl_constraints`/`optdep_constraints` are
+        // unrelated (feature-table implications, not compile_error!) and
+        // stay in either way.
+        let mut all_hard: Vec<Bool> = if ablation::flags().no_compile_error_constraints {
+            Vec::new()
+        } else {
+            compile_error_constraints.clone()
+        };
         all_hard.extend(impl_constraints.iter().cloned());
         all_hard.extend(optdep_constraints.iter().cloned());
-        all_hard.extend(dep_error_constraints.iter().cloned());
+        if !ablation::flags().no_compile_error_constraints {
+            all_hard.extend(dep_error_constraints.iter().cloned());
+        }
 
         let mut pending_modules: Vec<(Option<Bool>, String, String)> = vec![];
 
@@ -6137,26 +6158,33 @@ pub fn analyze_crate<'a>(
     // satisfiable: a crate whose disjunction has no reachable answer under
     // this check must be left exactly as it was (unproven, not unsat)
     // rather than handed an `all_hard` nothing can satisfy.
-    let manifest_toml = read_manifest_toml(manifest);
-    let final_condition = compile_error_infeasible_backend_constraints(ctx, manifest, &manifest_toml)
-        .into_iter()
-        .fold(final_condition, |acc, forbid| {
-            let candidate = match &acc {
-                Some(a) => Bool::and(ctx, &[a, &forbid]),
-                None => forbid.clone(),
-            };
-            let solver = z3::Solver::new(ctx);
-            solver.assert(&candidate);
-            if solver.check() == z3::SatResult::Sat {
-                Some(candidate.simplify())
-            } else {
-                debug!(
-                    "KI-3: forbidding {:?} would make this crate's hard constraints unsat; leaving it out",
-                    forbid
-                );
-                acc
-            }
-        });
+    // Ablation study §3.4: skip folding in the backend-forbidding
+    // constraints entirely when disabled, leaving `final_condition` as the
+    // probe-conditions-and-build-enablers fold above computed it.
+    let final_condition = if ablation::flags().no_compile_error_constraints {
+        final_condition
+    } else {
+        let manifest_toml = read_manifest_toml(manifest);
+        compile_error_infeasible_backend_constraints(ctx, manifest, &manifest_toml)
+            .into_iter()
+            .fold(final_condition, |acc, forbid| {
+                let candidate = match &acc {
+                    Some(a) => Bool::and(ctx, &[a, &forbid]),
+                    None => forbid.clone(),
+                };
+                let solver = z3::Solver::new(ctx);
+                solver.assert(&candidate);
+                if solver.check() == z3::SatResult::Sat {
+                    Some(candidate.simplify())
+                } else {
+                    debug!(
+                        "KI-3: forbidding {:?} would make this crate's hard constraints unsat; leaving it out",
+                        forbid
+                    );
+                    acc
+                }
+            })
+    };
 
     let externally_gated_spans = hard_imports
         .iter()

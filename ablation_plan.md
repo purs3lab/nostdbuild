@@ -197,31 +197,54 @@ choices).
 
 ### 3.4 compile_error! constraint modeling
 
+**Corrected from the original draft of this section** (kept implemented as
+`--no-compile-error-constraints`; see §7): the "three call sites" list below
+was missing a fourth, real source, found while wiring the toggle — this
+crate's own `compile_error!`, parsed not by a driver.rs function but directly
+by the visitor during the module-tree walk. It fits the opening sentence's
+stated scope ("a dependency's (or the crate's own)") even though the
+call-site list never named it. Also corrected: `dependency_feature_requirement`
+does not exist solely for this mechanism — most of its output is unrelated
+feature-table semantics that must survive the toggle, not be zeroed with it.
+
 What it does: reads a dependency's (or the crate's own) `compile_error!`
 macro invocations that are conditioned on features (e.g. "you must enable
 `std` or `libm`") and turns them into Z3 constraints, so the solver never
 picks a feature combination that would hit that macro and fail to compile.
-Three call sites, two distinct mechanisms:
+Four call sites, three distinct sources:
 
-- `dependency_compile_error_constraints` — a dependency's `compile_error!`
-  constrains the *main* crate's solve. Called from inside
-  `find_feature_combs_for_all_code` ([driver.rs:3059](src/driver.rs#L3059))
+- **The crate's own, general case** — parsed directly during the module-tree
+  walk ([visitor.rs:2594-2648](src/visitor.rs#L2594)) into
+  `ModCollector::hard_constraints`, which becomes `compile_error_constraints`
+  at [driver.rs:3083](src/driver.rs#L3083) and seeds `all_hard` at
+  [driver.rs:3108](src/driver.rs#L3108) — the "seed veto" that keeps the
+  covering-set search from proposing a configuration this crate's own
+  `compile_error!` forbids. Runs for the main crate and every dependency
+  alike (`find_feature_combs_for_all_code` runs recursively for both).
+- `dependency_compile_error_constraints` — a *dependency's* `compile_error!`
+  constrains the crate being analyzed. Called from inside
+  `find_feature_combs_for_all_code` ([driver.rs:3099-3100](src/driver.rs#L3099))
   and from `dependency_feature_requirement`
-  ([driver.rs:2702](src/driver.rs#L2702), used on the dependency-analysis
-  side).
+  ([driver.rs:2734](src/driver.rs#L2734), used on the dependency-analysis
+  side) — but that function's `parts` also accumulates
+  `solver::feature_implication_constraints` and
+  `solver::optional_dep_implication_constraints`, which are the crate's own
+  `[features]`-table semantics, not `compile_error!` modeling at all; only
+  the `dependency_compile_error_constraints` slice of `parts` belongs to this
+  mechanism, and the other two must not be disturbed by this toggle.
 - `compile_error_infeasible_backend_constraints` — a crate's *own*
   `compile_error!` used to pick between backends (e.g. a crypto crate
   choosing among optional-dep backends) forbids a backend feature if that
   backend has no no_std attribute at its root. Called at
-  [driver.rs:6103](src/driver.rs#L6103), inside the function that computes
+  [driver.rs:6168](src/driver.rs#L6168), inside the function that computes
   `final_condition` for `analyze_crate`.
 
-**Proposed "disabled" semantics:** at all three call sites, skip adding the
-returned constraints to `all_hard` / `parts` / `final_condition` — i.e. the
-functions still get called for telemetry purposes if convenient, but their
-output is discarded rather than asserted into the solver. Equivalent to
-making these functions return empty/`None` unconditionally when the flag is
-set.
+**Implemented "disabled" semantics:** at all four sites, the returned/parsed
+constraints are excluded from `all_hard` / `parts` / `final_condition` rather
+than asserted into the solver — for `dependency_feature_requirement`
+specifically, only the `dependency_compile_error_constraints` slice is
+dropped, the feature-implication and optional-dep-implication constraints
+stay.
 
 **What to measure:** count of runs where the tool now picks a feature
 combination that fails to build specifically on the `compile_error!` line
