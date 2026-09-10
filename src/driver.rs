@@ -1792,7 +1792,12 @@ fn run_cargo_hir_cached(
 
     // L2: the cross-process cache. A key that could not be built at all
     // (unreadable manifest) never reaches here — same as L1 above.
-    if let Some(k) = &key
+    //
+    // §3.9 (`--no-global-cache`): skip this whole block on a declared miss so
+    // the call falls straight to the uncached-compile branch below, never
+    // reading or writing the on-disk cache at all.
+    if !ablation::flags().no_global_cache
+        && let Some(k) = &key
         && let Some((final_path, lock_path)) = persistent_cache_paths(k)
     {
         if let Some(value) = read_persistent_cache_entry(&final_path) {
@@ -1822,9 +1827,10 @@ fn run_cargo_hir_cached(
     }
 
     // No key, or the persistent cache is unavailable this call (plugin
-    // binaries not found/stat-able) — same behaviour as before this cache
-    // existed: compile once, cache in-process only if there is a key at all
-    // and `--no-local-cache` isn't also set.
+    // binaries not found/stat-able), or `--no-global-cache` forced this path
+    // — same behaviour as before this cache existed: compile once, cache
+    // in-process only if there is a key at all and `--no-local-cache` isn't
+    // also set.
     match compile_cargo_hir_uncached(args, output_path) {
         Ok(value) => {
             if !ablation::flags().no_local_cache
