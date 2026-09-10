@@ -417,7 +417,14 @@ fn run() -> anyhow::Result<()> {
         None => u32::MAX,
     };
 
-    let db_data = db::read_db_file()?;
+    // Ablation study §3.7: `--no-db` starts the run with an empty table, which
+    // also makes both `db::get_from_db_data` call sites return `None` — this
+    // run neither reads nor writes the shared cache (write is skipped below).
+    let db_data = if ablation::flags().no_db {
+        Vec::new()
+    } else {
+        db::read_db_file()?
+    };
     let mut telemetry = nostd::Telemetry {
         ablation_flags: ablation::flags().active_names(),
         ..Default::default()
@@ -1896,7 +1903,9 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    db::write_db_file(exchange.db_data)?;
+    if !ablation::flags().no_db {
+        db::write_db_file(exchange.db_data)?;
+    }
 
     stats.telemetry = Some(exchange.telemetry);
     stats.dump(true);
