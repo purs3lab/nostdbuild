@@ -179,8 +179,8 @@ fn process_dep_crate_wrapper(
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_default();
-    let has_impl_requirements =
-        driver::dep_carries_impl_requirements(&dep_dir, &dep_crate, &exchange.impl_records);
+    let has_impl_requirements = !ablation::flags().no_cross_crate_propagation
+        && driver::dep_carries_impl_requirements(&dep_dir, &dep_crate, &exchange.impl_records);
     if has_impl_requirements {
         debug!(
             "Not using the DB for {}: the main crate's calls need impls it may gate",
@@ -191,11 +191,12 @@ fn process_dep_crate_wrapper(
     // needs `libm` because earcut imports `num_traits::float::Float`, which is a
     // fact about earcut; the DB's answer is keyed by the dependency alone and
     // would skip it.
-    let has_path_requirements = driver::dep_carries_path_requirements(
-        &dep_dir,
-        &dep_crate,
-        &exchange.cross_crate_items(),
-    );
+    let has_path_requirements = !ablation::flags().no_cross_crate_propagation
+        && driver::dep_carries_path_requirements(
+            &dep_dir,
+            &dep_crate,
+            &exchange.cross_crate_items(),
+        );
     if has_path_requirements {
         debug!(
             "Not using the DB for {}: the main crate names items it may gate",
