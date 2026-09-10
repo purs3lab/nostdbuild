@@ -4717,26 +4717,38 @@ pub fn dep_edge_retry_candidates(
         .map(|(renamed, _)| renamed.as_str())
         .unwrap_or(dep_original_name);
 
-    let mut candidates: Vec<String> = visitor::declared_features(&dep_manifest)
+    // KI-36: a feature named exactly `custom` is, by ecosystem convention
+    // (getrandom, and confirmed here on `clock_source`'s own `custom` — a
+    // `mod custom;` declaring an `extern "C"` hook only the *final binary*
+    // can define), a self-registration hook rather than an ordinary
+    // cfg-gated path. `cargo build --lib` never reaches the link step that
+    // would catch a missing definition, so a lib-only success with `custom`
+    // enabled "passes" on every target regardless of whether any real
+    // backend exists — the same reasoning `add_synthetic_dependency`'s
+    // caller already excludes it for (KI-34).
+    //
+    // Sorted last rather than dropped: `clock_source-0.2.5` (the crate this
+    // exclusion is sized from) declares no other feature at all, so an
+    // outright ban left `test_etime` — whose golden fixture predates this
+    // exclusion — with no candidate ever again. The caller (`bin/main.rs`)
+    // tries candidates in order and stops at the first that builds, so
+    // keeping ordinary features first still lets a real alternative win the
+    // way KI-34 verified for `getrandom`'s `rdrand`; `custom` only gets a
+    // turn once every ordinary candidate for this edge has been tried and
+    // failed, which is exactly the case where it is the edge's only path
+    // rather than a lucky alphabetical accident.
+    let (mut ordinary, mut hook_shaped): (Vec<String>, Vec<String>) =
+        visitor::declared_features(&dep_manifest)
+            .into_iter()
+            .filter(|f| f != "default")
+            .partition(|f| f != "custom");
+    ordinary.sort();
+    hook_shaped.sort();
+    ordinary
         .into_iter()
-        .filter(|f| f != "default")
-        // KI-36: a feature named exactly `custom` is, by ecosystem
-        // convention (getrandom, and confirmed here on `clock_source`'s own
-        // `custom` — a `mod custom;` declaring an `extern "C"` hook only the
-        // *final binary* can define), a self-registration hook rather than
-        // an ordinary cfg-gated path. `cargo build --lib` never reaches the
-        // link step that would catch a missing definition, so a lib-only
-        // success with `custom` enabled "passes" on every target regardless
-        // of whether any real backend exists — the same reasoning
-        // `add_synthetic_dependency`'s caller already excludes it for
-        // (KI-34). Excluding it here too is conservative — the only cost is
-        // a missed fix on whatever different, benign thing a *different*
-        // dependency's own `custom` feature might mean — never a false one.
-        .filter(|f| f != "custom")
+        .chain(hook_shaped)
         .map(|f| format!("{edge_name}/{f}"))
-        .collect();
-    candidates.sort();
-    candidates
+        .collect()
 }
 
 /// A transitive (non-direct) package a failed build's own compiler

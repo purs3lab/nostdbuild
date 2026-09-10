@@ -5256,19 +5256,6 @@ pub fn enablers_for_selection(
         .iter()
         .filter(|f| !selection.contains(*f) && !exclude.contains(*f))
         .filter(|f| !SYNTHETIC.contains(&f.as_str()))
-        // KI-36: `custom` is, by ecosystem convention (getrandom;
-        // confirmed here on `clock_source`'s own `custom`, a `mod custom;`
-        // declaring an `extern "C"` hook only the *final binary* can
-        // define), a self-registration hook rather than an ordinary
-        // cfg-gated path. `cargo build --lib` never reaches the link step
-        // that would catch a missing definition, so a lib-only success with
-        // `custom` on "passes" on every target regardless of whether any
-        // real backend exists — the same reasoning `add_synthetic_dependency`'s
-        // caller already excludes it for (KI-34). Excluded by name here too,
-        // conservatively: the only cost is a missed fix on whatever
-        // different, benign thing a *different* crate's own `custom` feature
-        // might mean, never a false one.
-        .filter(|f| f.as_str() != "custom")
         .cloned()
         .collect();
     candidates.sort();
@@ -5276,6 +5263,28 @@ pub fn enablers_for_selection(
         debug!("[enablers] emitted set has no unselected feature to try");
         return Vec::new();
     }
+
+    // KI-36: `custom` is, by ecosystem convention (getrandom; confirmed here
+    // on `clock_source`'s own `custom`, a `mod custom;` declaring an `extern
+    // "C"` hook only the *final binary* can define), a self-registration
+    // hook rather than an ordinary cfg-gated path. `cargo build --lib` never
+    // reaches the link step that would catch a missing definition, so a
+    // lib-only success with `custom` on "passes" on every target regardless
+    // of whether any real backend exists — the same reasoning
+    // `add_synthetic_dependency`'s caller already excludes it for (KI-34).
+    //
+    // Tried last rather than refused outright: `clock_source-0.2.5` (the
+    // crate this exclusion is sized from) has no *other* feature at all, so
+    // an unconditional ban left `test_etime` with no candidate ever again —
+    // the fix and the regression traced to the same crate. Ordinary
+    // candidates get the whole search first (so `getrandom`'s `rdrand`
+    // still wins over `custom` on x86_64, as KI-34 verified); only when none
+    // of them compiles does a hook-shaped name get a turn, which is exactly
+    // the case where it is the crate's only path rather than a lucky
+    // alphabetical accident.
+    let (ordinary, hook_shaped): (Vec<String>, Vec<String>) =
+        candidates.into_iter().partition(|f| f != "custom");
+    candidates = ordinary;
 
     let base: Vec<String> = {
         let mut b: Vec<String> = selection.iter().cloned().collect();
@@ -5288,13 +5297,29 @@ pub fn enablers_for_selection(
         b.dedup();
         b
     };
+
+    if !candidates.is_empty() {
+        debug!(
+            "[enablers] emitted set {:?} built on no target; trying {} candidate feature(s): {:?}",
+            base,
+            candidates.len(),
+            candidates
+        );
+        let (found, _adopted) =
+            search_enablers(manifest, crate_name, &base, candidates, &declared);
+        if !found.is_empty() {
+            return found;
+        }
+    }
+
+    if hook_shaped.is_empty() {
+        return Vec::new();
+    }
     debug!(
-        "[enablers] emitted set {:?} built on no target; trying {} candidate feature(s): {:?}",
-        base,
-        candidates.len(),
-        candidates
+        "[enablers] no ordinary candidate compiled; falling back to hook-shaped feature(s) {:?}",
+        hook_shaped
     );
-    let (found, _adopted) = search_enablers(manifest, crate_name, &base, candidates, &declared);
+    let (found, _adopted) = search_enablers(manifest, crate_name, &base, hook_shaped, &declared);
     found
 }
 

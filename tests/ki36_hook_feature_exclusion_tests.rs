@@ -10,10 +10,18 @@
 //! on every target regardless of whether any real backend exists.
 //!
 //! `parser::add_synthetic_dependency`'s caller (KI-34) already excludes the
-//! literal name `custom` from its own candidate search. This entry closes
-//! the same gap in the two older, pre-existing "try every declared feature
-//! blind, the build is the oracle" mechanisms: `parser::dep_edge_retry_candidates`
-//! (R34-16) and `driver::enablers_for_selection` (KI-30).
+//! literal name `custom` from its own candidate search — but outright,
+//! wherever it names a transitive package with an alternative feature to
+//! try instead. `dep_edge_retry_candidates` (R34-16) and
+//! `enablers_for_selection` (KI-30) cannot borrow that shape unmodified:
+//! `clock_source-0.2.5` — the crate this exclusion is sized from — declares
+//! no feature besides `default` and `custom`, so banning `custom` outright
+//! here left `test_etime`'s golden fixture (which predates this entry) with
+//! no candidate ever again. Both functions instead try every ordinary
+//! candidate first and reach for `custom` only when none of them compiled —
+//! last resort, not refused, so a real alternative still wins the way
+//! KI-34 verified for `getrandom`'s `rdrand`, and a crate with no
+//! alternative still gets the one candidate that can fix it.
 //!
 //! Sizing before this fix (grepping `dep_edge_enabler_features`/
 //! `emitted_set_enabler_features` — the telemetry fields recording which
@@ -21,8 +29,7 @@
 //! is the only hook-shaped name either mechanism has ever selected, twice,
 //! both tracing to `clock_source`; every other winning name (`libm`, `alloc`,
 //! `heapless`, `embassy`, `checked-overflow`, `no-std`, `default`) is an
-//! ordinary ecosystem feature. That is why the fix mirrors KI-34's exact
-//! one-word exclusion rather than a broader, unsized denylist.
+//! ordinary ecosystem feature.
 
 use std::collections::HashSet;
 use std::fs;
@@ -83,7 +90,7 @@ rdrand = []
 "#;
 
 #[test]
-fn dep_edge_retry_candidates_excludes_custom_by_name() {
+fn dep_edge_retry_candidates_tries_custom_last_when_an_alternative_exists() {
     let dep = DepFixture::new(
         "ki36-dep-edge-main",
         "ki36-hook-dep",
@@ -94,15 +101,20 @@ fn dep_edge_retry_candidates_excludes_custom_by_name() {
 
     assert_eq!(
         candidates,
-        vec!["ki36-hook-dep/rdrand".to_string()],
-        "`custom` must never appear as a `<dep>/<feat>` candidate, `default` \
-         is already excluded on its own terms, and `rdrand` — an ordinary \
-         declared feature — must still come through: {candidates:?}"
+        vec![
+            "ki36-hook-dep/rdrand".to_string(),
+            "ki36-hook-dep/custom".to_string()
+        ],
+        "`default` is excluded on its own terms, `rdrand` — an ordinary \
+         declared feature — must still come through, and `custom` must sort \
+         after it: the caller tries candidates in order and stops at the \
+         first that builds, so a real alternative always gets first crack \
+         over the hook-shaped name: {candidates:?}"
     );
 }
 
 #[test]
-fn dep_edge_retry_candidates_returns_nothing_for_a_dep_with_only_a_hook_feature() {
+fn dep_edge_retry_candidates_falls_back_to_a_hook_feature_when_it_is_the_only_one() {
     let dep = DepFixture::new(
         "ki36-dep-edge-only-hook-main",
         "ki36-hook-only-dep",
@@ -118,9 +130,13 @@ custom = []
     );
 
     let candidates = dep_edge_retry_candidates(&dep.dep_name_with_version, &dep.main_name, &[]);
-    assert!(
-        candidates.is_empty(),
-        "with no non-hook feature declared, there is nothing left to try: {candidates:?}"
+    assert_eq!(
+        candidates,
+        vec!["ki36-hook-only-dep/custom".to_string()],
+        "with no non-hook feature declared, `custom` is this edge's only \
+         path and must still be offered — banning it outright is what left \
+         `clock_source-0.2.5` (this fixture's shape) with no candidate at \
+         all: {candidates:?}"
     );
 }
 
