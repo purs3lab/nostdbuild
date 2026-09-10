@@ -251,6 +251,40 @@ combination that fails to build specifically on the `compile_error!` line
 (grep the build failure stderr for the macro's message text) — those are
 false "success" verdicts this mechanism was preventing.
 
+**Fifth site, found empirically rather than by reading the diff: a reactive
+repair that duplicates this mechanism without being gated by it.**
+[main.rs](src/bin/main.rs) has its own post-build repair for a violated
+`compile_error!` — `parser::violated_compile_error_constraints` (the check)
+and `parser::compile_error_repair_features` (the KI-11-shaped repair: only
+after a build that failed on every target, applied by a retry, kept only if
+the rebuild succeeds) — deliberately *not* fed into the solve the other four
+sites feed (see that function's own doc comment: asserting a disjunctive
+`compile_error!` into the solve lets Z3 satisfy it with an arbitrary disjunct,
+which is what breaks uom). This reactive repair is a real, independent second
+line of defense, not a duplicate implementation of the same veto — and before
+this correction it was completely unguarded by `--no-compile-error-constraints`.
+
+Confirmed live on `bulletproofs-bls-4.0.0` (KI-3's own crate, `rust` vs `blst`
+backend selection): baseline and `--no-compile-error-constraints` alone both
+produced an *identical* `Success` build with the same
+`--features bls12_381_plus,rust,custom_no_std_feature_enabled` — the proactive
+veto (`compile_error_infeasible_backend_constraints`, this mechanism's own
+call site) was fully disabled in the second run, and the reactive repair
+below found and applied the same `rust` fix anyway, from the build failure
+alone. **A single-mechanism ablation arm can look like a no-op purely because
+a different, unguarded mechanism independently reaches the same answer** —
+this is not specific to compile_error and is worth checking for on any arm
+that shows no diff on a crate believed to exercise that mechanism.
+
+Fixed: `main.rs`'s call to `violated_compile_error_constraints`, and every
+downstream recompute of that value (after the KI-30 build-enabler repair, the
+R34-16 dep-edge retry, the R34-23 feature-removal repair, and the KI-34
+transitive-package promotion all independently re-derive it once *they*
+succeed — see §3.2 and §3.3 for those), now returns empty under
+`ablation::flags().no_compile_error_constraints` — which also transitively
+disables `compile_error_repair_features`, since nothing calls it once
+`violated` never has anything in it.
+
 ### 3.5 cfg-gate / gateway resolution
 
 What it does: two related passes that re-attribute a std usage to the

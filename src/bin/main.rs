@@ -1327,13 +1327,30 @@ fn run() -> anyhow::Result<()> {
             .map(str::to_string)
             .collect()
     };
-    let mut violated = parser::violated_compile_error_constraints(
-        &ctx,
-        &main_attributes,
-        &exchange.crate_info,
-        &emitted_features(&combined_features),
-        !disable_default,
-    );
+    // Ablation study §3.4: the reactive half of compile_error handling. The
+    // proactive constraint sources (`all_hard`/`parts`/`final_condition`) are
+    // already gated elsewhere, but this check — and the repair it feeds — is a
+    // *separate* mechanism (KI-11-shaped: only after a build that failed
+    // everywhere, kept only if the rebuild succeeds) that reads the same
+    // `compile_error!` data independently. Left unguarded, it silently masks
+    // the proactive flag: bulletproofs-bls-4.0.0 still reaches `Success` with
+    // `--no-compile-error-constraints` set, because this reactive repair finds
+    // and applies the same `rust` fix the proactive veto would have steered
+    // the solve toward directly. Forcing `violated` empty here also keeps it
+    // empty at every downstream recompute below and at the final warning
+    // check, since none of them can populate a non-empty result once this
+    // returns nothing to act on.
+    let mut violated = if ablation::flags().no_compile_error_constraints {
+        Vec::new()
+    } else {
+        parser::violated_compile_error_constraints(
+            &ctx,
+            &main_attributes,
+            &exchange.crate_info,
+            &emitted_features(&combined_features),
+            !disable_default,
+        )
+    };
 
     // A violated `compile_error!` is not a warning about the build — it *is* the
     // build failure: the compiler stops on the macro before anything else is
@@ -1516,14 +1533,23 @@ fn run() -> anyhow::Result<()> {
                     one_succeeded = true;
                     // Re-derived from the set that shipped, like the repair above:
                     // only the check gets to make a statement about the emitted
-                    // config.
-                    violated = parser::violated_compile_error_constraints(
-                        &ctx,
-                        &main_attributes,
-                        &exchange.crate_info,
-                        &emitted_features(&combined_features),
-                        !disable_default,
-                    );
+                    // config. Ablation §3.4: stays empty under
+                    // `no_compile_error_constraints` even though this repair (§3.2's
+                    // build-enabler search) is a different, independently-gated
+                    // mechanism — otherwise this recompute would leak real
+                    // compile_error awareness back in through a flag that is
+                    // supposed to mean the tool has none.
+                    violated = if ablation::flags().no_compile_error_constraints {
+                        Vec::new()
+                    } else {
+                        parser::violated_compile_error_constraints(
+                            &ctx,
+                            &main_attributes,
+                            &exchange.crate_info,
+                            &emitted_features(&combined_features),
+                            !disable_default,
+                        )
+                    };
                     println!("Final args after adding the build enabler(s): {:?}", final_args);
                 }
             }
@@ -1607,14 +1633,20 @@ fn run() -> anyhow::Result<()> {
                     println!("Final args after dependency edge retry: {:?}", final_args);
                     // Re-derived from the set that shipped, like the repairs
                     // above: only the check gets to make a statement about the
-                    // emitted config.
-                    violated = parser::violated_compile_error_constraints(
-                        &ctx,
-                        &main_attributes,
-                        &exchange.crate_info,
-                        &emitted_features(&combined_features),
-                        !disable_default,
-                    );
+                    // emitted config. Ablation §3.4: stays empty under
+                    // `no_compile_error_constraints` regardless of this repair's
+                    // own (§3.3) gate — see the first recompute's comment above.
+                    violated = if ablation::flags().no_compile_error_constraints {
+                        Vec::new()
+                    } else {
+                        parser::violated_compile_error_constraints(
+                            &ctx,
+                            &main_attributes,
+                            &exchange.crate_info,
+                            &emitted_features(&combined_features),
+                            !disable_default,
+                        )
+                    };
                     break 'dep_edges;
                 }
             }
@@ -1681,14 +1713,20 @@ fn run() -> anyhow::Result<()> {
                 println!("Final args after selected-feature removal: {:?}", final_args);
                 // Re-derived from the set that shipped, like the repairs
                 // above: only the check gets to make a statement about the
-                // emitted config.
-                violated = parser::violated_compile_error_constraints(
-                    &ctx,
-                    &main_attributes,
-                    &exchange.crate_info,
-                    &emitted_features(&combined_features),
-                    !disable_default,
-                );
+                // emitted config. Ablation §3.4: stays empty under
+                // `no_compile_error_constraints` regardless of this repair's
+                // own (§3.2) gate — see the first recompute's comment above.
+                violated = if ablation::flags().no_compile_error_constraints {
+                    Vec::new()
+                } else {
+                    parser::violated_compile_error_constraints(
+                        &ctx,
+                        &main_attributes,
+                        &exchange.crate_info,
+                        &emitted_features(&combined_features),
+                        !disable_default,
+                    )
+                };
             }
         }
     }
@@ -1805,13 +1843,20 @@ fn run() -> anyhow::Result<()> {
                     // above: only the check gets to make a statement about the
                     // emitted config. `final_args` itself did not change — the
                     // fix lives entirely in the manifest edit just kept.
-                    violated = parser::violated_compile_error_constraints(
-                        &ctx,
-                        &main_attributes,
-                        &exchange.crate_info,
-                        &emitted_features(&combined_features),
-                        !disable_default,
-                    );
+                    // Ablation §3.4: stays empty under
+                    // `no_compile_error_constraints` regardless of this repair's
+                    // own (§3.3) gate — see the first recompute's comment above.
+                    violated = if ablation::flags().no_compile_error_constraints {
+                        Vec::new()
+                    } else {
+                        parser::violated_compile_error_constraints(
+                            &ctx,
+                            &main_attributes,
+                            &exchange.crate_info,
+                            &emitted_features(&combined_features),
+                            !disable_default,
+                        )
+                    };
                     break;
                 }
                 parser::restore_manifest_text(&exchange.name_with_version, &original_manifest);
