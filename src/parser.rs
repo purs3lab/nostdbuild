@@ -1914,12 +1914,28 @@ pub fn process_dep_crate(
     let dep_crate_name = dep.crate_name.clone();
     let main_name = exchange.name_with_version.clone();
     let ctx = z3::Context::new(&z3::Config::new());
-    let (_hard_std, hard_constraints, _, _, dep_root, _, _, _, _) = driver::analyze_crate_wrapper(
+    let (hard_std, hard_constraints, _, _, dep_root, _, _, _, _) = driver::analyze_crate_wrapper(
         &ctx,
         &dep.crate_name,
         Some(&exchange.name_with_version),
         &mut exchange.telemetry,
     );
+    // `dep` may still be `parse_deps_crate`'s DB-shortcut placeholder
+    // (`Attributes { crate_name, ..Default::default() }`, [parser.rs:280](#L280))
+    // — reaching this function at all means mechanism #6 already decided that
+    // placeholder isn't trustworthy and forced a full analysis, but nothing
+    // had re-populated `dep` itself yet. Left as the placeholder,
+    // `process_crate`'s very first check (`!attrs.unconditional_no_std &&
+    // !no_std`) returns all-empty before ever reading `hard_constraints`
+    // below — silently discarding a correctly-computed impl/path requirement
+    // (multiexp-0.4.0's `.zeroize()` on `Vec<Vec<u8>>` needing zeroize's
+    // `alloc`: the `[impl_req]` log line fires, proving the requirement was
+    // found, but the early return means it's never used). Re-parsed the same
+    // way `parse_deps_crate`'s own real-analysis branch does, using the
+    // `hir_spans` this call already computed — redundant with that branch's
+    // own parse when `dep` was never the placeholder, but correctness here
+    // does not depend on which branch produced `dep`.
+    *dep = parse_crate(&dep_crate_name, true, Some(&main_name), &hard_std, None);
 
     // What *this dependency's* dependencies demand of it (R31-4). Its own
     // `compile_error!`s stay out of the solve for the reason `uom` documents —
